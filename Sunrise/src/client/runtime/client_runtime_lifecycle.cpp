@@ -12,6 +12,7 @@
 #include "../hooks/schema_capture/schema_capture_observer.h"
 #include "../hooks/network/runtime.h"
 #include "../hooks/package_trust/package_trust_bypass.h"
+#include "../hooks/noclip/runtime.h"
 #include "../hooks/polled_input/runtime.h"
 #include "../hooks/queuez/queuez_hook_lifecycle.h"
 #include "../hooks/retail_log/retail_log_lifecycle.h"
@@ -64,6 +65,7 @@ bool shutdown() noexcept {
     hooks::banner::uninstall();
     hooks::bitmap::uninstall();
     hooks::bootflow::uninstall();
+    hooks::noclip::uninstall();
     hooks::teleport::uninstall();
     hooks::queuez::uninstall();
     hooks::ability_gate::uninstall();
