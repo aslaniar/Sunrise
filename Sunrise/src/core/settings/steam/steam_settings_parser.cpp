@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <array>
 #include <string_view>
 
 #include "../parser.h"
@@ -95,14 +97,18 @@ decode_escape(std::string_view encoded, std::size_t& position, char& output) noe
 }
 
 /**
- * Decodes a nonempty persona into process-owned fixed storage.
+ * Decodes a nonempty printable-ASCII JSON string into fixed storage. Shared by every settings
+ * field that stores a short bounded string, so each caller only names its own byte limit.
  * @param encoded Borrowed encoded JSON string bytes.
+ * @param maxBytes Largest accepted decoded length, excluding the trailing null.
  * @param output Receives the decoded bytes and a trailing null only on success.
- * @return True for 1 to 63 printable ASCII bytes.
+ * @return True for 1 to maxBytes printable ASCII bytes.
  */
-[[nodiscard]] bool decode_persona(std::string_view encoded,
-                                  std::array<char, steam::kPersonaNameCapacity>& output) noexcept {
-    std::array<char, steam::kPersonaNameCapacity> candidate{};
+template <std::size_t Capacity>
+[[nodiscard]] bool decode_bounded_string(std::string_view encoded,
+                                         std::size_t maxBytes,
+                                         std::array<char, Capacity>& output) noexcept {
+    std::array<char, Capacity> candidate{};
     std::size_t decodedCount = 0;
     for (std::size_t position = 0; position < encoded.size();) {
         char value = encoded[position++];
@@ -111,7 +117,7 @@ decode_escape(std::string_view encoded, std::size_t& position, char& output) noe
         }
         const auto byte = static_cast<unsigned char>(value);
         if (byte < kMinimumPrintableAscii || byte > kMaximumPrintableAscii
-            || decodedCount >= steam::kMaximumPersonaNameBytes) {
+            || decodedCount >= maxBytes) {
             return false;
         }
         candidate[decodedCount++] = value;
@@ -123,6 +129,47 @@ decode_escape(std::string_view encoded, std::size_t& position, char& output) noe
     return true;
 }
 
+/** Destiny 2 only supports these languages; anything else falls back to English. */
+constexpr std::array<std::string_view, 13> kSupportedLanguages{
+    "english",
+    "french",
+    "german",
+    "italian",
+    "japanese",
+    "brazilian",
+    "spanish",
+    "russian",
+    "polish",
+    "schinese",
+    "tchinese",
+    "latam",
+    "koreana",
+};
+
+/** @param token Candidate Steam API language code. @return True when this build ships it. */
+[[nodiscard]] bool is_supported_language(std::string_view token) noexcept {
+    return std::find(kSupportedLanguages.begin(), kSupportedLanguages.end(), token)
+           != kSupportedLanguages.end();
+}
+
+/**
+ * Resolves an authored Steam API language token, falling back to English for anything that
+ * isn't exactly one language this build ships. This also catches a comma-separated list — a
+ * shape only GetAvailableGameLanguages should ever receive — which would otherwise leave
+ * GetCurrentGameLanguage answering with a value the Client cannot parse as one language.
+ * @param encoded Borrowed encoded JSON string bytes.
+ * @return The matching supported code, or the English fallback.
+ */
+[[nodiscard]] std::array<char, steam::kLanguageCapacity>
+resolve_language(std::string_view encoded) noexcept {
+    std::array<char, steam::kLanguageCapacity> decoded{};
+    if (decode_bounded_string(encoded, steam::kMaximumLanguageBytes, decoded)
+        && is_supported_language(std::string_view(decoded.data()))) {
+        return decoded;
+    }
+    return {"english"};
+}
+
 } // namespace
 
 /** Parses Steam settings on top of the fixed defaults. */
@@ -132,6 +179,7 @@ bool Parser::steam_settings(steam::Settings& output) noexcept {
     }
     steam::Settings candidate = output;
     bool hasUser = false;
+    bool hasLanguage = false;
     if (consume('}')) {
         return true;
     }
@@ -145,6 +193,13 @@ bool Parser::steam_settings(steam::Settings& output) noexcept {
                 return false;
             }
             hasUser = true;
+        } else if (key == "language") {
+            std::string_view value;
+            if (hasLanguage || !string(value)) {
+                return false;
+            }
+            candidate.language = resolve_language(value);
+            hasLanguage = true;
         } else if (!skip_value(0)) {
             return false;
         }
@@ -175,7 +230,9 @@ bool Parser::steam_user_settings(steam::User& output) noexcept {
         }
         if (key == "persona_name") {
             std::string_view value;
-            if (hasPersonaName || !string(value) || !decode_persona(value, candidate.personaName)) {
+            if (hasPersonaName || !string(value)
+                || !decode_bounded_string(
+                    value, steam::kMaximumPersonaNameBytes, candidate.personaName)) {
                 return false;
             }
             hasPersonaName = true;
