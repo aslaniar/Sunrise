@@ -435,4 +435,10 @@ void force_pending() noexcept {
         core::log::Channel::client, core::log::Level::info, "ev=teleport stage=force result=ok");
 }
 
+/** @param component Candidate physics component. @return True when the local player drives it. */
+bool owns_local_player(void* component) noexcept {
+    return component != nullptr && g_controlledHandle != nullptr
+           && owns_player(static_cast<std::byte*>(component));
+}
+
 } // namespace sunrise::client::hooks::teleport

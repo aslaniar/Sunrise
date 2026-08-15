@@ -14,6 +14,7 @@
 #include "../../../core/logging/log.h"
 #include "../../hooking/detour.h"
 #include "../polled_input/runtime.h"
+#include "../sword_skate/sword_skate.h"
 #include "internal.h"
 #include "runtime.h"
 
@@ -89,6 +90,9 @@ std::int64_t __fastcall camera_transform(std::uint32_t playerIndex) noexcept {
  */
 std::int64_t __fastcall physics_sync(std::byte* component, std::byte* outFlags) noexcept {
     apply_pending(component);
+    // Shares this detour rather than adding a second one to the same function. The flag it clears
+    // is written and read inside this tick, so it has to run here and not on a frame poll.
+    hooks::sword_skate::apply(component);
     const PhysicsSync next = original<PhysicsSync>(kPhysicsSlot);
     return next != nullptr ? next(component, outFlags) : 0;
 }

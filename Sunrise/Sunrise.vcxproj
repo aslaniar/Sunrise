@@ -190,6 +190,9 @@
     <ClCompile Include="src\client\hooks\egress\winsock\transmission\egress_message_transmission.cpp" />
     <ClCompile Include="src\client\ui\runtime\client_ui_module_runtime.cpp" />
     <ClCompile Include="src\client\ui\teleport\teleport_panel.cpp" />
+    <ClCompile Include="src\client\sword_skate\sword_skate_settings_store.cpp" />
+    <ClCompile Include="src\client\hooks\sword_skate\sword_skate.cpp" />
+    <ClCompile Include="src\client\ui\sword_skate\sword_skate_panel.cpp" />
     <ClCompile Include="src\client\teleport\teleport_settings_store.cpp" />
     <ClCompile Include="src\client\hooks\noclip\horizontal_noclip.cpp" />
     <ClCompile Include="src\client\hooks\teleport\teleport_lifecycle.cpp" />
@@ -683,6 +686,9 @@
     <ClInclude Include="src\core\ui\layout\navigation\ui_layout_navigation.h" />
     <ClInclude Include="src\core\ui\layout\credits\sunrise_credits_badge.h" />
     <ClInclude Include="src\client\runtime\runtime.h" />
+    <ClInclude Include="src\client\sword_skate\sword_skate_settings_store.h" />
+    <ClInclude Include="src\client\hooks\sword_skate\sword_skate.h" />
+    <ClInclude Include="src\client\ui\sword_skate\sword_skate_panel.h" />
     <ClInclude Include="src\client\teleport\teleport_settings_store.h" />
     <ClInclude Include="src\client\hooks\noclip\runtime.h" />
     <ClInclude Include="src\client\hooks\teleport\internal.h" />

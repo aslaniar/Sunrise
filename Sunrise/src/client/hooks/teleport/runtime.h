@@ -69,4 +69,13 @@ void invoke_sync(void* component) noexcept;
  */
 void apply_pending(void* component) noexcept;
 
+/**
+ * @param component Candidate physics component.
+ * @return True when it drives the object the local player controls.
+ *
+ * Exposed because the physics sync is the only tick that sees every component, and a feature that
+ * has to act on the player's own tick needs the same test this module already performs.
+ */
+[[nodiscard]] bool owns_local_player(void* component) noexcept;
+
 } // namespace sunrise::client::hooks::teleport

@@ -17,6 +17,7 @@
 #include "../hooks/queuez/queuez_hook_lifecycle.h"
 #include "../hooks/retail_log/retail_log_lifecycle.h"
 #include "../hooks/teleport/runtime.h"
+#include "../sword_skate/sword_skate_settings_store.h"
 #include "../targets/game.h"
 #include "../targets/steam_targets.h"
 #include "../teleport/teleport_settings_store.h"
@@ -30,6 +31,7 @@ namespace sunrise::client {
 bool initialize(void* module) noexcept {
     // Loaded before the pages register, so the teleport page draws saved values on its first frame.
     teleport::initialize(module);
+    sword_skate::initialize(module);
     return ui::runtime::initialize();
 }
 
@@ -106,6 +108,7 @@ bool shutdown() noexcept {
     runtime::g_platformStage = runtime::StageState::pending;
     ui::runtime::shutdown();
     teleport::shutdown();
+    sword_skate::shutdown();
     core::log::write(core::log::Channel::client, core::log::Level::info, "ev=shutdown result=ok");
     ReleaseSRWLockExclusive(&runtime::g_lock);
     return true;
