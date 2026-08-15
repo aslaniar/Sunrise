@@ -4,6 +4,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <cstdio>
 #include <string_view>
 
@@ -77,6 +78,31 @@ void report_stage_failure(const char* stage) noexcept {
     log::write(log::Channel::core, log::Level::error, event);
 }
 
+/**
+ * Reports how long one boot boundary took, for the debug channel only.
+ * Timing is diagnostic, so it never appears at the levels a normal run uses.
+ * @param event Event and phase text the duration is appended to.
+ * @param startedTick Tick count taken when the boundary began.
+ * @param result Outcome text for the log line.
+ */
+void report_elapsed(const char* event, std::uint64_t startedTick, const char* result) noexcept {
+    const std::uint64_t elapsed = GetTickCount64() - startedTick;
+    std::array<char, 96> line{};
+    const int written = std::snprintf(line.data(),
+                                      line.size(),
+                                      "%s ms=%llu result=%s",
+                                      event,
+                                      static_cast<unsigned long long>(elapsed),
+                                      result);
+    if (written <= 0) {
+        return;
+    }
+    const auto length = static_cast<std::size_t>(written) < line.size()
+                            ? static_cast<std::size_t>(written)
+                            : line.size() - 1;
+    log::write(log::Channel::core, log::Level::debug, {line.data(), length});
+}
+
 } // namespace
 
 /** Initializes every runtime layer in dependency order. */
@@ -86,6 +112,8 @@ bool initialize(void* module) noexcept {
         ReleaseSRWLockExclusive(&g_runtimeLock);
         return true;
     }
+    // Taken before the first stage, so the reported duration covers settings and the sinks too.
+    const std::uint64_t startedTick = GetTickCount64();
 
     if (!settings::initialize(module)) {
         // Settings name their own failure; the sinks do not exist yet to carry a second line.
@@ -97,27 +125,36 @@ bool initialize(void* module) noexcept {
     const char* stage = nullptr;
     if (!log::initialize(module, settings::get().logging)) {
         stage = "logging";
-    } else if (!ui::runtime::initialize(settings::get().client.userInterface)) {
-        stage = "ui";
-    } else if (!ui::modules::logs::initialize()) {
-        stage = "ui_logs";
-    } else if (!state::entitlements::publish(settings::get().server.entitlements)) {
-        stage = "entitlements";
-    } else if (!state::initialize(module,
-                                  settings::get().initialAccount,
-                                  settings::get().initialActivityDefaults)) {
-        stage = "state";
-    } else if (!initialize_content_manifest(module)) {
-        stage = "content_manifest";
-    } else if (!middleware::initialize()) {
-        stage = "middleware";
-    } else if (!server::initialize()) {
-        stage = "server";
-    } else if (!client::initialize(module)) {
-        stage = "client";
+    } else {
+        // The sinks exist only from here, so this is the earliest a begin marker can reach a
+        // channel. The duration it pairs with still counts from function entry.
+        log::write(log::Channel::core, log::Level::debug, "ev=initialize phase=begin");
+        if (!ui::runtime::initialize(settings::get().client.userInterface)) {
+            stage = "ui";
+        } else if (!ui::modules::logs::initialize()) {
+            stage = "ui_logs";
+        } else if (!state::entitlements::publish(settings::get().server.entitlements)) {
+            stage = "entitlements";
+        } else if (!state::initialize(module,
+                                      settings::get().initialAccount,
+                                      settings::get().initialActivityDefaults)) {
+            stage = "state";
+        } else if (!initialize_content_manifest(module)) {
+            stage = "content_manifest";
+        } else if (!middleware::initialize()) {
+            stage = "middleware";
+        } else if (!server::initialize()) {
+            stage = "server";
+        } else if (!client::initialize(module)) {
+            stage = "client";
+        }
     }
     if (stage != nullptr) {
         report_stage_failure(stage);
+        // Reported before the unwind, so this measures initialization alone and stays comparable
+        // with the success line. The unwind's own quiesce waits would otherwise be counted here.
+        // A logging-stage failure has no sinks left to carry it, and reports nothing.
+        report_elapsed("ev=initialize phase=complete", startedTick, "fail");
         // Reverse every stage because the failing expression may have completed earlier stages.
         (void)client::shutdown();
         server::shutdown();
@@ -136,6 +173,7 @@ bool initialize(void* module) noexcept {
     }
     g_initialized.store(true, std::memory_order_release);
     log::write(log::Channel::core, log::Level::info, "ev=initialize result=ok");
+    report_elapsed("ev=initialize phase=complete", startedTick, "ok");
     ReleaseSRWLockExclusive(&g_runtimeLock);
     return true;
 }
