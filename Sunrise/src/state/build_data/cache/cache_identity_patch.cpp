@@ -9,7 +9,7 @@
 
 namespace sunrise::state::build_data::cache {
 
-/** Cache file name relative to the owned artifact directory (server_main's constant). */
+/** Cache file name relative to the module directory (server_main's constant). */
 constexpr std::wstring_view kCacheFileSuffix = L"\\Sunrise\\cache\\build_data.bin";
 
 /**
@@ -22,11 +22,10 @@ constexpr std::wstring_view kCacheFileSuffix = L"\\Sunrise\\cache\\build_data.bi
  * @return True when the file is on disk under its final name with the new hash.
  */
 bool restamp_equipment_hash(std::uint64_t hash) noexcept {
-    core::path::Buffer directory{};
-    if (!core::path::artifact_directory(GetModuleHandleW(nullptr), directory)) {
+    core::path::Buffer path{};
+    if (!core::path::module_directory(GetModuleHandleW(nullptr), path)) {
         return false;
     }
-    core::path::Buffer path = directory;
     if (!core::path::append(path, kCacheFileSuffix)) {
         return false;
     }
