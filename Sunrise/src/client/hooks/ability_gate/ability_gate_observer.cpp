@@ -33,8 +33,10 @@ constexpr std::uint32_t kNoDefinitionHash = 0x811C9DC5U;
 /** One log line's capacity. */
 constexpr std::size_t kLineCapacity = 192;
 
-/** Exact ABI from the L3 decompile: one index, one bool. */
-using FlagTest = bool(__fastcall*)(std::uint32_t) noexcept;
+/** Exact ABI from the L3 decompile: the byte test takes the account-ish pointer + the
+ *  index (the first observed arg = a heap pointer, so the index rides the second
+ *  register). Two-register signature is safe for the fastcall either way. */
+using FlagTest = bool(__fastcall*)(void*, std::uintptr_t) noexcept;
 /** Exact ABI from the L1 decompile: payload source + output, return unused. */
 using AbilityEmit = void(__fastcall*)(void*, void*) noexcept;
 
@@ -53,20 +55,23 @@ void* caller_address() noexcept {
     return _ReturnAddress();
 }
 
-/** Runs the original flag test, then logs the index, the byte, the result and the caller. */
-__declspec(noinline) bool __fastcall test_observer(std::uint32_t idx) noexcept {
+/** Runs the original flag test, then logs the raw registers and the caller. No
+ *  dereference happens here — pass 2's byte read (base + 0x742C + idx) crashed the
+ *  boot when the args were not the expected (pointer, index) pair. The raw dump is
+ *  safe on every shape and still names the caller. */
+__declspec(noinline) bool __fastcall test_observer(void* rcx, std::uintptr_t rdx) noexcept {
     const FlagTest original = g_originalTest.load(std::memory_order_acquire);
-    const bool result = original != nullptr ? original(idx) : false;
+    const bool result = original != nullptr ? original(rcx, rdx) : false;
     const std::uintptr_t caller = reinterpret_cast<std::uintptr_t>(caller_address());
-    const std::uintptr_t base = module_base();
-    const std::uintptr_t callerRva =
-        caller >= base ? caller - base : 0;
+    const std::uintptr_t moduleBase = module_base();
+    const std::uintptr_t callerRva = caller >= moduleBase ? caller - moduleBase : 0;
     std::array<char, kLineCapacity> line{};
     const int written = std::snprintf(
         line.data(),
         line.size(),
-        "ev=ability_gate stage=flag_test idx=%u result=%u caller=+0x%llX",
-        static_cast<unsigned>(idx),
+        "ev=ability_gate stage=flag_test rcx=0x%llX rdx=0x%llX result=%u caller=+0x%llX",
+        static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(rcx)),
+        static_cast<unsigned long long>(rdx),
         static_cast<unsigned>(result),
         static_cast<unsigned long long>(callerRva));
     if (written > 0) {
