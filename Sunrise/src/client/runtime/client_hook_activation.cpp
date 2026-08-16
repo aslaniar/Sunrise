@@ -164,9 +164,10 @@ void clear_game_targets() noexcept {
     // so every server push the client decodes is named. Internal no-op while externalServer
     // is disabled.
     (void)hooks::handle_message::install();
-    // The inventory gate observers: log-only detours on the acquiredFlags byte test and the
-    // opcode-2100 ability emitter, capturing the caller RVAs that name the un-analyzed CUI
-    // gate chain. Internal no-op while externalServer is disabled.
+    // The inventory gate observers: log-only detours on the acquiredFlags byte test, the
+    // opcode-2100 ability emitter, and the 702 sync-header serializer, capturing the
+    // caller RVAs that name the un-analyzed CUI gate chain and the definition-hash slots
+    // for the mode-pair diff. They attach in BOTH modes (in-process and external).
     (void)hooks::ability_gate::install();
     // The R1 schema-hash close: log-only observer on the schema-decode entry, so the
     // client's own player-baseline decode prints the real schemaTagHash (the

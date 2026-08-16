@@ -1,6 +1,6 @@
 /**
- * Log-only observers on the gate-side primitives (see the header). Both detours call the
- * original first, then log one line. Nothing is changed, so the hooks are safe on every
+ * Log-only observers on the gate-side primitives (see the header). Every detour calls the
+ * original first, then logs one line. Nothing is changed, so the hooks are safe on every
  * path. The caller capture = the return address the detour saw, which resolves to the
  * un-analyzed CUI-region caller via (caller - base) in Ghidra.
  */
@@ -17,7 +17,6 @@
 #include <span>
 
 #include "../../../core/logging/log.h"
-#include "../../../core/settings/settings.h"
 #include "../../diagnostics/module_range.h"
 #include "../../hooking/detour.h"
 
@@ -28,10 +27,12 @@ namespace {
 constexpr std::uintptr_t kFlagTestRva = 0xE06070;
 /** Image RVA of FUN_140F2B690, the opcode-2100 ability-change emitter. */
 constexpr std::uintptr_t kAbilityEmitRva = 0xF2B690;
+/** Image RVA of FUN_1405308C0, the opcode-702 sync-header serializer (8-u32 copy). */
+constexpr std::uintptr_t kSyncHeaderRva = 0x5308C0;
 /** The definition-hash default the offline build never resolves away from. */
 constexpr std::uint32_t kNoDefinitionHash = 0x811C9DC5U;
 /** One log line's capacity. */
-constexpr std::size_t kLineCapacity = 192;
+constexpr std::size_t kLineCapacity = 256;
 
 /** Exact ABI from the L3 decompile: the byte test takes the account-ish pointer + the
  *  index (the first observed arg = a heap pointer, so the index rides the second
@@ -39,11 +40,15 @@ constexpr std::size_t kLineCapacity = 192;
 using FlagTest = bool(__fastcall*)(void*, std::uintptr_t) noexcept;
 /** Exact ABI from the L1 decompile: payload source + output, return unused. */
 using AbilityEmit = void(__fastcall*)(void*, void*) noexcept;
+/** Exact ABI from the L1 decompile: header source + output buffer (the emitter's local). */
+using SyncHeader = void(__fastcall*)(void*, void*) noexcept;
 
 hooking::detour::Handle g_testHandle{};
 hooking::detour::Handle g_emitHandle{};
+hooking::detour::Handle g_syncHandle{};
 std::atomic<FlagTest> g_originalTest{nullptr};
 std::atomic<AbilityEmit> g_originalEmit{nullptr};
+std::atomic<SyncHeader> g_originalSync{nullptr};
 
 /** @return The module base, for the caller-RVA line. */
 std::uintptr_t module_base() noexcept {
@@ -108,6 +113,47 @@ __declspec(noinline) void __fastcall emit_observer(void* payloadSource, void* ou
     }
 }
 
+/** Runs the original 702 serializer, then logs the 8 header u32s it wrote into the
+ *  output buffer — the definition-hash slot sampler for the mode-pair diff. The read is
+ *  safe by construction: the buffer is the one the original itself just filled (a
+ *  decompile-verified two-pointer ABI), so no assumed register shape is dereferenced. */
+__declspec(noinline) void __fastcall sync_observer(void* headerSource, void* out) noexcept {
+    const SyncHeader original = g_originalSync.load(std::memory_order_acquire);
+    if (original != nullptr) {
+        original(headerSource, out);
+    }
+    const std::uintptr_t caller = reinterpret_cast<std::uintptr_t>(caller_address());
+    const std::uintptr_t base = module_base();
+    const std::uintptr_t callerRva = caller >= base ? caller - base : 0;
+    std::array<std::uint32_t, 8> header{};
+    if (out != nullptr) {
+        const std::uint32_t* words = static_cast<const std::uint32_t*>(out);
+        for (std::size_t i = 0; i < header.size(); ++i) {
+            header[i] = words[i];
+        }
+    }
+    std::array<char, kLineCapacity> line{};
+    const int written = std::snprintf(
+        line.data(),
+        line.size(),
+        "ev=ability_gate stage=sync_header h0=%08X h1=%08X h2=%08X h3=%08X h4=%08X h5=%08X "
+        "h6=%08X h7=%08X caller=+0x%llX",
+        static_cast<unsigned>(header[0]),
+        static_cast<unsigned>(header[1]),
+        static_cast<unsigned>(header[2]),
+        static_cast<unsigned>(header[3]),
+        static_cast<unsigned>(header[4]),
+        static_cast<unsigned>(header[5]),
+        static_cast<unsigned>(header[6]),
+        static_cast<unsigned>(header[7]),
+        static_cast<unsigned long long>(callerRva));
+    if (written > 0) {
+        core::log::write(core::log::Channel::client,
+                         core::log::Level::info,
+                         {line.data(), static_cast<std::size_t>(written)});
+    }
+}
+
 /** @param reason Key naming the step that failed. @return False, for a direct return. */
 [[nodiscard]] bool fail_install(const char* reason) noexcept {
     std::array<char, 96> line{};
@@ -125,12 +171,10 @@ __declspec(noinline) void __fastcall emit_observer(void* payloadSource, void* ou
 
 } // namespace
 
-/** Attaches both observers when the external-server switch is on. */
+/** Attaches the three observers in either server mode (the mode-pair diff needs the same
+ *  instruments in-process and external). */
 bool install() noexcept {
-    if (!core::settings::get().client.externalServer.enabled) {
-        return true;
-    }
-    if (g_testHandle.attached && g_emitHandle.attached) {
+    if (g_testHandle.attached && g_emitHandle.attached && g_syncHandle.attached) {
         return true;
     }
     std::byte* const base = reinterpret_cast<std::byte*>(GetModuleHandleW(nullptr));
@@ -141,23 +185,29 @@ bool install() noexcept {
     diagnostics::ModuleRange range{};
     if (!diagnostics::module_range(reinterpret_cast<HMODULE>(base), range)
         || !diagnostics::contains(range, baseValue + kFlagTestRva)
-        || !diagnostics::contains(range, baseValue + kAbilityEmitRva)) {
+        || !diagnostics::contains(range, baseValue + kAbilityEmitRva)
+        || !diagnostics::contains(range, baseValue + kSyncHeaderRva)) {
         return fail_install("target");
     }
     const hooking::detour::Spec testSpec{base + kFlagTestRva,
                                          reinterpret_cast<void*>(&test_observer)};
     const hooking::detour::Spec emitSpec{base + kAbilityEmitRva,
                                          reinterpret_cast<void*>(&emit_observer)};
-    const std::array<hooking::detour::Spec, 2> specs{testSpec, emitSpec};
-    std::array<hooking::detour::Handle, 2> handles{};
+    const hooking::detour::Spec syncSpec{base + kSyncHeaderRva,
+                                         reinterpret_cast<void*>(&sync_observer)};
+    const std::array<hooking::detour::Spec, 3> specs{testSpec, emitSpec, syncSpec};
+    std::array<hooking::detour::Handle, 3> handles{};
     if (!hooking::detour::install(specs, handles)) {
         return fail_install("attach");
     }
     g_testHandle = handles[0];
     g_emitHandle = handles[1];
+    g_syncHandle = handles[2];
     g_originalTest.store(reinterpret_cast<FlagTest>(g_testHandle.original),
                          std::memory_order_release);
     g_originalEmit.store(reinterpret_cast<AbilityEmit>(g_emitHandle.original),
+                         std::memory_order_release);
+    g_originalSync.store(reinterpret_cast<SyncHeader>(g_syncHandle.original),
                          std::memory_order_release);
     core::log::write(core::log::Channel::client,
                      core::log::Level::info,
@@ -165,20 +215,23 @@ bool install() noexcept {
     return true;
 }
 
-/** Detaches both observers and drops their trampolines. */
+/** Detaches all three observers and drops their trampolines. */
 bool uninstall() noexcept {
     (void)hooking::detour::uninstall(g_testHandle);
     (void)hooking::detour::uninstall(g_emitHandle);
+    (void)hooking::detour::uninstall(g_syncHandle);
     g_testHandle = {};
     g_emitHandle = {};
+    g_syncHandle = {};
     g_originalTest.store(nullptr, std::memory_order_release);
     g_originalEmit.store(nullptr, std::memory_order_release);
+    g_originalSync.store(nullptr, std::memory_order_release);
     return true;
 }
 
-/** @return True while either observer is attached. */
+/** @return True while any observer is attached. */
 bool is_installed() noexcept {
-    return g_testHandle.attached || g_emitHandle.attached;
+    return g_testHandle.attached || g_emitHandle.attached || g_syncHandle.attached;
 }
 
 } // namespace sunrise::client::hooks::ability_gate

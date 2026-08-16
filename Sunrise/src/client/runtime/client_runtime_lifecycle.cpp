@@ -59,7 +59,6 @@ bool shutdown() noexcept {
     hooks::teleport::uninstall();
     hooks::queuez::uninstall();
     hooks::ability_gate::uninstall();
-    hooks::ability_gate::uninstall();
     hooks::handle_message::uninstall();
     hooks::schema_capture::uninstall();
     if (!hooks::config_getter::uninstall()) {
