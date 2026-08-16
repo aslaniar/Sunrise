@@ -91,6 +91,14 @@ struct CharacterState {
     std::uint8_t classAbilityEntry{kDefaultClassAbilityEntry};
     /** Authored loadout keyed only by stable semantic equipment slots. */
     account::inventory::Equipment equipment;
+    /**
+     * Non-equipped character inventory, placed into bucket-run rows at resolve time
+     * (the subclass picks ride here). Empty items live at the tail past
+     * storageItemCount.
+     */
+    std::array<account::inventory::Item, account::inventory::kCharacterStorageCapacity>
+        storageItems{};
+    std::size_t storageItemCount{};
 };
 
 /** Account identity shared by backend object families. */

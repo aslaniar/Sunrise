@@ -65,20 +65,26 @@ constexpr std::int32_t kOccupiedRowWatermark = 1;
         const loadout::ResolvedItem& item = resolvedLoadout.items[index];
         const instance::ResolvedInstance& itemInstance = item.instance;
         const auto priorSoidsEnd = instanceSoids.cbegin() + static_cast<std::ptrdiff_t>(index);
-        if (item.inventoryRow >= occupiedRows.size()
-            || item.equipmentSlot >= occupiedEquipmentSlots.size() || item.quantity <= 0
+        if (item.inventoryRow >= occupiedRows.size() || item.quantity <= 0
             || itemInstance.instanceSoid == 0 || itemInstance.bounds.itemDefinitionCount == 0
             || itemInstance.bounds.itemDefinitionCount > instance::layout::kDefinitionIndexCapacity
             || itemInstance.baseDefinitionIndex == kEmptyDefinitionIndex
             || itemInstance.baseDefinitionIndex >= itemInstance.bounds.itemDefinitionCount
-            || occupiedRows[item.inventoryRow] || occupiedEquipmentSlots[item.equipmentSlot]
+            || occupiedRows[item.inventoryRow]
             || std::find(instanceSoids.cbegin(), priorSoidsEnd, itemInstance.instanceSoid)
                    != priorSoidsEnd
             || (index != 0 && resolvedLoadout.items[index - 1].inventoryRow >= item.inventoryRow)) {
             return false;
         }
+        if (item.equipped
+            && (item.equipmentSlot >= occupiedEquipmentSlots.size()
+                || occupiedEquipmentSlots[item.equipmentSlot])) {
+            return false;
+        }
+        if (item.equipped) {
+            occupiedEquipmentSlots[item.equipmentSlot] = true;
+        }
         occupiedRows[item.inventoryRow] = true;
-        occupiedEquipmentSlots[item.equipmentSlot] = true;
         instanceSoids[index] = itemInstance.instanceSoid;
     }
     return true;
@@ -97,11 +103,18 @@ summary_matches_loadout(const loadout::ResolvedLoadout& resolvedLoadout,
     for (const std::optional<state::equipment::light::ItemScore>& score : evaluation.character) {
         summaryItemCount += static_cast<std::size_t>(score.has_value());
     }
-    if (summaryItemCount != resolvedLoadout.itemCount) {
+    std::size_t equippedItemCount = 0;
+    for (std::size_t index = 0; index < resolvedLoadout.itemCount; ++index) {
+        equippedItemCount += static_cast<std::size_t>(resolvedLoadout.items[index].equipped);
+    }
+    if (summaryItemCount != equippedItemCount) {
         return false;
     }
     for (std::size_t index = 0; index < resolvedLoadout.itemCount; ++index) {
         const loadout::ResolvedItem& item = resolvedLoadout.items[index];
+        if (!item.equipped) {
+            continue;
+        }
         const auto& score = evaluation.character[item.equipmentSlot];
         if (!score.has_value() || score->definitionIndex != item.instance.baseDefinitionIndex) {
             return false;
@@ -165,7 +178,9 @@ bool encode(const state::CharacterState& state,
         object.newItemFlags[item.inventoryRow / kBitsPerFlagByte] |=
             std::byte{1U} << (item.inventoryRow % kBitsPerFlagByte);
         object.instanceProgressWatermarks[item.inventoryRow] = kOccupiedRowWatermark;
-        object.equippedInstanceSoids[item.equipmentSlot] = item.instance.instanceSoid;
+        if (item.equipped) {
+            object.equippedInstanceSoids[item.equipmentSlot] = item.instance.instanceSoid;
+        }
     }
 
     // Commit only after validation so callers never receive a partially initialized object.

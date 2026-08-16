@@ -111,6 +111,21 @@ bool resolve_instances(const state::AccountState& account,
         }
         ++itemCount;
     }
+    // Non-equipped storage items resolve through the same chain and share the row map; the
+    // bucket descriptor owns their placement (bucket 16 -> the 110..119 subclass run).
+    for (std::size_t storageIndex = 0; storageIndex < character.storageItemCount;
+         ++storageIndex) {
+        const authored_inventory::Item& authored = character.storageItems[storageIndex];
+        Candidate candidate{};
+        if (itemCount >= resolved.size()
+            || !resolve_item(
+                authored, character, itemDefinitionCount, socketEntryListCount, candidate)
+            || !place_item(candidate, occupied, resolved[itemCount])) {
+            return false;
+        }
+        resolved[itemCount].equipped = false;
+        ++itemCount;
+    }
     std::sort(resolved.begin(),
               resolved.begin() + static_cast<std::ptrdiff_t>(itemCount),
               [](const ResolvedItem& first, const ResolvedItem& second) {
@@ -151,6 +166,8 @@ bool resolve(const state::AccountState& account,
         nativeToSemantic{};
     std::array<Candidate, kItemCapacity> selectedCandidates{};
     std::array<bool, kItemCapacity> selectedPresent{};
+    std::array<Candidate, authored_inventory::kCharacterStorageCapacity> storageCandidates{};
+    std::size_t selectedStorageCount = 0;
     std::array<std::uint64_t, state::kCharacterCapacity * kItemCapacity> instanceSoids{};
     std::size_t instanceSoidCount = 0;
     // Every character contributes to one stable semantic-to-native slot contract.
@@ -189,6 +206,31 @@ bool resolve(const state::AccountState& account,
                 selectedPresent[semanticIndex] = true;
             }
         }
+        // Storage items share the account-wide instance-soid uniqueness but own no semantic
+        // or native equipment slot.
+        for (std::size_t storageIndex = 0; storageIndex < character.storageItemCount;
+             ++storageIndex) {
+            const authored_inventory::Item& authored = character.storageItems[storageIndex];
+            const auto instanceSoidEnd =
+                instanceSoids.cbegin() + static_cast<std::ptrdiff_t>(instanceSoidCount);
+            if (std::find(instanceSoids.cbegin(), instanceSoidEnd, authored.instanceSoid)
+                != instanceSoidEnd) {
+                return false;
+            }
+            instanceSoids[instanceSoidCount++] = authored.instanceSoid;
+            Candidate candidate{};
+            if (!resolve_item(
+                    authored, character, itemDefinitionCount, socketEntryListCount, candidate)) {
+                return false;
+            }
+            if (characterIndex == selectedCharacterIndex) {
+                if (selectedStorageCount >= storageCandidates.size()) {
+                    return false;
+                }
+                storageCandidates[selectedStorageCount] = candidate;
+                ++selectedStorageCount;
+            }
+        }
     }
 
     ResolvedLoadout staged{};
@@ -203,6 +245,15 @@ bool resolve(const state::AccountState& account,
                 selectedCandidates[semanticIndex], occupied, staged.items[staged.itemCount])) {
             return false;
         }
+        ++staged.itemCount;
+    }
+    for (std::size_t storageIndex = 0; storageIndex < selectedStorageCount; ++storageIndex) {
+        if (staged.itemCount >= staged.items.size()
+            || !place_item(
+                storageCandidates[storageIndex], occupied, staged.items[staged.itemCount])) {
+            return false;
+        }
+        staged.items[staged.itemCount].equipped = false;
         ++staged.itemCount;
     }
     std::sort(staged.items.begin(),

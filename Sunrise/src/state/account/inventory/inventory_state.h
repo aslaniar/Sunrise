@@ -52,6 +52,13 @@ struct Sockets {
 /** Account-wide profile items an account may declare. */
 inline constexpr std::size_t kProfileItemCapacity = 32;
 
+/**
+ * Non-equipped character inventory rows a character may carry in addition to the 16
+ * authored equipment slots. Bucket placement happens at resolve time, so this bound is a
+ * State ceiling, not a wire limit (the character object accepts 350 rows).
+ */
+inline constexpr std::size_t kCharacterStorageCapacity = 32;
+
 /** One authored account-wide item, placed by the inventory bucket its definition names. */
 struct ProfileItem {
     std::uint32_t definitionHash{};

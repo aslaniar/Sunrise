@@ -21,7 +21,10 @@ bool valid(const AccountState& state) noexcept {
         return false;
     }
     bool selected = false;
-    std::array<std::uint64_t, kCharacterCapacity * inventory::kEquipmentSlotCount> itemSoids{};
+    std::array<std::uint64_t,
+               kCharacterCapacity
+                   * (inventory::kEquipmentSlotCount + inventory::kCharacterStorageCapacity)>
+        itemSoids{};
     std::size_t itemSoidCount = 0;
     for (std::size_t index = 0; index < state.characterCount; ++index) {
         const CharacterState& character = state.characters[index];
@@ -30,7 +33,8 @@ bool valid(const AccountState& state) noexcept {
             || character.gender > CharacterGender::female
             || character.characterClass > CharacterClass::warlock
             || !std::isfinite(character.appearanceValue)
-            || !inventory::valid(character.equipment)) {
+            || !inventory::valid(character.equipment)
+            || character.storageItemCount > character.storageItems.size()) {
             return false;
         }
         selected = selected || character.selected;
@@ -50,6 +54,18 @@ bool valid(const AccountState& state) noexcept {
                 return false;
             }
             itemSoids[itemSoidCount++] = item->instanceSoid;
+        }
+        for (std::size_t storageIndex = 0; storageIndex < character.storageItemCount;
+             ++storageIndex) {
+            const inventory::Item& item = character.storageItems[storageIndex];
+            if (!inventory::valid(item)) {
+                return false;
+            }
+            const auto end = itemSoids.cbegin() + static_cast<std::ptrdiff_t>(itemSoidCount);
+            if (std::find(itemSoids.cbegin(), end, item.instanceSoid) != end) {
+                return false;
+            }
+            itemSoids[itemSoidCount++] = item.instanceSoid;
         }
     }
     return true;

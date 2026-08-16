@@ -14,9 +14,10 @@ namespace sunrise::server::bap::encrypted::push::snapshot {
 /** Account and selected-character identity take the first two family-four descriptors. */
 inline constexpr std::size_t kFamily4IdentityObjectCount = 2;
 /**
- * Family four carries both identity objects plus one item record per equipped item, for every
- * character. The equip-summary reader looks up an instance with no null check, so no character in
- * the roster may point at a record this snapshot leaves out.
+ * Family four carries both identity objects plus one item record per resolved item, for every
+ * character (equipped items and non-equipped storage rows alike). The equip-summary reader
+ * looks up an instance with no null check, so no character in the roster may point at a record
+ * this snapshot leaves out.
  */
 inline constexpr std::size_t kObjectCapacity =
     kFamily4IdentityObjectCount

@@ -231,14 +231,22 @@ bool seed_character(std::size_t index, const state::CharacterState& character) n
         "INSERT INTO items (account_id, character_index, definition_hash, instance_soid, "
         "quantity, bucket_id, equipment_slot, instance_level, in_equipment, socket_policy) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?);";
+    static constexpr char kStorageItemSql[] =
+        "INSERT INTO items (account_id, character_index, definition_hash, instance_soid, "
+        "quantity, bucket_id, equipment_slot, instance_level, in_equipment, socket_policy) "
+        "VALUES (?, ?, ?, ?, ?, ?, NULL, ?, 0, ?);";
     static constexpr char kPlugSql[] =
         "INSERT INTO item_plugs (item_id, lane, plug_definition_hash) VALUES (?, ?, ?);";
     sqlite3_stmt* itemStatement = nullptr;
+    sqlite3_stmt* storageStatement = nullptr;
     sqlite3_stmt* plugStatement = nullptr;
     if (sqlite3_prepare_v2(g_database, kItemSql, -1, &itemStatement, nullptr) != SQLITE_OK
+        || sqlite3_prepare_v2(g_database, kStorageItemSql, -1, &storageStatement, nullptr)
+               != SQLITE_OK
         || sqlite3_prepare_v2(g_database, kPlugSql, -1, &plugStatement, nullptr) != SQLITE_OK) {
         fail("seed_equipment_prepare", error_text());
         sqlite3_finalize(itemStatement);
+        sqlite3_finalize(storageStatement);
         sqlite3_finalize(plugStatement);
         return false;
     }
@@ -253,6 +261,7 @@ bool seed_character(std::size_t index, const state::CharacterState& character) n
         if (!state::build_data::find_item_definition_hash(item->definitionHash, definition)) {
             fail("seed_equipment_resolve", "definition hash not in build data");
             sqlite3_finalize(itemStatement);
+            sqlite3_finalize(storageStatement);
             sqlite3_finalize(plugStatement);
             return false;
         }
@@ -281,6 +290,7 @@ bool seed_character(std::size_t index, const state::CharacterState& character) n
         if (!itemOk) {
             fail("seed_equipment_item", error_text());
             sqlite3_finalize(itemStatement);
+            sqlite3_finalize(storageStatement);
             sqlite3_finalize(plugStatement);
             return false;
         }
@@ -303,12 +313,80 @@ bool seed_character(std::size_t index, const state::CharacterState& character) n
             if (!plugOk) {
                 fail("seed_plug", error_text());
                 sqlite3_finalize(itemStatement);
+                sqlite3_finalize(storageStatement);
+                sqlite3_finalize(plugStatement);
+                return false;
+            }
+        }
+    }
+    // Non-equipped storage rows seed with in_equipment=0 and no semantic equipment slot; the
+    // bucket_id comes from the definition exactly like the equipped rows above.
+    for (std::size_t storageIndex = 0; storageIndex < character.storageItemCount;
+         ++storageIndex) {
+        const state::account::inventory::Item& item = character.storageItems[storageIndex];
+        state::build_data::items::Definition definition{};
+        if (!state::build_data::find_item_definition_hash(item.definitionHash, definition)) {
+            fail("seed_storage_resolve", "definition hash not in build data");
+            sqlite3_finalize(itemStatement);
+            sqlite3_finalize(storageStatement);
+            sqlite3_finalize(plugStatement);
+            return false;
+        }
+        std::array<char, 16> hashText{};
+        std::array<char, 24> soidText{};
+        format_hash(item.definitionHash, hashText);
+        format_soid(item.instanceSoid, soidText);
+        const bool storageOk =
+            bind_text(storageStatement, 1, seed_account_id())
+            && sqlite3_bind_int(storageStatement, 2, static_cast<int>(index)) == SQLITE_OK
+            && bind_text(storageStatement, 3, {hashText.data(), std::strlen(hashText.data())})
+            && bind_text(storageStatement, 4, {soidText.data(), std::strlen(soidText.data())})
+            && sqlite3_bind_int(storageStatement, 5, item.quantity) == SQLITE_OK
+            && sqlite3_bind_int(storageStatement, 6, definition.bucketId) == SQLITE_OK
+            && sqlite3_bind_int(storageStatement, 7, item.level) == SQLITE_OK
+            && sqlite3_bind_int(storageStatement,
+                                8,
+                                item.sockets.policy
+                                        == state::account::inventory::SocketPolicy::authored
+                                    ? 1
+                                    : 0)
+                   == SQLITE_OK
+            && step_done(storageStatement);
+        sqlite3_reset(storageStatement);
+        if (!storageOk) {
+            fail("seed_storage_item", error_text());
+            sqlite3_finalize(itemStatement);
+            sqlite3_finalize(storageStatement);
+            sqlite3_finalize(plugStatement);
+            return false;
+        }
+        const sqlite3_int64 itemId = sqlite3_last_insert_rowid(g_database);
+        for (std::size_t lane = 0; lane < item.sockets.plugCount; ++lane) {
+            const std::optional<std::uint32_t>& plug = item.sockets.plugs[lane];
+            std::array<char, 16> plugText{};
+            if (plug.has_value()) {
+                format_hash(*plug, plugText);
+            }
+            const bool plugOk =
+                sqlite3_bind_int64(plugStatement, 1, itemId) == SQLITE_OK
+                && sqlite3_bind_int(plugStatement, 2, static_cast<int>(lane)) == SQLITE_OK
+                && bind_text_or_null(plugStatement,
+                                     3,
+                                     {plugText.data(), std::strlen(plugText.data())},
+                                     plug.has_value())
+                && step_done(plugStatement);
+            sqlite3_reset(plugStatement);
+            if (!plugOk) {
+                fail("seed_storage_plug", error_text());
+                sqlite3_finalize(itemStatement);
+                sqlite3_finalize(storageStatement);
                 sqlite3_finalize(plugStatement);
                 return false;
             }
         }
     }
     sqlite3_finalize(itemStatement);
+    sqlite3_finalize(storageStatement);
     sqlite3_finalize(plugStatement);
     return true;
 }
@@ -731,6 +809,121 @@ bool load_equipment(std::string_view accountId,
     return ok;
 }
 
+/** Loads one character row's non-equipped storage items from the items and plugs tables. */
+bool load_storage(std::string_view accountId,
+                  std::size_t characterIndex,
+                  state::CharacterState& character) noexcept {
+    static constexpr char kItemSql[] =
+        "SELECT item_id, instance_soid, definition_hash, instance_level, quantity, "
+        "socket_policy FROM items WHERE account_id = ? AND character_index = ? "
+        "AND in_equipment = 0 ORDER BY item_id;";
+    static constexpr char kPlugSql[] =
+        "SELECT lane, plug_definition_hash FROM item_plugs WHERE item_id = ? ORDER BY lane;";
+    sqlite3_stmt* itemStatement = nullptr;
+    sqlite3_stmt* plugStatement = nullptr;
+    if (sqlite3_prepare_v2(g_database, kItemSql, -1, &itemStatement, nullptr) != SQLITE_OK
+        || sqlite3_prepare_v2(g_database, kPlugSql, -1, &plugStatement, nullptr) != SQLITE_OK) {
+        fail("load_storage_prepare", error_text());
+        sqlite3_finalize(itemStatement);
+        sqlite3_finalize(plugStatement);
+        return false;
+    }
+    bool ok = bind_text(itemStatement, 1, accountId)
+              && sqlite3_bind_int(itemStatement, 2, static_cast<int>(characterIndex)) == SQLITE_OK;
+    while (ok) {
+        const int code = sqlite3_step(itemStatement);
+        if (code == SQLITE_DONE) {
+            break;
+        }
+        if (code != SQLITE_ROW) {
+            fail("load_storage_step", error_text());
+            ok = false;
+            break;
+        }
+        if (character.storageItemCount >= character.storageItems.size()) {
+            fail("load_storage_capacity", "storage item count exceeds the State ceiling");
+            ok = false;
+            break;
+        }
+        const sqlite3_int64 itemId = sqlite3_column_int64(itemStatement, 0);
+        std::uint64_t soid = 0;
+        std::uint64_t hash = 0;
+        const auto* soidText = sqlite3_column_text(itemStatement, 1);
+        const auto* hashText = sqlite3_column_text(itemStatement, 2);
+        if (soidText == nullptr || hashText == nullptr
+            || !parse_hex({reinterpret_cast<const char*>(soidText),
+                           static_cast<std::size_t>(sqlite3_column_bytes(itemStatement, 1))},
+                          soid)
+            || !parse_hex({reinterpret_cast<const char*>(hashText),
+                           static_cast<std::size_t>(sqlite3_column_bytes(itemStatement, 2))},
+                          hash)) {
+            ok = false;
+            break;
+        }
+        state::account::inventory::Item& item = character.storageItems[character.storageItemCount];
+        item.instanceSoid = soid;
+        item.definitionHash = static_cast<std::uint32_t>(hash);
+        item.level = sqlite3_column_int(itemStatement, 3);
+        item.quantity = sqlite3_column_int(itemStatement, 4);
+        item.sockets.policy = sqlite3_column_int(itemStatement, 5) != 0
+                                  ? state::account::inventory::SocketPolicy::authored
+                                  : state::account::inventory::SocketPolicy::nativeDefaults;
+        item.sockets.plugCount = 0;
+        if (sqlite3_bind_int64(plugStatement, 1, itemId) != SQLITE_OK) {
+            fail("load_storage_plugs_bind", error_text());
+            ok = false;
+            break;
+        }
+        for (;;) {
+            const int plugCode = sqlite3_step(plugStatement);
+            if (plugCode == SQLITE_DONE) {
+                break;
+            }
+            if (plugCode != SQLITE_ROW) {
+                fail("load_storage_plugs_step", error_text());
+                ok = false;
+                break;
+            }
+            const int lane = sqlite3_column_int(plugStatement, 0);
+            if (lane < 0 || static_cast<std::size_t>(lane) >= item.sockets.plugs.size()) {
+                ok = false;
+                break;
+            }
+            if (lane + 1 > static_cast<int>(item.sockets.plugCount)) {
+                item.sockets.plugCount = static_cast<std::size_t>(lane + 1);
+            }
+            const auto* plugText = sqlite3_column_text(plugStatement, 1);
+            if (plugText == nullptr) {
+                item.sockets.plugs[static_cast<std::size_t>(lane)].reset();
+            } else {
+                std::uint64_t plug = 0;
+                if (!parse_hex(
+                        {reinterpret_cast<const char*>(plugText),
+                         static_cast<std::size_t>(sqlite3_column_bytes(plugStatement, 1))},
+                        plug)) {
+                    ok = false;
+                    break;
+                }
+                item.sockets.plugs[static_cast<std::size_t>(lane)] =
+                    static_cast<std::uint32_t>(plug);
+            }
+        }
+        sqlite3_reset(plugStatement);
+        if (!ok) {
+            break;
+        }
+        if (!state::account::inventory::valid(item.sockets)
+            || !state::account::inventory::valid(item)) {
+            ok = false;
+            break;
+        }
+        ++character.storageItemCount;
+    }
+    sqlite3_finalize(itemStatement);
+    sqlite3_finalize(plugStatement);
+    return ok;
+}
+
 } // namespace
 
 /** Opens and migrates the state database, seeding it from settings when empty. */
@@ -1053,7 +1246,8 @@ bool load_account(state::AccountState& account,
     }
 
     for (std::size_t index = 0; ok && index < account.characterCount; ++index) {
-        ok = load_equipment(seed_account_id(), index, account.characters[index]);
+        ok = load_equipment(seed_account_id(), index, account.characters[index])
+             && load_storage(seed_account_id(), index, account.characters[index]);
     }
     if (!ok) {
         ReleaseSRWLockExclusive(&g_lock);
@@ -1196,8 +1390,25 @@ bool write_back() noexcept {
         ReleaseSRWLockExclusive(&g_lock);
         return false;
     }
-    bool ok = exec("BEGIN;") && exec("DELETE FROM item_plugs;") && exec("DELETE FROM items;")
-              && exec("DELETE FROM characters;") && exec("DELETE FROM flags;")
+    // Publish-scoped deletes (the L6 design): the publish owns exactly the seed account's
+    // equipped and profile item rows; non-equipped character rows (the storage closet) and
+    // any other account's rows are inert and must survive the write-back. item_plugs rows
+    // follow their items via the ON DELETE CASCADE foreign key, so no global plug delete
+    // exists here (one would wipe storage plugs).
+    std::array<char, 160> deleteEquippedSql{};
+    std::array<char, 160> deleteProfileSql{};
+    std::array<char, 160> deleteCharactersSql{};
+    const std::string_view accountId = seed_account_id();
+    (void)std::snprintf(deleteEquippedSql.data(), deleteEquippedSql.size(),
+                        "DELETE FROM items WHERE account_id = '%s' AND in_equipment = 1;",
+                        accountId.data());
+    (void)std::snprintf(deleteProfileSql.data(), deleteProfileSql.size(),
+                        "DELETE FROM items WHERE account_id = '%s' AND character_index IS NULL;",
+                        accountId.data());
+    (void)std::snprintf(deleteCharactersSql.data(), deleteCharactersSql.size(),
+                        "DELETE FROM characters WHERE account_id = '%s';", accountId.data());
+    bool ok = exec("BEGIN;") && exec(deleteEquippedSql.data()) && exec(deleteProfileSql.data())
+              && exec(deleteCharactersSql.data()) && exec("DELETE FROM flags;")
               && exec("DELETE FROM objectives;") && exec("DELETE FROM family5_overrides;")
               && exec("DELETE FROM entitlements;") && seed_profile_items_from(account)
               && seed_family5_from(family5) && seed_entitlements_from(entitlements)
