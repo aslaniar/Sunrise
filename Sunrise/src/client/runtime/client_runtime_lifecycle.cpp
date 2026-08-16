@@ -7,6 +7,8 @@
 #include "../hooks/config_getter/config_getter_lifecycle.h"
 #include "../hooks/cursor/runtime.h"
 #include "../hooks/graphics/graphics_hook_lifecycle.h"
+#include "../hooks/handle_message/handle_message_observer.h"
+#include "../hooks/schema_capture/schema_capture_observer.h"
 #include "../hooks/network/runtime.h"
 #include "../hooks/polled_input/runtime.h"
 #include "../hooks/queuez/queuez_hook_lifecycle.h"
@@ -55,6 +57,8 @@ bool shutdown() noexcept {
     hooks::bootflow::uninstall();
     hooks::teleport::uninstall();
     hooks::queuez::uninstall();
+    hooks::handle_message::uninstall();
+    hooks::schema_capture::uninstall();
     if (!hooks::config_getter::uninstall()) {
         ReleaseSRWLockExclusive(&runtime::g_lock);
         return false;

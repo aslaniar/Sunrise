@@ -155,6 +155,8 @@
     <ClCompile Include="src\client\runtime\client_runtime_lifecycle.cpp" />
     <ClCompile Include="src\client\hooks\graphics\discovery\graphics_target_discovery.cpp" />
     <ClCompile Include="src\client\hooks\graphics\graphics_hook_lifecycle.cpp" />
+    <ClCompile Include="src\client\hooks\handle_message\handle_message_observer.cpp" />
+    <ClCompile Include="src\client\hooks\schema_capture\schema_capture_observer.cpp" />
     <ClCompile Include="src\client\hooks\graphics\graphics_hook_replacements.cpp" />
     <ClCompile Include="src\client\hooks\graphics\input\graphics_window_input.cpp" />
     <ClCompile Include="src\client\hooks\graphics\input\graphics_raw_input_window.cpp" />
@@ -244,6 +246,7 @@
     <ClCompile Include="src\client\patterns\game\config_getter\config_getter_signature_bytes.cpp" />
     <ClCompile Include="src\client\hooks\config_getter\config_getter_lifecycle.cpp" />
     <ClCompile Include="src\client\hooks\config_getter\config_getter_answers.cpp" />
+    <ClCompile Include="src\client\hooks\package_validator\package_validator_iv.cpp" />
     <ClCompile Include="src\client\patterns\game\packages\package_key_signature_bytes.cpp" />
     <ClCompile Include="src\client\patterns\game\assert_handler\assert_signature_bytes.cpp" />
     <ClCompile Include="src\client\hooks\network\coordinator\network_call_coordinator.cpp" />
@@ -462,6 +465,7 @@
     <ClCompile Include="src\server\bap\encrypted\push\activity\activity_message_push.cpp" />
     <ClCompile Include="src\server\bap\encrypted\push\activity\activity_roster_push.cpp" />
     <ClCompile Include="src\server\bap\encrypted\push\activity\activity_roster_snapshot.cpp" />
+    <ClCompile Include="src\server\bap\encrypted\push\activity\activity_world_population_push.cpp" />
     <ClCompile Include="src\server\bap\encrypted\push\activity\activity_roster_report.cpp" />
     <ClCompile Include="src\server\bap\encrypted\push\activity\activity_keepalive_seed.cpp" />
     <ClCompile Include="src\server\bap\encrypted\bap_connection_publication.cpp" />
@@ -516,6 +520,7 @@
     <ClCompile Include="src\middleware\bap\activity_message\activity_entity_slot_request_parser.cpp" />
     <ClCompile Include="src\middleware\bap\activity_message\activity_entity_slots_decoder.cpp" />
     <ClCompile Include="src\middleware\bap\activity_message\activity_entity_authority_parser.cpp" />
+    <ClCompile Include="src\middleware\bap\activity_message\activity_entity_baseline.cpp" />
     <ClCompile Include="src\middleware\bap\activity_message\activity_incident_parser.cpp" />
     <ClCompile Include="src\middleware\bap\activity_message\activity_entity_slots_encoder.cpp" />
     <ClCompile Include="src\middleware\bap\certificate.cpp" />
@@ -863,6 +868,7 @@
     <ClInclude Include="src\server\bap\encrypted\bap_connection_publication.h" />
     <ClInclude Include="src\server\bap\encrypted\push\activity\activity_membership_push.h" />
     <ClInclude Include="src\server\bap\encrypted\push\activity\activity_notification_frame.h" />
+    <ClInclude Include="src\server\bap\encrypted\push\activity\activity_world_population_push.h" />
     <ClInclude Include="src\server\bap\encrypted\push\activity\activity_arrival.h" />
     <ClInclude Include="src\server\bap\encrypted\push\activity\internal.h" />
     <ClInclude Include="src\server\bap\encrypted\push\snapshot\internal.h" />
@@ -989,6 +995,9 @@
     <ClInclude Include="src\client\hooks\bootflow\spawn\probe.h" />
     <ClInclude Include="src\client\hooks\config_getter\config_getter_answers.h" />
     <ClInclude Include="src\client\hooks\config_getter\config_getter_lifecycle.h" />
+    <ClInclude Include="src\client\hooks\package_validator\package_validator_iv.h" />
+    <ClInclude Include="src\client\hooks\handle_message\handle_message_observer.h" />
+    <ClInclude Include="src\client\hooks\schema_capture\schema_capture_observer.h" />
     <ClInclude Include="src\client\hooks\egress\lifecycle\internal.h" />
     <ClInclude Include="src\client\hooks\egress\policy\egress_policy_logging.h" />
     <ClInclude Include="src\client\hooks\network\investment\internal.h" />

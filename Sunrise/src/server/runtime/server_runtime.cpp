@@ -5,12 +5,25 @@
 #include "../bap/runtime.h"
 #include "../http/server_http.h"
 #include "../transport/bap_listener.h"
+#if !defined(SUNRISE_STANDALONE_SERVER)
 #include "../ui/runtime/server_ui_module_runtime.h"
+#endif
 
 namespace sunrise::server {
 
 /** Registers Server consumers with the Client networking boundary. */
 bool initialize() noexcept {
+#if defined(SUNRISE_STANDALONE_SERVER)
+    // The standalone process owns the socket directly: there is no Client consumer registry to
+    // register with and no UI page to attach, so the transport is the entire server surface.
+    if (!transport::initialize()) {
+        core::log::write(core::log::Channel::server,
+                         core::log::Level::warn,
+                         "ev=transport stage=listen result=fail");
+        return false;
+    }
+    return true;
+#else
     if (!client::network::register_http_consumer(&http::consume)) {
         return false;
     }
@@ -30,6 +43,7 @@ bool initialize() noexcept {
     // BAP registration failure rolls back the earlier HTTP registration.
     client::network::unregister_http_consumer(&http::consume);
     return false;
+#endif
 }
 
 /** Runs one bounded server service slice. @param now Monotonic tick count. */
@@ -39,11 +53,16 @@ void service(std::uint64_t now) noexcept {
 
 /** Unregisters Server consumers in reverse registration order. */
 void shutdown() noexcept {
+#if defined(SUNRISE_STANDALONE_SERVER)
+    transport::shutdown();
+    bap::shutdown();
+#else
     ui::runtime::shutdown();
     transport::shutdown();
     client::network::unregister_bap_consumer(&bap::consume);
     client::network::unregister_http_consumer(&http::consume);
     bap::shutdown();
+#endif
 }
 
 } // namespace sunrise::server

@@ -4,11 +4,13 @@
 
 #include <algorithm>
 
+#include "../../../../../core/settings/settings.h"
 #include "../../../../../middleware/bap/activity_message/activity_join_result_encoder.h"
 #include "../../../../../middleware/bap/activity_message/entity_slots.h"
 #include "../../../../../middleware/secure_channel/runtime.h"
 #include "activity_global_state_push.h"
 #include "activity_notification_frame.h"
+#include "activity_world_population_push.h"
 
 namespace sunrise::server::bap::encrypted::push::activity {
 namespace {
@@ -94,6 +96,13 @@ bool append_join_notifications(Scratch& scratch,
         if (encoded) {
             middleware::secure_channel::advance_nonce(nonce);
         }
+    }
+    // S2-0 (spec §3.4): after the unchanged join burst, one static-entity baseline push
+    // on the configured carrier, then the patch-epoch bump. Nothing is emitted while
+    // server.worldPopulation is off, so the burst stays byte-identical by default.
+    if (encoded && core::settings::get().server.worldPopulation) {
+        encoded = append_world_population_notifications(
+            scratch, activity.sessionId, key, nonce, response, written);
     }
     if (!encoded) {
         // Never show a first notification when the one that must follow cannot be staged.

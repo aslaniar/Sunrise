@@ -62,4 +62,12 @@ void shutdown() noexcept;
 /** @return A copy of the evaluated content state, read under the lock. */
 [[nodiscard]] InvestmentState investment_snapshot() noexcept;
 
+/**
+ * Replaces the published family-5 override lists with the persisted rows.
+ * Object identity (objectSoid) and the content-gate arm stay owned by State.
+ * @param family Bounded override lists read back from the state database.
+ * @return False when the counts exceed the fixed capacities.
+ */
+[[nodiscard]] bool publish_family5(const Family5State& family) noexcept;
+
 } // namespace sunrise::state

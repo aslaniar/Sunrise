@@ -17,7 +17,10 @@
 #include "../hooks/bootflow/bootflow_hook_lifecycle.h"
 #include "../hooks/config_getter/config_getter_lifecycle.h"
 #include "../hooks/cursor/runtime.h"
+#include "../hooks/package_validator/package_validator_iv.h"
 #include "../hooks/graphics/graphics_hook_lifecycle.h"
+#include "../hooks/handle_message/handle_message_observer.h"
+#include "../hooks/schema_capture/schema_capture_observer.h"
 #include "../hooks/network/runtime.h"
 #include "../hooks/polled_input/runtime.h"
 #include "../hooks/queuez/queuez_hook_lifecycle.h"
@@ -153,6 +156,18 @@ void clear_game_targets() noexcept {
     (void)hooks::retail_log::install();
     (void)hooks::assert_handler::install();
     (void)hooks::config_getter::install();
+    // The external-server fix for the -87 registration failure: re-assert the healthy kind0
+    // IV at every package-validator entry. Internal no-op while externalServer is disabled.
+    (void)hooks::package_validator::install();
+    // The S2-0 acceptance oracle: log-only observer on the per-type push apply dispatcher,
+    // so every server push the client decodes is named. Internal no-op while externalServer
+    // is disabled.
+    (void)hooks::handle_message::install();
+    // The R1 schema-hash close: log-only observer on the schema-decode entry, so the
+    // client's own player-baseline decode prints the real schemaTagHash (the
+    // world_population_schema_hash knob value). Internal no-op while externalServer is
+    // disabled.
+    (void)hooks::schema_capture::install();
     // Boot-step fixes scan for their own single-site targets; each reports its own outcome.
     (void)hooks::bootflow::install();
     // The teleport hooks attach whether or not the feature is on, so the interface can enable it

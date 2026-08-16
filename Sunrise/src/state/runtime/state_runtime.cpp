@@ -174,4 +174,18 @@ InvestmentState investment_snapshot() noexcept {
     return snapshot;
 }
 
+/** Replaces the published family-5 override lists, keeping object identity and gate. */
+bool publish_family5(const Family5State& family) noexcept {
+    if (family.flagCount > family.flags.size() || family.valueCount > family.values.size()) {
+        return false;
+    }
+    AcquireSRWLockExclusive(&runtime::storage::g_stateLock);
+    runtime::storage::g_state.investment.family5.flags = family.flags;
+    runtime::storage::g_state.investment.family5.flagCount = family.flagCount;
+    runtime::storage::g_state.investment.family5.values = family.values;
+    runtime::storage::g_state.investment.family5.valueCount = family.valueCount;
+    ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
+    return true;
+}
+
 } // namespace sunrise::state
