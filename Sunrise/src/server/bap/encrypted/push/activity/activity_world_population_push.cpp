@@ -54,9 +54,13 @@ constexpr std::size_t kQueueEventBodySize =
 constexpr std::uint32_t kProbeSessionIndex = 0;
 
 /**
- * Entity slot the v0 baseline claims: the top of the lease mask (O1, spec 3.3). The join
- * still grants the whole 8192-bit mask today, so this slot's lease bit is set; whether
- * the client renders it without simulating it is the O1 observation the boot makes.
+ * Entity slot the v0 baseline claims: the top of the lease mask (O1, spec 3.3/7.1 --
+ * server entities take the top of the mask, 8191 downward, so the client's low-prefix
+ * grants can never overlap; the fork's select_free grants ascending, so the player's
+ * own entity lives in the low prefix). The join still grants the whole 8192-bit mask
+ * today, so this slot's lease bit is set; the slot's type-table entry is unregistered,
+ * so FUN_141718080's typeId match fails and the create runs the ordinary from-scratch
+ * path (correct for a create). Claims/refined-payload.md section 2 = the reasoning.
  */
 constexpr std::uint16_t kWorldPopulationSlot = 8191;
 /** Local entity registry index for the header's 8-bit field (1 = not the player). */
