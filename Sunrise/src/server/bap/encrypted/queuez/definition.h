@@ -79,6 +79,17 @@ struct SelectCharacter {
     bool patchAccount{};
 };
 
+/**
+ * Validated opcode-403 subclass-equip after-image. Only the resident character object moves;
+ * both subclass instances are already resident, so the frame carries exactly one object.
+ */
+struct SubclassEquip {
+    SessionState after{};
+    std::uint32_t characterDefinitionId{};
+    std::uint64_t characterSoid{};
+    std::uint64_t itemSoid{};
+};
+
 /** Queuez fields published after every staged frame is copied to caller output. */
 struct StagedPublication {
     SessionState after{};

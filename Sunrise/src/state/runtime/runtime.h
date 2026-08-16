@@ -58,9 +58,28 @@ void shutdown() noexcept;
 
 /** @return A copy of the active account state, read under the lock. */
 [[nodiscard]] AccountState account_snapshot() noexcept;
-
 /** @return A copy of the evaluated content state, read under the lock. */
 [[nodiscard]] InvestmentState investment_snapshot() noexcept;
+
+/**
+ * Equips one storage item onto the selected character's subclass slot, returning the
+ * displaced subclass to storage. The request must name a bucket-16 storage item the
+ * selected character owns; the policy check and the mutation share the same data so the
+ * staging step cannot fail after a request passed.
+ * @param itemSoid Instance key of the storage item to equip.
+ * @param displacedSoid Receives the previously equipped subclass instance key, or zero.
+ * @return True when the swap left the whole account valid and was published.
+ */
+[[nodiscard]] bool equip_subclass_item(std::uint64_t itemSoid,
+                                       std::uint64_t& displacedSoid) noexcept;
+
+/**
+ * Checks the subclass-equip request policy without touching State.
+ * @param itemSoid Instance key the Client asked to equip.
+ * @return True when a selected character owns that key in storage and the definition is a
+ *         bucket-16 (subclass) item.
+ */
+[[nodiscard]] bool subclass_equip_request_valid(std::uint64_t itemSoid) noexcept;
 
 /**
  * Replaces the published family-5 override lists with the persisted rows.

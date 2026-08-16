@@ -15,6 +15,9 @@ struct Outcome {
     /** An opcode-504 pick moved the selection and its Family-4 object still has to follow. */
     bool hasSelectedCharacter{};
     std::uint64_t selectedCharacterSoid{};
+    /** An opcode-403 subclass equip passed its policy check; State and Family-4 must follow. */
+    bool hasSubclassEquip{};
+    std::uint64_t subclassEquipSoid{};
 };
 
 /**

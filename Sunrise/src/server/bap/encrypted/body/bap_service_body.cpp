@@ -125,6 +125,15 @@ bool process(const ServiceRoute& route,
         } else {
             outcome.selectCharacter = {};
         }
+        // A subclass equip whose resident character object cannot be found leaves the reply on
+        // its own; the mutation and the delta run together in the outcome staging.
+        if (webOutcome.hasSubclassEquip
+            && queuez::stage_subclass_equip(
+                queuezState, webOutcome.subclassEquipSoid, outcome.subclassEquip)) {
+            outcome.hasSubclassEquip = true;
+        } else {
+            outcome.subclassEquip = {};
+        }
         return true;
     }
     }

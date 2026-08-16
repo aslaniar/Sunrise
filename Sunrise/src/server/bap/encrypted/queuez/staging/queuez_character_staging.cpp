@@ -28,8 +28,7 @@ bool stage_change_character(const SessionState& before, ChangeCharacter& change)
 /** Stages the Family-4 increment that moves the character object to the picked character. */
 bool stage_select_character(const SessionState& before,
                             std::uint64_t selectedCharacterSoid,
-                            SelectCharacter& select) noexcept {
-    select = {};
+                            SelectCharacter& select) noexcept {    select = {};
     std::uint32_t accountDefinitionId = 0;
     std::uint32_t characterDefinitionId = 0;
     if (!valid(before) || !before.family4Active || selectedCharacterSoid == 0
@@ -97,6 +96,38 @@ bool stage_select_character(const SessionState& before,
     select.selectedCharacterSoid = selectedCharacterSoid;
     select.patchAccount = changePending;
     return valid(select.after);
+}
+
+/** Stages the Family-4 increment that republishes the character after a subclass equip. */
+bool stage_subclass_equip(const SessionState& before,
+                          std::uint64_t itemSoid,
+                          SubclassEquip& equip) noexcept {
+    equip = {};
+    std::uint32_t characterDefinitionId = 0;
+    if (!valid(before) || !before.family4Active || itemSoid == 0
+        || before.family4RootSoid == 0 || before.family4ResidentCount == 0
+        || !middleware::datagen::object_id(
+            kAccountFamilyType, middleware::datagen::kCharacterSlot, characterDefinitionId)) {
+        return false;
+    }
+    // The character object is the resident this update republishes; find it by definition.
+    std::size_t characterIndex = before.family4Residents.size();
+    for (std::size_t index = 0; index < before.family4ResidentCount; ++index) {
+        if (before.family4Residents[index].definitionId == characterDefinitionId) {
+            characterIndex = index;
+            break;
+        }
+    }
+    if (characterIndex >= before.family4Residents.size()
+        || before.family4Residents[characterIndex].objectSoid == 0) {
+        return false;
+    }
+    equip.after = before;
+    equip.after.family4Version = before.family4Version + 1;
+    equip.characterDefinitionId = characterDefinitionId;
+    equip.characterSoid = before.family4Residents[characterIndex].objectSoid;
+    equip.itemSoid = itemSoid;
+    return valid(equip.after);
 }
 
 } // namespace sunrise::server::bap::encrypted::queuez

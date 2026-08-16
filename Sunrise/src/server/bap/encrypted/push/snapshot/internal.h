@@ -101,6 +101,18 @@ inline constexpr std::size_t kSingleObjectCount = 1;
                                           const queuez::SelectCharacter& select,
                                           Prepared& prepared) noexcept;
 
+/**
+ * Builds the Family-4 increment that republishes the resident character object after a
+ * subclass equip. Exactly one object moves: the character after-image.
+ * @param scratch Object and compression storage owned by the lock.
+ * @param equip Checked after-image and the resident character keys.
+ * @param prepared Gets the single character upsert descriptor.
+ * @return True when State, mappings, layouts and the installed compression all fit.
+ */
+[[nodiscard]] bool prepare_subclass_equip(Scratch& scratch,
+                                          const queuez::SubclassEquip& equip,
+                                          Prepared& prepared) noexcept;
+
 /** Selected-character mappings the character and item-instance encoders need. */
 struct Resolved {
     std::size_t characterIndex{};

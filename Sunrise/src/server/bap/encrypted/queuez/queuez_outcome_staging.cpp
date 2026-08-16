@@ -2,6 +2,8 @@
 
 #include "../../../../core/logging/log.h"
 #include "../../../../middleware/secure_channel/runtime.h"
+#include "../../../../state/runtime/runtime.h"
+#include "../../../persistence/persistence.h"
 #include "queuez_state_validation.h"
 
 namespace sunrise::server::bap::encrypted::queuez {
@@ -66,6 +68,50 @@ bool stage_service_outcome(Scratch& scratch,
                                                   response,
                                                   written,
                                                   bannerAfter)) {
+            after = bannerAfter;
+        }
+    } else if (outcome.hasSubclassEquip) {
+        // Persist-before-publish: the mutation lands in memory and the two rows commit before
+        // the character after-image goes out, so a crash mid-flow converges at the next boot.
+        // A persist failure reverts the memory swap (the F4 handling), so no observer sees a
+        // state the database refused.
+        std::uint64_t displacedSoid = 0;
+        if (!state::equip_subclass_item(outcome.subclassEquip.itemSoid, displacedSoid)) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             "ev=queuez stage=subclass_equip result=fail step=mutate");
+            return true;
+        }
+        if (!sunrise::server::persistence::persist_subclass_equip(
+                outcome.subclassEquip.itemSoid, displacedSoid)) {
+            std::uint64_t reverted = 0;
+            (void)state::equip_subclass_item(displacedSoid, reverted);
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             "ev=queuez stage=subclass_equip result=fail step=persist");
+            return true;
+        }
+        if (!push::append_subclass_equip_notification(
+                scratch, outcome.subclassEquip, key, nonce, response, written)) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             "ev=queuez stage=subclass_equip result=fail step=push");
+            return true;
+        }
+        middleware::secure_channel::advance_nonce(nonce);
+        after = outcome.subclassEquip.after;
+        // The banner record re-encodes from the mutated account (the subclass list changed),
+        // so the family-zero pair follows the family-four increment as a same-key refresh.
+        const SessionState& bannerBefore = after;
+        SessionState bannerAfter{};
+        if (push::append_banner_refresh_notification(scratch,
+                                                     bannerBefore,
+                                                     outcome.subclassEquip.characterSoid,
+                                                     key,
+                                                     nonce,
+                                                     response,
+                                                     written,
+                                                     bannerAfter)) {
             after = bannerAfter;
         }
     } else {

@@ -43,6 +43,8 @@ struct ServiceOutcome {
     queuez::ChangeCharacter changeCharacter{};
     bool hasSelectCharacter{};
     queuez::SelectCharacter selectCharacter{};
+    bool hasSubclassEquip{};
+    queuez::SubclassEquip subclassEquip{};
     bool hasActivitySessionAllocation{};
     state::activity::PendingAllocation activitySessionAllocation{};
     bool hasActivityTransaction{};
@@ -204,6 +206,28 @@ append_banner_move_notification(Scratch& scratch,
                                 queuez::SessionState& after) noexcept;
 
 /**
+ * Appends the family-zero refresh that follows an opcode-403 subclass equip: the same
+ * character's banner record re-encodes from the mutated account.
+ * @param before Queuez state after the family-four increment.
+ * @param characterSoid Character whose record changed.
+ * @param key Active AES-GCM session key.
+ * @param nonce Push-direction nonce, advanced only by a complete frame.
+ * @param response Caller-owned output containing prior frames.
+ * @param written Existing byte count, updated by a complete frame.
+ * @param after Receives the state published once the frame is copied.
+ * @return True when a frame went out and `after` carries the advanced ladder.
+ */
+[[nodiscard]] bool
+append_banner_refresh_notification(Scratch& scratch,
+                                   const queuez::SessionState& before,
+                                   std::uint64_t characterSoid,
+                                   std::span<const std::byte, state::kAesKeySize> key,
+                                   std::array<std::byte, state::kBapNonceSize>& nonce,
+                                   std::span<std::byte> response,
+                                   std::size_t& written,
+                                   queuez::SessionState& after) noexcept;
+
+/**
  * Appends the fixed opcode-505 Family-4 selection patch.
  * @param scratch Lock-owned transform buffers.
  * @param change Staged queuez after-image and account definition.
@@ -238,6 +262,24 @@ append_select_character_notification(Scratch& scratch,
                                      std::span<const std::byte, state::kBapNonceSize> nonce,
                                      std::span<std::byte> response,
                                      std::size_t& written) noexcept;
+
+/**
+ * Appends the opcode-403 Family-4 character after-image.
+ * @param scratch Lock-owned transform buffers.
+ * @param equip Staged queuez after-image and the resident character keys.
+ * @param key Active AES-GCM session key.
+ * @param nonce Push-direction nonce after the correlated svc-11 response.
+ * @param response Caller-owned output containing the existing response prefix.
+ * @param written Existing byte count, updated after the complete push is appended.
+ * @return True when the single character upsert and the whole svc-123 frame fit.
+ */
+[[nodiscard]] bool
+append_subclass_equip_notification(Scratch& scratch,
+                                   const queuez::SubclassEquip& equip,
+                                   std::span<const std::byte, state::kAesKeySize> key,
+                                   std::span<const std::byte, state::kBapNonceSize> nonce,
+                                   std::span<std::byte> response,
+                                   std::size_t& written) noexcept;
 
 } // namespace push
 

@@ -1436,4 +1436,60 @@ bool write_back() noexcept {
     return ok;
 }
 
+/** Persists one subclass equip in a single two-row transaction. */
+bool persist_subclass_equip(std::uint64_t newlyEquippedSoid,
+                            std::uint64_t displacedSoid) noexcept {
+    AcquireSRWLockExclusive(&g_lock);
+    if (g_database == nullptr || newlyEquippedSoid == 0) {
+        ReleaseSRWLockExclusive(&g_lock);
+        return false;
+    }
+    std::array<char, 24> newSoidText{};
+    format_soid(newlyEquippedSoid, newSoidText);
+    std::array<char, 24> oldSoidText{};
+    format_soid(displacedSoid, oldSoidText);
+    // The displace runs FIRST: the partial unique index (account, character, equipment_slot)
+    // WHERE in_equipment=1 allows only one equipped row per slot, so the outgoing row must
+    // release slot 11 before the incoming row takes it.
+    static constexpr char kDisplaceSql[] =
+        "UPDATE items SET in_equipment = 0, equipment_slot = NULL WHERE account_id = ? "
+        "AND instance_soid = ? AND in_equipment = 1;";
+    static constexpr char kEquipSql[] =
+        "UPDATE items SET in_equipment = 1, equipment_slot = 11 WHERE account_id = ? "
+        "AND instance_soid = ?;";
+    bool ok = exec("BEGIN;");
+    sqlite3_stmt* statement = nullptr;
+    if (ok && displacedSoid != 0) {
+        ok = sqlite3_prepare_v2(g_database, kDisplaceSql, -1, &statement, nullptr) == SQLITE_OK;
+        if (ok) {
+            ok = bind_text(statement, 1, seed_account_id())
+                 && bind_text(statement, 2, {oldSoidText.data(), std::strlen(oldSoidText.data())})
+                 && step_done(statement);
+            sqlite3_finalize(statement);
+        }
+    }
+    if (ok) {
+        statement = nullptr;
+        ok = sqlite3_prepare_v2(g_database, kEquipSql, -1, &statement, nullptr) == SQLITE_OK;
+        if (ok) {
+            ok = bind_text(statement, 1, seed_account_id())
+                 && bind_text(statement, 2, {newSoidText.data(), std::strlen(newSoidText.data())})
+                 && step_done(statement);
+            sqlite3_finalize(statement);
+        }
+    }
+    if (!ok) {
+        fail("persist_subclass_equip", error_text());
+        (void)exec("ROLLBACK;");
+        ReleaseSRWLockExclusive(&g_lock);
+        return false;
+    }
+    ok = exec("COMMIT;");
+    if (!ok) {
+        (void)exec("ROLLBACK;");
+    }
+    ReleaseSRWLockExclusive(&g_lock);
+    return ok;
+}
+
 } // namespace sunrise::server::persistence

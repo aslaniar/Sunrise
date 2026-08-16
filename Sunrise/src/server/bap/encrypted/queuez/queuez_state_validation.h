@@ -52,6 +52,19 @@ namespace sunrise::server::bap::encrypted::queuez {
                                               SessionState& after) noexcept;
 
 /**
+ * Stages the Family-0 refresh a subclass equip owes: the banner record re-encodes from the
+ * mutated account even though the character key did not move, so the same-key pair goes out
+ * as one increment above the peer's current family-zero version.
+ * @param before Current queuez state owned by the peer.
+ * @param characterSoid Resident character whose record changed.
+ * @param after Gets the state published after the refresh frame is copied.
+ * @return True only when the family-zero pair is active and names that character.
+ */
+[[nodiscard]] bool stage_family0_refresh(const SessionState& before,
+                                         std::uint64_t characterSoid,
+                                         SessionState& after) noexcept;
+
+/**
  * Stages the fixed first opcode-505 transition for one peer.
  * @param before Current queuez state owned by the peer.
  * @param change Gets the version-one after-image and the account definition.
@@ -75,5 +88,18 @@ namespace sunrise::server::bap::encrypted::queuez {
 void stage_unsubscription(const SessionState& before,
                           std::uint64_t familyRootSoid,
                           SessionState& after) noexcept;
+
+/**
+ * Stages the Family-4 increment that republishes the resident character object after a
+ * subclass equip. The character object is the only thing that changed; both subclass
+ * instances are already resident under their own keys.
+ * @param before Current queuez state owned by the peer.
+ * @param itemSoid Instance key the opcode-403 request named.
+ * @param equip Gets the after-image and the resident character keys.
+ * @return True only when a resident character object exists to update.
+ */
+[[nodiscard]] bool stage_subclass_equip(const SessionState& before,
+                                        std::uint64_t itemSoid,
+                                        SubclassEquip& equip) noexcept;
 
 } // namespace sunrise::server::bap::encrypted::queuez

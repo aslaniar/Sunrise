@@ -57,4 +57,15 @@ void shutdown() noexcept;
  */
 [[nodiscard]] bool write_back() noexcept;
 
+/**
+ * Persists one subclass equip in a single transaction: the picked storage row becomes the
+ * character's equipped subclass (slot 11) and the displaced row returns to storage. The
+ * scope is the seed account's two affected rows only; every other row is untouched.
+ * @param newlyEquippedSoid Instance key now equipped.
+ * @param displacedSoid Instance key returned to storage, or zero when the slot was empty.
+ * @return True when both updates commit.
+ */
+[[nodiscard]] bool persist_subclass_equip(std::uint64_t newlyEquippedSoid,
+                                          std::uint64_t displacedSoid) noexcept;
+
 } // namespace sunrise::server::persistence

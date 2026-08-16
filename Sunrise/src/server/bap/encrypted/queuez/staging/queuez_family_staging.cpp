@@ -131,6 +131,19 @@ bool stage_family0_subscription(const SessionState& before,
     return true;
 }
 
+/** Stages the Family-0 refresh a subclass equip owes. */
+bool stage_family0_refresh(const SessionState& before,
+                           std::uint64_t characterSoid,
+                           SessionState& after) noexcept {
+    after = before;
+    if (!valid(before) || !before.family0Active || characterSoid == 0
+        || before.family0Character != characterSoid) {
+        return false;
+    }
+    after.family0Version = before.family0Version + 1;
+    return true;
+}
+
 /** Stages the measured Family-3 subscription policy: full first, then response-only. */
 bool stage_family3_subscription(const SessionState& before,
                                 const middleware::queuez::Subscription& subscription,

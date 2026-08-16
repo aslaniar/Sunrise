@@ -187,4 +187,59 @@ bool append_banner_move_notification(Scratch& scratch,
     return true;
 }
 
+/**
+ * Appends the Family-0 refresh a subclass equip owes: the same character's banner record
+ * re-encodes from the mutated account, so the pair goes out as one increment (release the
+ * held record, then upsert the anchor and the fresh record at the same key).
+ * @return True when a frame went out and `after` carries the advanced ladder.
+ */
+bool append_banner_refresh_notification(Scratch& scratch,
+                                        const queuez::SessionState& before,
+                                        std::uint64_t characterSoid,
+                                        std::span<const std::byte, state::kAesKeySize> key,
+                                        std::array<std::byte, state::kBapNonceSize>& nonce,
+                                        std::span<std::byte> response,
+                                        std::size_t& written,
+                                        queuez::SessionState& after) noexcept {
+    after = before;
+    if (!queuez::stage_family0_refresh(before, characterSoid, after)) {
+        return false;
+    }
+    snapshot::Prepared prepared{};
+    if (!snapshot::prepare_banner(scratch,
+                                  before.family4RootSoid,
+                                  after.family0Version,
+                                  characterSoid,
+                                  prepared)) {
+        core::log::write(core::log::Channel::server,
+                         core::log::Level::warn,
+                         "ev=queuez stage=banner_refresh result=fail reason=prepare");
+        after = before;
+        return false;
+    }
+    const std::size_t objectCount = prepared.family.objects.size();
+    const std::size_t beforeBytes = written;
+    if (!queuez_frame::append(scratch,
+                              prepared.family,
+                              prepared.rawClearSize,
+                              prepared.compressedClearSize,
+                              key,
+                              nonce,
+                              response,
+                              written)) {
+        core::log::write(core::log::Channel::server,
+                         core::log::Level::warn,
+                         "ev=queuez stage=banner_refresh result=fail reason=frame");
+        after = before;
+        return false;
+    }
+    middleware::secure_channel::advance_nonce(nonce);
+    queuez_report::push("banner_refresh",
+                        prepared.family.type,
+                        objectCount,
+                        written - beforeBytes,
+                        queuez_report::kNoRecordOutcome);
+    return true;
+}
+
 } // namespace sunrise::server::bap::encrypted::push

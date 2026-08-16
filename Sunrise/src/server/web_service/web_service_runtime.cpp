@@ -137,6 +137,40 @@ bool consume(std::span<const std::byte> request,
     }
     report_opcode(message.opcode);
 
+    // Inventory verb capture (temporary diagnostic; removed after the grammar is read):
+    // dump the unmapped opcodes' transaction id, payload size, and first bytes so the
+    // 701/702 subclass-swap and 2100 ability-change request shapes can be read live.
+    if (message.opcode != middleware::web_service::messages::opcode205::kOpcode
+        && message.opcode != middleware::web_service::messages::opcode206::kOpcode
+        && message.opcode != middleware::web_service::messages::opcode501::kOpcode
+        && message.opcode != middleware::web_service::messages::opcode503::kOpcode
+        && message.opcode != middleware::web_service::messages::opcode504::kOpcode
+        && message.opcode != middleware::web_service::messages::opcode601::kOpcode) {
+        std::array<char, 512> line{};
+        const std::size_t dumpBytes = (std::min)(message.payload.size(), std::size_t{64});
+        int dumpWritten = std::snprintf(line.data(),
+                                        line.size(),
+                                        "ev=ws_capture stage=request opcode=%u tx=0x%08X "
+                                        "payload=%zu bytes=",
+                                        static_cast<unsigned>(message.opcode),
+                                        message.transactionId,
+                                        message.payload.size());
+        for (std::size_t index = 0;
+             dumpWritten > 0 && index < dumpBytes
+             && static_cast<std::size_t>(dumpWritten) < line.size() - 4;
+             ++index) {
+            dumpWritten += std::snprintf(line.data() + dumpWritten,
+                                         line.size() - static_cast<std::size_t>(dumpWritten),
+                                         "%02X",
+                                         static_cast<unsigned>(message.payload[index]));
+        }
+        if (dumpWritten > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::info,
+                             {line.data(), static_cast<std::size_t>(dumpWritten)});
+        }
+    }
+
     if (message.opcode == middleware::web_service::messages::opcode205::kOpcode) {
         const auto investment = state::investment_snapshot();
         return middleware::web_service::messages::opcode205::encode_response(
@@ -180,6 +214,23 @@ bool consume(std::span<const std::byte> request,
         return middleware::web_service::messages::opcode601::encode_response(
                    message, response, written)
                || encode_echo(message, response, written);
+    }
+
+    // The opcode-403 subclass equip: {u64 BE item soid, u8 flag}. The policy check is
+    // read-only here; the mutation, the persistence, and the Family-4 delta run in the
+    // queuez outcome staging after this reply encodes (the opcode-504 pattern).
+    if (message.opcode == 403) {
+        std::uint64_t itemSoid = 0;
+        if (message.payload.size() >= sizeof itemSoid) {
+            for (std::size_t byte = 0; byte < sizeof itemSoid; ++byte) {
+                itemSoid = (itemSoid << 8)
+                           | static_cast<std::uint64_t>(message.payload[byte]);
+            }
+        }
+        if (state::subclass_equip_request_valid(itemSoid)) {
+            outcome.hasSubclassEquip = true;
+            outcome.subclassEquipSoid = itemSoid;
+        }
     }
 
     // A subscribe whose body does not parse is still answered; only the subscription is dropped.
