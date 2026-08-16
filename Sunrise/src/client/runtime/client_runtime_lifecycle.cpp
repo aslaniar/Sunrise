@@ -11,6 +11,7 @@
 #include "../hooks/handle_message/handle_message_observer.h"
 #include "../hooks/schema_capture/schema_capture_observer.h"
 #include "../hooks/network/runtime.h"
+#include "../hooks/package_trust/package_trust_bypass.h"
 #include "../hooks/polled_input/runtime.h"
 #include "../hooks/queuez/queuez_hook_lifecycle.h"
 #include "../hooks/retail_log/retail_log_lifecycle.h"
@@ -48,6 +49,13 @@ bool shutdown() noexcept {
         core::log::write(core::log::Channel::client,
                          core::log::Level::error,
                          "ev=shutdown stage=network_hooks result=fail");
+        ReleaseSRWLockExclusive(&runtime::g_lock);
+        return false;
+    }
+    if (!hooks::package_trust::uninstall()) {
+        core::log::write(core::log::Channel::client,
+                         core::log::Level::error,
+                         "ev=shutdown stage=package_trust result=fail");
         ReleaseSRWLockExclusive(&runtime::g_lock);
         return false;
     }
