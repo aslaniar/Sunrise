@@ -1390,27 +1390,23 @@ bool write_back() noexcept {
         ReleaseSRWLockExclusive(&g_lock);
         return false;
     }
-    // Publish-scoped deletes (the L6 design): the publish owns exactly the seed account's
-    // equipped and profile item rows; non-equipped character rows (the storage closet) and
-    // any other account's rows are inert and must survive the write-back. item_plugs rows
-    // follow their items via the ON DELETE CASCADE foreign key, so no global plug delete
-    // exists here (one would wipe storage plugs).
-    std::array<char, 160> deleteEquippedSql{};
-    std::array<char, 160> deleteProfileSql{};
+    // Publish-scoped deletes (the L6 design): the publish owns every items row of the seed
+    // account — equipped, profile, and (now that load_storage carries them into State) the
+    // non-equipped storage rows alike. The old write_back deleted EVERY account's rows; the
+    // scoped form preserves any other account's rows and re-seeds only the seed account's
+    // in-memory State. item_plugs rows follow their items via the ON DELETE CASCADE foreign
+    // key, so no global plug delete exists here (one would wipe storage plugs).
+    std::array<char, 160> deleteItemsSql{};
     std::array<char, 160> deleteCharactersSql{};
     const std::string_view accountId = seed_account_id();
-    (void)std::snprintf(deleteEquippedSql.data(), deleteEquippedSql.size(),
-                        "DELETE FROM items WHERE account_id = '%s' AND in_equipment = 1;",
-                        accountId.data());
-    (void)std::snprintf(deleteProfileSql.data(), deleteProfileSql.size(),
-                        "DELETE FROM items WHERE account_id = '%s' AND character_index IS NULL;",
-                        accountId.data());
+    (void)std::snprintf(deleteItemsSql.data(), deleteItemsSql.size(),
+                        "DELETE FROM items WHERE account_id = '%s';", accountId.data());
     (void)std::snprintf(deleteCharactersSql.data(), deleteCharactersSql.size(),
                         "DELETE FROM characters WHERE account_id = '%s';", accountId.data());
-    bool ok = exec("BEGIN;") && exec(deleteEquippedSql.data()) && exec(deleteProfileSql.data())
-              && exec(deleteCharactersSql.data()) && exec("DELETE FROM flags;")
-              && exec("DELETE FROM objectives;") && exec("DELETE FROM family5_overrides;")
-              && exec("DELETE FROM entitlements;") && seed_profile_items_from(account)
+    bool ok = exec("BEGIN;") && exec(deleteItemsSql.data()) && exec(deleteCharactersSql.data())
+              && exec("DELETE FROM flags;") && exec("DELETE FROM objectives;")
+              && exec("DELETE FROM family5_overrides;") && exec("DELETE FROM entitlements;")
+              && seed_profile_items_from(account)
               && seed_family5_from(family5) && seed_entitlements_from(entitlements)
               && seed_flags("account", unlocks.accountFlags)
               && seed_flags("profile", unlocks.profileFlags)
