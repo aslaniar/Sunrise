@@ -12,6 +12,16 @@ inline constexpr float kMinimumDistance = 1.0F;
 inline constexpr float kMaximumDistance = 100.0F;
 /** No key is bound until one is picked, so a fresh install cannot teleport by accident. */
 inline constexpr std::uint32_t kNoKey = 0;
+<<<<<<< HEAD:Sunrise/src/client/teleport/teleport_settings_store.h
+=======
+
+/** Default fly speed, in world units per second. */
+inline constexpr float kDefaultFlySpeed = 15.0F;
+/** Slowest offered fly speed. Below this a press does not visibly move the player. */
+inline constexpr float kMinimumFlySpeed = 1.0F;
+/** Fastest offered fly speed. Past this the player outruns what the map streams in. */
+inline constexpr float kMaximumFlySpeed = 100.0F;
+>>>>>>> 233c811 (noclip collision fix and fly):Sunrise/src/client/movement/movement_settings_store.h
 
 /** Runtime teleport configuration. This module owns it; Core settings do not carry it. */
 struct Settings {
@@ -20,6 +30,15 @@ struct Settings {
     std::uint32_t virtualKey{kNoKey};
     bool noclipEnabled{false};
     std::uint32_t noclipToggleKey{kNoKey};
+<<<<<<< HEAD:Sunrise/src/client/teleport/teleport_settings_store.h
+=======
+    /** The jump key comes from the account binding, so none is stored here. */
+    bool swordSkateEnabled{false};
+    bool flyEnabled{false};
+    std::uint32_t flyToggleKey{kNoKey};
+    /** World units per second while a direction is pressed. */
+    float flySpeed{kDefaultFlySpeed};
+>>>>>>> 233c811 (noclip collision fix and fly):Sunrise/src/client/movement/movement_settings_store.h
 };
 
 /**
