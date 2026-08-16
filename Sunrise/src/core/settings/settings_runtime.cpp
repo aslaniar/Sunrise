@@ -18,8 +18,8 @@ namespace {
 constexpr std::wstring_view kSettingsFileSuffix = L"\\settings.json";
 /** An upgraded document is staged under this suffix before it replaces the settings file. */
 constexpr std::wstring_view kUpgradeStageSuffix = L".new";
-/** Largest settings file accepted into fixed stack storage. */
-constexpr std::size_t kConfigCapacity = 64 * 1024;
+/** Largest settings file accepted into fixed storage. */
+constexpr std::size_t kConfigCapacity = 1024 * 1024;
 
 Settings g_settings = defaults();
 
@@ -221,7 +221,9 @@ bool initialize(void* module) noexcept {
         return fail("too_large");
     }
 
-    std::array<char, kConfigCapacity> buffer{};
+    // Two banks this size would overflow the boot thread's stack, so they are static. Settings load
+    // once, on one thread, before any other runtime layer starts.
+    static std::array<char, kConfigCapacity> buffer{};
     DWORD read = 0;
     const bool readOk =
         ReadFile(readableFile, buffer.data(), static_cast<DWORD>(size.QuadPart), &read, nullptr)
@@ -232,7 +234,7 @@ bool initialize(void* module) noexcept {
         return fail("read");
     }
     std::string_view document(buffer.data(), read);
-    std::array<char, kConfigCapacity> upgradedBuffer{};
+    static std::array<char, kConfigCapacity> upgradedBuffer{};
     const bool upgrading = upgrade::needed(document);
     if (upgrading) {
         std::string_view bundled;
