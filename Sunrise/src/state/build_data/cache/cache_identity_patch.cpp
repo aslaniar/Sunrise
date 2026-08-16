@@ -1,8 +1,8 @@
 #include <Windows.h>
 
-#include <array>
 #include <cstdint>
 #include <cstring>
+#include <vector>
 
 #include "../../../core/filesystem/path.h"
 #include "internal.h"
@@ -11,6 +11,8 @@ namespace sunrise::state::build_data::cache {
 
 /** Cache file name relative to the module directory (server_main's constant). */
 constexpr std::wstring_view kCacheFileSuffix = L"\\Sunrise\\cache\\build_data.bin";
+/** The largest cache file the stamp rewrites; anything bigger is never a valid cache. */
+constexpr std::uint64_t kMaximumPatchSize = 16U * 1024U * 1024U;
 
 /**
  * Re-stamps the cache header's configured-equipment hash after a persisted equipment
@@ -39,16 +41,24 @@ bool restamp_equipment_hash(std::uint64_t hash) noexcept {
     if (file == INVALID_HANDLE_VALUE) {
         return false;
     }
-    std::array<std::byte, 96> header{};
+    LARGE_INTEGER size{};
+    if (GetFileSizeEx(file, &size) == FALSE || size.QuadPart <= 96
+        || static_cast<std::uint64_t>(size.QuadPart) > kMaximumPatchSize) {
+        (void)CloseHandle(file);
+        return false;
+    }
+    // The WHOLE file is read and rewritten (the payload rides along untouched): the temp
+    // file that replaces the final name must carry the full cache, never just the header.
+    std::vector<std::byte> body(static_cast<std::size_t>(size.QuadPart));
     DWORD readBytes = 0;
-    const bool headerOk = ReadFile(file, header.data(), static_cast<DWORD>(header.size()),
+    const bool headerOk = ReadFile(file, body.data(), static_cast<DWORD>(body.size()),
                                    &readBytes, nullptr) != FALSE
-                          && readBytes == header.size();
+                          && readBytes == body.size();
     (void)CloseHandle(file);
     if (!headerOk) {
         return false;
     }
-    std::memcpy(header.data() + 20, &hash, sizeof hash);
+    std::memcpy(body.data() + 20, &hash, sizeof hash);
 
     core::path::Buffer temporary = path;
     if (!core::path::append(temporary, L".stamp")) {
@@ -65,9 +75,9 @@ bool restamp_equipment_hash(std::uint64_t hash) noexcept {
         return false;
     }
     DWORD writtenBytes = 0;
-    const bool written = WriteFile(output, header.data(), static_cast<DWORD>(header.size()),
+    const bool written = WriteFile(output, body.data(), static_cast<DWORD>(body.size()),
                                    &writtenBytes, nullptr) != FALSE
-                         && writtenBytes == header.size();
+                         && writtenBytes == body.size();
     (void)CloseHandle(output);
     if (!written) {
         (void)DeleteFileW(temporary.chars.data());
