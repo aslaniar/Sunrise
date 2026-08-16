@@ -19,6 +19,7 @@
 #include "../hooks/cursor/runtime.h"
 #include "../hooks/package_validator/package_validator_iv.h"
 #include "../hooks/graphics/graphics_hook_lifecycle.h"
+#include "../hooks/ability_gate/ability_gate_observer.h"
 #include "../hooks/handle_message/handle_message_observer.h"
 #include "../hooks/schema_capture/schema_capture_observer.h"
 #include "../hooks/network/runtime.h"
@@ -163,6 +164,10 @@ void clear_game_targets() noexcept {
     // so every server push the client decodes is named. Internal no-op while externalServer
     // is disabled.
     (void)hooks::handle_message::install();
+    // The inventory gate observers: log-only detours on the acquiredFlags byte test and the
+    // opcode-2100 ability emitter, capturing the caller RVAs that name the un-analyzed CUI
+    // gate chain. Internal no-op while externalServer is disabled.
+    (void)hooks::ability_gate::install();
     // The R1 schema-hash close: log-only observer on the schema-decode entry, so the
     // client's own player-baseline decode prints the real schemaTagHash (the
     // world_population_schema_hash knob value). Internal no-op while externalServer is
