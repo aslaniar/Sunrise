@@ -58,4 +58,13 @@ enum class WriteDisposition {
                          records::Domains domains,
                          WriteDisposition disposition) noexcept;
 
+/**
+ * Re-stamps the cache header's configured-equipment hash in place (the ts/size stay), used
+ * by a persisted equipment mutation so the next boot's gate matches the post-mutation
+ * account. Atomic: a same-directory temporary file plus a replace rename.
+ * @param hash Configured-equipment hash of the post-mutation account.
+ * @return True when the file is on disk under its final name with the new hash.
+ */
+[[nodiscard]] bool restamp_equipment_hash(std::uint64_t hash) noexcept;
+
 } // namespace sunrise::state::build_data::cache

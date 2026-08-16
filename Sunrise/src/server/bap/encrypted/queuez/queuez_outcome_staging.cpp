@@ -2,6 +2,8 @@
 
 #include "../../../../core/logging/log.h"
 #include "../../../../middleware/secure_channel/runtime.h"
+#include "../../../../state/build_data/cache/internal.h"
+#include "../../../../state/runtime/equipment/configured_equipment_identity.h"
 #include "../../../../state/runtime/runtime.h"
 #include "../../../persistence/persistence.h"
 #include "queuez_state_validation.h"
@@ -90,6 +92,16 @@ bool stage_service_outcome(Scratch& scratch,
                              core::log::Level::warn,
                              "ev=queuez stage=subclass_equip result=fail step=persist");
             return true;
+        }
+        // L5 stage 6: the equipment fingerprint moved with the persisted swap. Re-stamp the
+        // cache header now (atomic temp+rename) so the next boot's identity gate matches the
+        // post-mutation account without a manual repair step.
+        const std::uint64_t postHash =
+            state::runtime::equipment::configured_hash(state::account_snapshot());
+        if (!state::build_data::cache::restamp_equipment_hash(postHash)) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             "ev=cache stage=restamp result=fail");
         }
         if (!push::append_subclass_equip_notification(
                 scratch, outcome.subclassEquip, key, nonce, response, written)) {

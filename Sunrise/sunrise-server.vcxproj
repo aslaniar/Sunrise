@@ -328,6 +328,7 @@
     <ClCompile Include="src\state\build_data\abilities\ability_bucket_catalog.cpp" />
     <ClCompile Include="src\state\build_data\build_data_runtime.cpp" />
     <ClCompile Include="src\state\build_data\cache\read\cache_file_reader.cpp" />
+    <ClCompile Include="src\state\build_data\cache\cache_identity_patch.cpp" />
     <ClCompile Include="src\state\build_data\cache\read\cache_payload_reader.cpp" />
     <ClCompile Include="src\state\build_data\cache\records\cache_detail_links.cpp" />
     <ClCompile Include="src\state\build_data\cache\records\cache_domain_validation.cpp" />
