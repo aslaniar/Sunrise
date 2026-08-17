@@ -75,6 +75,7 @@ bool payload_checksum(records::Domains domains, std::uint64_t& checksum) noexcep
            && checksum_domain<records::RosterGroupRecord>(domains.rosterGroups, checksum)
            && checksum_domain<records::SpawnStemRecord>(domains.spawnStems, checksum)
            && checksum_domain<records::SpawnNameHashRecord>(domains.spawnNameHashes, checksum)
+           && checksum_domain<records::SpawnPointRecord>(domains.spawnPoints, checksum)
            && checksum_domain<records::HashNameRecord>(domains.hashNames, checksum);
 }
 
@@ -92,6 +93,7 @@ bool write_payload(HANDLE file, records::Domains domains) noexcept {
            && write_domain<records::RosterGroupRecord>(file, domains.rosterGroups)
            && write_domain<records::SpawnStemRecord>(file, domains.spawnStems)
            && write_domain<records::SpawnNameHashRecord>(file, domains.spawnNameHashes)
+           && write_domain<records::SpawnPointRecord>(file, domains.spawnPoints)
            && write_domain<records::HashNameRecord>(file, domains.hashNames);
 }
 

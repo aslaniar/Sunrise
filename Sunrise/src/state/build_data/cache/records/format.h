@@ -24,7 +24,7 @@ inline constexpr std::array<char, 8> kCacheMagic{'S', 'U', 'N', 'R', 'I', 'S', '
  * Current build-data cache format. An older cache is rebuilt rather than read, so a bump needs
  * no other edit. Bump it whenever a domain's stored shape changes.
  */
-inline constexpr std::uint32_t kCacheFormatVersion = 23;
+inline constexpr std::uint32_t kCacheFormatVersion = 24;
 /** Signed -1 on disk means there is no equipment slot. */
 inline constexpr std::int8_t kAbsentEquipmentSlot = -1;
 /** The standard 64-bit FNV-1a offset basis starts the payload checksum. */
@@ -72,6 +72,7 @@ struct Header {
     std::uint32_t rosterGroupCount{};
     std::uint32_t spawnStemCount{};
     std::uint32_t spawnNameHashCount{};
+    std::uint32_t spawnPointCount{};
     std::uint32_t hashNameCount{};
     InvestmentConstants constants{};
     std::uint64_t payloadChecksum{};
@@ -248,6 +249,15 @@ struct SpawnNameHashRecord {
     std::array<std::uint16_t, spawn_sets::kPackageCapacity> activityPackages{};
 };
 
+/** Disk form of one spawn point and the set it belongs to. */
+struct SpawnPointRecord {
+    std::array<float, spawn_sets::kPositionComponents> position{};
+    std::uint32_t nameHash{};
+    std::uint16_t stemIndex{};
+    /** Must be zero, so the packed point row always matches. */
+    std::array<std::uint8_t, 2> reserved{};
+};
+
 /** Disk form of one roster group object and its slots. */
 struct RosterGroupRecord {
     std::uint32_t registryKey{};
@@ -263,8 +273,11 @@ static_assert(sizeof(Prefix) == kCacheMagic.size() + sizeof(std::uint32_t));
 static_assert(sizeof(InvestmentConstants)
               == constants::kCharacterStatRowCount + 2 * sizeof(std::uint8_t));
 static_assert(sizeof(Header)
-              == kCacheMagic.size() + 16 * sizeof(std::uint32_t) + 2 * sizeof(std::uint64_t)
+              == kCacheMagic.size() + 17 * sizeof(std::uint32_t) + 2 * sizeof(std::uint64_t)
                      + sizeof(InvestmentConstants));
+static_assert(sizeof(SpawnPointRecord)
+              == spawn_sets::kPositionComponents * sizeof(float) + sizeof(std::uint32_t)
+                     + sizeof(std::uint16_t) + 2 * sizeof(std::uint8_t));
 static_assert(sizeof(HashNameRecord)
               == hash_names::kNameLength + sizeof(std::uint32_t) + 4 * sizeof(std::uint8_t));
 static_assert(sizeof(ScenarioRecord)

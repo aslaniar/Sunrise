@@ -93,4 +93,10 @@ namespace sunrise::state::build_data::cache::records {
 /** @param value Receives the runtime row. @return True when the disk row is in standard form. */
 [[nodiscard]] bool decode(const SpawnNameHashRecord& record, spawn_sets::NameHash& value) noexcept;
 
+/** @param record Receives the packed disk row. @return Always true. */
+[[nodiscard]] bool encode(const spawn_sets::Point& value, SpawnPointRecord& record) noexcept;
+
+/** @param value Receives the runtime row. @return True when the disk row is in standard form. */
+[[nodiscard]] bool decode(const SpawnPointRecord& record, spawn_sets::Point& value) noexcept;
+
 } // namespace sunrise::state::build_data::cache::records

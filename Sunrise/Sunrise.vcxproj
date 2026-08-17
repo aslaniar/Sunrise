@@ -56,7 +56,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
-      <AdditionalDependencies>kernel32.lib;bcrypt.lib;user32.lib;gdi32.lib;dwmapi.lib;d3dcompiler.lib;shell32.lib;ws2_32.lib;synchronization.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>kernel32.lib;bcrypt.lib;user32.lib;gdi32.lib;dwmapi.lib;d3dcompiler.lib;shell32.lib;ws2_32.lib;synchronization.lib;ole32.lib;windowscodecs.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
@@ -216,6 +216,7 @@
     <ClCompile Include="src\client\ui\sword_skate\sword_skate_panel.cpp" />
     <ClCompile Include="src\client\hooks\noclip\horizontal_noclip.cpp" />
     <ClCompile Include="src\client\movement\movement_settings_store.cpp" />
+    <ClCompile Include="src\client\player\player_position.cpp" />
     <ClCompile Include="src\client\input\window_focus.cpp" />
     <ClCompile Include="src\client\hooks\teleport\teleport_lifecycle.cpp" />
     <ClCompile Include="src\client\hooks\teleport\teleport_move.cpp" />
@@ -427,9 +428,9 @@
     <ClCompile Include="src\client\content\scenarios\scenario_build.cpp" />
     <ClCompile Include="src\client\content\scenarios\scenario_collect.cpp" />
     <ClCompile Include="src\client\content\spawn_sets\spawn_set_build.cpp" />
+    <ClCompile Include="src\client\content\spawn_sets\spawn_set_catalog_builder.cpp" />
     <ClCompile Include="src\client\content\hash_names\hash_name_build.cpp" />
     <ClCompile Include="src\client\content\hash_names\hash_name_matcher.cpp" />
-    <ClCompile Include="src\client\content\spawn_sets\spawn_set_catalog_builder.cpp" />
     <ClCompile Include="src\client\content\scenarios\scenario_roster_build.cpp" />
     <ClCompile Include="src\client\content\scenarios\scenario_roster_groups.cpp" />
     <ClCompile Include="src\client\content\scenarios\scenario_roster_publish.cpp" />
@@ -771,6 +772,7 @@
     <ClInclude Include="src\client\ui\sword_skate\sword_skate_panel.h" />
     <ClInclude Include="src\client\hooks\noclip\runtime.h" />
     <ClInclude Include="src\client\movement\movement_settings_store.h" />
+    <ClInclude Include="src\client\player\player_position.h" />
     <ClInclude Include="src\client\hooks\fly\fly.h" />
     <ClInclude Include="src\client\hooks\teleport\internal.h" />
     <ClInclude Include="src\client\input\window_focus.h" />
@@ -791,10 +793,8 @@
     <ClInclude Include="src\client\content\activity\source.h" />
     <ClInclude Include="src\client\content\scenarios\scenario_build.h" />
     <ClInclude Include="src\client\content\scenarios\internal.h" />
-    <ClInclude Include="src\client\content\spawn_sets\spawn_set_build.h" />
     <ClInclude Include="src\client\content\hash_names\hash_name_build.h" />
     <ClInclude Include="src\client\content\hash_names\hash_name_matcher.h" />
-    <ClInclude Include="src\client\content\spawn_sets\spawn_set_catalog_builder.h" />
     <ClInclude Include="src\client\content\investment\layout.h" />
     <ClInclude Include="src\client\content\investment\internal.h" />
     <ClInclude Include="src\client\content\investment\source.h" />

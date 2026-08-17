@@ -103,7 +103,8 @@ bool initialize(void* module, std::uint64_t configuredEquipmentHash) noexcept {
         || !scenarios::replace(domains.scenarios, domains.rosterGroups)
         // An empty catalog is complete, so the spawn-set replace is skipped rather than failed.
         || (!domains.spawnStems.empty()
-            && !spawn_sets::replace(domains.spawnStems, domains.spawnNameHashes))
+            && !spawn_sets::replace(
+                domains.spawnStems, domains.spawnNameHashes, domains.spawnPoints))
         || !hash_names::replace(domains.hashNames)) {
         // No domain remains published when any catalog rejects the cache transaction.
         runtime::clear_catalogs();

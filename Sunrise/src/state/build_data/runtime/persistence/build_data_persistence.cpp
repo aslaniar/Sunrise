@@ -58,6 +58,7 @@ to_record(const constants::InvestmentConstants& value) noexcept {
            && scenarios::snapshot_groups(scratch.rosterGroups, counts.rosterGroups)
            && spawn_sets::snapshot(scratch.spawnStems, counts.spawnStems)
            && spawn_sets::snapshot_hashes(scratch.spawnNameHashes, counts.spawnNameHashes)
+           && spawn_sets::snapshot_points(scratch.spawnPoints, counts.spawnPoints)
            && hash_names::snapshot(scratch.hashNames, counts.hashNames)
            && cache::records::canonicalize(scratch, counts);
 }
@@ -94,6 +95,7 @@ cache::records::MutableDomains scratch_domains(Context& state) noexcept {
         state.rosterGroupScratch,
         state.spawnStemScratch,
         state.spawnNameHashScratch,
+        state.spawnPointScratch,
         state.hashNameScratch,
     };
 }
@@ -121,6 +123,7 @@ void clear_locked(Context& state) noexcept {
     std::fill(scratch.spawnStems.begin(), scratch.spawnStems.end(), spawn_sets::Stem{});
     std::fill(
         scratch.spawnNameHashes.begin(), scratch.spawnNameHashes.end(), spawn_sets::NameHash{});
+    std::fill(scratch.spawnPoints.begin(), scratch.spawnPoints.end(), spawn_sets::Point{});
     std::fill(scratch.hashNames.begin(), scratch.hashNames.end(), hash_names::Name{});
     state.constantsScratch = {};
     state.cacheDirectory = {};
@@ -148,6 +151,7 @@ cache::records::Domains occupied_domains(Context& state,
         std::span(state.rosterGroupScratch).first(counts.rosterGroups),
         std::span(state.spawnStemScratch).first(counts.spawnStems),
         std::span(state.spawnNameHashScratch).first(counts.spawnNameHashes),
+        std::span(state.spawnPointScratch).first(counts.spawnPoints),
         std::span(state.hashNameScratch).first(counts.hashNames),
     };
 }

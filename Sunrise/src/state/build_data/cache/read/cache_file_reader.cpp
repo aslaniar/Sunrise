@@ -29,6 +29,7 @@ namespace {
            && counts.rosterGroups <= output.rosterGroups.size()
            && counts.spawnStems <= output.spawnStems.size()
            && counts.spawnNameHashes <= output.spawnNameHashes.size()
+           && counts.spawnPoints <= output.spawnPoints.size()
            && counts.hashNames <= output.hashNames.size();
 }
 
@@ -47,6 +48,7 @@ namespace {
         header.rosterGroupCount,
         header.spawnStemCount,
         header.spawnNameHashCount,
+        header.spawnPointCount,
         header.hashNameCount,
     };
 }

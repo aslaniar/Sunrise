@@ -78,6 +78,7 @@ void clear(records::MutableDomains output) noexcept {
     std::fill(output.rosterGroups.begin(), output.rosterGroups.end(), scenarios::RosterGroup{});
     std::fill(output.spawnStems.begin(), output.spawnStems.end(), spawn_sets::Stem{});
     std::fill(output.spawnNameHashes.begin(), output.spawnNameHashes.end(), spawn_sets::NameHash{});
+    std::fill(output.spawnPoints.begin(), output.spawnPoints.end(), spawn_sets::Point{});
     std::fill(output.hashNames.begin(), output.hashNames.end(), hash_names::Name{});
 }
 
@@ -96,6 +97,7 @@ bool expected_size(const records::DomainCounts& counts, std::uint64_t& size) noe
            && add_records(counts.rosterGroups, sizeof(records::RosterGroupRecord), size)
            && add_records(counts.spawnStems, sizeof(records::SpawnStemRecord), size)
            && add_records(counts.spawnNameHashes, sizeof(records::SpawnNameHashRecord), size)
+           && add_records(counts.spawnPoints, sizeof(records::SpawnPointRecord), size)
            && add_records(counts.hashNames, sizeof(records::HashNameRecord), size);
 }
 
@@ -141,6 +143,9 @@ bool read_payload(HANDLE file,
             && read_domain<records::SpawnNameHashRecord>(
                 file, output.spawnNameHashes.first(counts.spawnNameHashes), checksum);
     valid = valid
+            && read_domain<records::SpawnPointRecord>(
+                file, output.spawnPoints.first(counts.spawnPoints), checksum);
+    valid = valid
             && read_domain<records::HashNameRecord>(
                 file, output.hashNames.first(counts.hashNames), checksum);
     if (!valid) {
@@ -160,6 +165,7 @@ bool read_payload(HANDLE file,
         output.rosterGroups.first(counts.rosterGroups),
         output.spawnStems.first(counts.spawnStems),
         output.spawnNameHashes.first(counts.spawnNameHashes),
+        output.spawnPoints.first(counts.spawnPoints),
         output.hashNames.first(counts.hashNames),
     });
 }

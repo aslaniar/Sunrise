@@ -446,4 +446,40 @@ bool owns_local_player(void* component) noexcept {
            && owns_player(static_cast<std::byte*>(component));
 }
 
+/** Reads the world position of the body a physics component drives. */
+bool read_position(void* component, Vector& position) noexcept {
+    if (component == nullptr) {
+        return false;
+    }
+    std::byte* const body = body_of(static_cast<std::byte*>(component));
+    return body != nullptr && read_at(body + kBodyPositionX, position);
+}
+
+/** Writes the world position of the body a physics component drives. */
+bool write_position(void* component, const Vector& position) noexcept {
+    if (component == nullptr) {
+        return false;
+    }
+    std::byte* const body = body_of(static_cast<std::byte*>(component));
+    return body != nullptr && write_vector(body + kBodyPositionX, position);
+}
+
+/** Reads the linear velocity of the body a physics component drives. */
+bool read_velocity(void* component, Vector& velocity) noexcept {
+    if (component == nullptr) {
+        return false;
+    }
+    std::byte* const body = body_of(static_cast<std::byte*>(component));
+    return body != nullptr && read_at(body + kBodyVelocityX, velocity);
+}
+
+/** Writes the linear velocity of the body a physics component drives. */
+bool write_velocity(void* component, const Vector& velocity) noexcept {
+    if (component == nullptr) {
+        return false;
+    }
+    std::byte* const body = body_of(static_cast<std::byte*>(component));
+    return body != nullptr && write_vector(body + kBodyVelocityX, velocity);
+}
+
 } // namespace sunrise::client::hooks::teleport

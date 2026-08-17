@@ -39,6 +39,7 @@ struct Context {
     std::array<scenarios::RosterGroup, scenarios::kRosterGroupCapacity> rosterGroupScratch{};
     std::array<spawn_sets::Stem, spawn_sets::kStemCapacity> spawnStemScratch{};
     std::array<spawn_sets::NameHash, spawn_sets::kNameHashCapacity> spawnNameHashScratch{};
+    std::array<spawn_sets::Point, spawn_sets::kPointCapacity> spawnPointScratch{};
     std::array<hash_names::Name, hash_names::kNameCapacity> hashNameScratch{};
     cache::records::InvestmentConstants constantsScratch{};
     core::path::Buffer cacheDirectory;
