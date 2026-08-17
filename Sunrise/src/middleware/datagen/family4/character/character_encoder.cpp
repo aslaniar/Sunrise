@@ -145,42 +145,6 @@ bool encode(const state::CharacterState& state,
     object.previewMirrors.fill(state.previewAvailable ? kNativeTrue : kNativeFalse);
     object.contentBypass = state.contentBypass ? kNativeTrue : kNativeFalse;
     object.seenMessages.fill(kSeenMessageByte);
-    // The 2d whole-record padding sweep: the offset-encoded markers in EVERY padding
-    // region — the sync_header sampler shows which (if any) padding field the client's
-    // schema walk places at its store +0x2F00 block. The marker = 0x6D6D0000 | (the
-    // field's packed offset & 0xFFFF), so one boot names the source field directly.
-    // (The 0x2EFC-grid sweep landed NOTHING — the packed offsets do not map to the
-    // client's store by a simple delta; the schema reorders.)
-    {
-        const auto mark = [&object](std::byte* const field, std::uint32_t marker) {
-            std::uint32_t* words = reinterpret_cast<std::uint32_t*>(field);
-            words[0] = marker;
-        };
-        mark(reinterpret_cast<std::byte*>(&object.summaryGatePadding),
-             0x6D6D0000u | 0x0B00u);
-        mark(reinterpret_cast<std::byte*>(&object.gateSeenPadding),
-             0x6D6D0000u | 0x0B10u);
-        mark(reinterpret_cast<std::byte*>(&object.seenRosterPadding),
-             0x6D6D0000u | 0x0B20u);
-        mark(reinterpret_cast<std::byte*>(&object.rosterDestinationPadding),
-             0x6D6D0000u | 0x0B30u);
-        mark(reinterpret_cast<std::byte*>(&object.progressPreviewPadding),
-             0x6D6D0000u | 0x0B40u);
-        mark(reinterpret_cast<std::byte*>(&object.previewProgressionPadding),
-             0x6D6D0000u | 0x0B50u);
-        mark(reinterpret_cast<std::byte*>(&object.valuesContentPadding),
-             0x6D6D0000u | 0x0B60u);
-        mark(reinterpret_cast<std::byte*>(&object.contentTailPadding),
-             0x6D6D0000u | 0x0B70u);
-        mark(reinterpret_cast<std::byte*>(&object.creationHeader),
-             0x6D6D0000u | 0x0B80u);
-        mark(reinterpret_cast<std::byte*>(&object.inventorySerialPadding),
-             0x6D6D0000u | 0x0B90u);
-        mark(reinterpret_cast<std::byte*>(&object.inventoryEquipmentPadding),
-             0x6D6D0000u | 0x0BA0u);
-        mark(reinterpret_cast<std::byte*>(&object.resetFlagsPadding),
-             0x6D6D0000u | 0x0BB0u);
-    }
     for (inventory::layout::Entry& item : object.inventoryItems) {
         item.definitionIndex = kEmptyDefinitionIndex;
     }
@@ -218,6 +182,25 @@ bool encode(const state::CharacterState& state,
             object.equippedInstanceSoids[item.equipmentSlot] = item.instance.instanceSoid;
         }
     }
+
+    // The native character-object observer's tail stamp: on every diff the client
+    // compares bytes 0xB74C/0xB74D (the last 4 bytes of the object) against its store
+    // and marks its content-state changed when they differ. Publish a loadout-stable
+    // stamp so ordinary pushes stay quiescent and equipment changes (the subclass
+    // swap) trigger the client's content refresh. FNV-1a over the equipped SOIDs,
+    // truncated to 16 bits, little-endian at 0xB74C.
+    std::uint32_t contentStampHash = 0x811C9DC5u;
+    for (const std::uint64_t soid : object.equippedInstanceSoids) {
+        for (int byte = 0; byte < 8; ++byte) {
+            contentStampHash ^= static_cast<std::uint8_t>(soid >> (byte * 8));
+            contentStampHash *= 0x01000193u;
+        }
+    }
+    const std::uint16_t contentStamp = static_cast<std::uint16_t>(contentStampHash);
+    object.contentTailPadding[layout::kContentTailPaddingSize - 4] =
+        static_cast<std::byte>(contentStamp & 0xFFu);
+    object.contentTailPadding[layout::kContentTailPaddingSize - 3] =
+        static_cast<std::byte>(contentStamp >> 8);
 
     // Commit only after validation so callers never receive a partially initialized object.
     std::fill(output.begin(), output.end(), std::byte{});
