@@ -118,6 +118,7 @@ enum class WriteStatus {
         static_cast<std::uint32_t>(domains.rosterGroups.size()),
         static_cast<std::uint32_t>(domains.spawnStems.size()),
         static_cast<std::uint32_t>(domains.spawnNameHashes.size()),
+        static_cast<std::uint32_t>(domains.spawnPoints.size()),
         static_cast<std::uint32_t>(domains.hashNames.size()),
         domains.constants,
         checksum,

@@ -184,8 +184,9 @@ void append_queuez_notification(Scratch& scratch,
                                               queuez::SessionState& after) noexcept;
 
 /**
- * Appends the family-zero move that follows an opcode-504 pick.
- * The Client holds the objIdx-1 buffer for one character at a time, so the pair moves with it.
+ * Appends the family-zero pair that follows an opcode-504 pick.
+ * The Client holds the objIdx-1 buffer for one character at a time, so the pair moves with it. A
+ * pick naming the character it already holds republishes the pair in place.
  * @param before Queuez state after the family-four move.
  * @param selectedCharacter Character the pick named.
  * @param key Active AES-GCM session key.
