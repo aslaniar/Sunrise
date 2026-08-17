@@ -29,16 +29,28 @@ struct Baseline final {
     /**
      * Archetype schemaTagHash the client resolves against the runtime schema table
      * (FUN_1404C74D0: bucket = (hash >> 13) & 0x3FF, row = hash & 0x1FFF). The verified
-     * bucket for the n1019 combatant-baseline node = 1019, so the hash = 0x7F6000 | row;
-     * the row comes from the schema-capture hook (FUN_1404C74D0 log) until then and the
-     * settings knob carries the live value (claims/schema-hash-mine.md).
+     * default = 0x80806AC0 = the hash the CLIENT ITSELF passes for the player baseline
+     * at destination load (schema_capture hook observation, 2026-08-16:
+     * `ev=schema_capture ... hash=0x80806AC0 bucket=3 row=2752 codec=0`; the player
+     * renders with codec 0) -- a tag handle of package 3, entry 0xAC0. This SUPERSEDES
+     * the earlier 0x7F6000 (bucket 1019, row 0) probe: schema-hash-mine.md 2.3 verified
+     * row 0 of bucket 1019 is a garbage record, so that hash sent the walker over
+     * garbage tree entries -- the black-screen poison. The settings knob carries the
+     * live value (claims/refined-payload.md).
      */
     std::uint32_t schemaHash{};
     /**
      * Global entity slot: the 13-bit handle of the entity-index property (FUN_1404C16C0,
      * A-variant: 13-bit handle + 4-bit salt, the 2-bit extra from a client global). The
      * lease check in FUN_141718080 reads bit (handle & 0x1FFF) of the world's lease mask,
-     * which the join's type-0 push grants fully (O1, spec 3.3).
+     * which the join's type-0 push grants fully (O1, spec 3.3). Slot 8191 is the SPEC
+     * convention for server entities (s2-world-population-spec 3.3/7.1: server entities
+     * take the top of the mask, 8191 downward, so the client's low-prefix grants can
+     * never overlap; the fork's select_free also grants ascending -- the player lives in
+     * the low prefix). A high slot's type-table entry is unregistered, so the
+     * FUN_141718080 typeId match fails and the create runs the ordinary from-scratch
+     * path (plVar7 = 0), which is the correct path for a create. Claims/refined-payload.md
+     * 2 documents the reasoning.
      */
     std::uint16_t globalSlot{};
     /**

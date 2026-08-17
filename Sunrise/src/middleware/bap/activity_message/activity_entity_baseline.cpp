@@ -42,6 +42,17 @@ namespace {
  * 5. Loop termination -- 1 bit = 1 (FUN_141718510's post-entity read; 1 stops).
  * 6. Zero padding to the fixed 136-byte body.
  *
+ * The schema-tree reader shapes are VERIFIED from the phase6/phase9 reader bodies and
+ * the refined-payload lane (claims/refined-payload.md, 2026-08-16):
+ *   - reader 19 entity_index (FUN_1409F3970): present(1) + FUN_1404C16C0 (13+4)
+ *     + 6-bit salt (FUN_1403513b0(stream, 6)) = 24 bits when present;
+ *   - reader 14 vector3d (FUN_140351730): present(1) + 1-bit selector (0 = quantized
+ *     index path) + 19-bit direction index + 16-bit magnitude = 37 bits when presented;
+ *   - reader 16 forward_and_up (FUN_1409F4A60): present(1) + 1-bit axis source
+ *     (0 = the 19-entry enum FUN_1403516d0) + 19-bit axis + facing_angle = 29 bits;
+ *   - reader 11 real32 (FUN_1409F8D50): raw 32 bits when the entry meta bits are not
+ *     in 1..31 (the VERIFIED raw branch the baseline uses).
+ *
  * The 0x84-byte entity record is the client-side materialization (kind 0xff @0, id @4,
  * entity-index @8, anchor @0xc, header index @0x10, flags @0x40, ...) -- the stream above
  * is its wire form; it is not itself on the wire.
@@ -63,6 +74,13 @@ constexpr std::uint8_t kHeaderIndexWidth = 8;
 /** entity_index property widths (FUN_1404C16C0): 13-bit handle, 4-bit salt. */
 constexpr std::uint8_t kEntityIndexHandleWidth = 13;
 constexpr std::uint8_t kEntityIndexSaltWidth = 4;
+/**
+ * Reader-19 (schema-tree entity_index) tail: after FUN_1404C16C0's 13+4 bits, the
+ * reader reads a 6-bit salt (FUN_1409F3970, phase6/decompiles.txt line 49:
+ * `uVar2 = FUN_1403513b0(param_4,6)`). A present reader-19 field is therefore
+ * 1 + 17 + 6 = 24 bits; the encoder writes the salt as 0 (a fresh entity).
+ */
+constexpr std::uint8_t kEntityIndexTailSaltWidth = 6;
 /** Create-path 8-bit stream byte width (record + 0x44). */
 constexpr std::uint8_t kStreamByteWidth = 8;
 /** Create-path 2-bit codec type width (record + 0). */
@@ -89,14 +107,19 @@ constexpr std::size_t kCoreFieldCount = 8;
  *  entity-index), each 1 present bit + 13-bit handle + 4-bit salt. The same slot names
  *  all three in v0 (the per-point mapping is open). */
 constexpr std::uint8_t kIdentityFieldCount = 3;
-/** F3 movement: vector3d present bit + 19-bit direction + 16-bit magnitude. The
- *  direction width is VERIFIED (FUN_1403516D0's 0x13 read); the magnitude width 16 and
- *  step 0.01 come from the vector3d descriptor 0x141BA5F90, whose contents are undumped
- *  (INFERRED probe constants, centralized here). */
+/** F3 movement: vector3d present bit + 1-bit selector (0 = quantized index path,
+ *  VERIFIED FUN_140351730 phase9/decompiles.txt line 36) + 19-bit direction + 16-bit
+ *  magnitude. The direction width 19 and magnitude width 16 are VERIFIED by reader-14's
+ *  wrapper locals (0x13/0x10, phase6 FUN_1409F3330) and FUN_1403516D0's 0x13 read; the
+ *  magnitude min/step (DAT_141BA5F90 / DAT_141BD0F68, UNDUMPED) use the probe step 0.01. */
+constexpr std::uint8_t kVectorSelectorWidth = 1;
 constexpr std::uint8_t kVectorDirectionWidth = 19;
 constexpr std::uint8_t kVectorMagnitudeWidth = 16;
-/** F3 forward_and_up: present bit + 19-bit axis + 8-bit facing angle. Axis width
- *  VERIFIED (FUN_1409F4A60); angle width from DAT_141BA1780 (undumped, INFERRED). */
+/** F3 forward_and_up: present bit + 1-bit axis source (0 = the 19-entry enum path,
+ *  VERIFIED FUN_1409F4A60 phase6 line 224) + 19-bit axis + 8-bit facing angle. The
+ *  facing width is a probe: the reader's hidden args are undumped (local_88 = 7 in the
+ *  FUN_1409F4A60 body hints at 7 bits -- a named probe constant, see the claim). */
+constexpr std::uint8_t kAxisSourceWidth = 1;
 constexpr std::uint8_t kAxisWidth = 19;
 constexpr std::uint8_t kFacingAngleWidth = 8;
 /** F3 vitality: reader 11 real32 has a VERIFIED raw 32-bit branch. */
@@ -121,16 +144,20 @@ constexpr std::uint64_t kProbeAxisIndex = 0;
     return scaled <= 0.0F ? 0U : static_cast<std::uint64_t>(scaled);
 }
 
-/** Writes one F3 identity field: present bit + 13-bit handle + 4-bit salt. */
+/** Writes one F3 identity field (reader 19): present bit + 13-bit handle + 4-bit salt
+ *  (FUN_1404C16C0) + the reader's 6-bit tail salt (FUN_1409F3970 reads 6 more bits). */
 [[nodiscard]] bool write_identity(encoding::bits::Writer& writer, std::uint16_t slot) noexcept {
     return writer.write(1, 1) && writer.write(slot & 0x1FFFU, kEntityIndexHandleWidth)
-           && writer.write(0, kEntityIndexSaltWidth);
+           && writer.write(0, kEntityIndexSaltWidth)
+           && writer.write(0, kEntityIndexTailSaltWidth);
 }
 
-/** Writes one F3 movement field: present bit + direction + magnitude. */
+/** Writes one F3 movement field (reader 14): present bit + selector 0 (the quantized
+ *  index path, FUN_140351730) + direction index + magnitude. */
 [[nodiscard]] bool write_vector3d(encoding::bits::Writer& writer,
                                   std::array<float, 3> value) noexcept {
-    if (!writer.write(1, 1) || !writer.write(kProbeDirectionIndex, kVectorDirectionWidth)) {
+    if (!writer.write(1, 1) || !writer.write(0, kVectorSelectorWidth)
+        || !writer.write(kProbeDirectionIndex, kVectorDirectionWidth)) {
         return false;
     }
     const float squared =
@@ -195,9 +222,11 @@ bool encode_entity_baseline(const Baseline& baseline,
         || !write_vector3d(writer, {0.0F, 0.0F, 0.0F})) {
         return false;
     }
-    // forward_and_up: present + probe axis 0 + facing angle. Axis 0 with angle 0 decodes
-    // to forward = axis * sin(0) = 0, up = cos(0) = 1 -- a standing replica (INFERRED).
-    if (!writer.write(1, 1) || !writer.write(kProbeAxisIndex, kAxisWidth)
+    // forward_and_up: present + axis-source 0 (the enum path, FUN_1409F4A60) + probe
+    // axis 0 + facing angle. Axis 0 with angle 0 decodes to forward = axis * sin(0) = 0,
+    // up = cos(0) = 1 -- a standing replica (INFERRED).
+    if (!writer.write(1, 1) || !writer.write(0, kAxisSourceWidth)
+        || !writer.write(kProbeAxisIndex, kAxisWidth)
         || !writer.write(quantize(baseline.facingRadians, 0.0F, kFacingScale),
                          kFacingAngleWidth)) {
         return false;

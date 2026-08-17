@@ -55,14 +55,17 @@ struct Settings {
      */
     std::uint32_t worldPopulationCarrier{7};
     /**
-     * S2-0 probe knob: the archetype schemaTagHash the baseline names. The default
-     * 0x7F6000 = bucket 1019, row 0 -- the ONLY hash with a VERIFIED bucket that lands on
-     * schema node n1019's group (the combatant-baseline-shaped node of the 8
-     * destination-loaded nodes; claims/schema-hash-mine.md). The ROW is closed by the
-     * schema_capture hook (FUN_1404C74D0 log): the client's own player-baseline decode
-     * passes the exact hash, and this knob is set to that logged value at the boot.
+     * S2-0 probe knob: the archetype schemaTagHash the baseline names. Default
+     * 0x80806AC0 (2,155,899,584) = the hash the CLIENT ITSELF passes for the player
+     * baseline at destination load -- observed by the schema_capture hook (FUN_1404C74D0
+     * log, 2026-08-16: `hash=0x80806AC0 bucket=3 row=2752 codec=0`; the player renders
+     * with codec 0). It is a tag handle: 0x80800000 + (package 3 << 13) + entry 0xAC0.
+     * This SUPERSEDES the earlier 0x7F6000 (bucket 1019, row 0): schema-hash-mine.md 2.3
+     * verified row 0 of bucket 1019 = a garbage record, so that hash made the walker
+     * decode garbage tree entries -- the black-screen poison. The knob still overrides
+     * at the boot; the default is the corrected value (claims/refined-payload.md).
      */
-    std::uint32_t worldPopulationSchemaHash{0x7F6000U};
+    std::uint32_t worldPopulationSchemaHash{0x80806AC0U};
 };
 
 } // namespace sunrise::core::settings::server
