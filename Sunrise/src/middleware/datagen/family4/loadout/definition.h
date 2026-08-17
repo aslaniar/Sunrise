@@ -24,6 +24,10 @@ struct ResolvedItem {
     /** False for non-equipped storage rows: they publish no equippedInstanceSoids entry. */
     bool equipped{true};
     instance::ResolvedInstance instance{};
+    /** Authored runtime generation copied into the native inventory row. */
+    std::int32_t mutationSerial{};
+    /** Accumulated native item-state bits copied into the native inventory row. */
+    std::uint32_t flags{};
 };
 
 /** One item instance together with the native equipment slot that owns it. */

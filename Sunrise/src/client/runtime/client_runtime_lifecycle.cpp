@@ -20,7 +20,7 @@
 #include "../sword_skate/sword_skate_settings_store.h"
 #include "../targets/game.h"
 #include "../targets/steam_targets.h"
-#include "../teleport/teleport_settings_store.h"
+#include "../movement/movement_settings_store.h"
 #include "../ui/runtime/client_ui_module_runtime.h"
 #include "internal.h"
 #include "runtime.h"

@@ -8,14 +8,11 @@
 namespace sunrise::state::build_data::items::details {
 
 /**
- * Installed item definitions used by Collections, character instances, profile stacks, and
- *
- * their native initial plugs. The
- * supported installed build carries 15,424 total item rows, so
- * the next power of two is also a
- * formal upper bound for the deduplicated detail closure.
+ * Configured equipment plus every plug those items socket. 16 slots on 3 characters is 48 items,
+ * and each item sockets up to 12 plugs whose own details the character record needs. The size
+ * covers both sets with duplicates removed.
  */
-inline constexpr std::size_t kDefinitionCapacity = 16384;
+inline constexpr std::size_t kDefinitionCapacity = 768;
 /** Family item instances have 12 fixed ordinary socket lanes. */
 inline constexpr std::size_t kInitialPlugCapacity = 12;
 /** Native equipment ids run from 0 to 19. */
@@ -34,8 +31,6 @@ inline constexpr std::size_t kSandboxPerkCapacity = 4;
 inline constexpr std::size_t kRenderOverrideCapacity = 32;
 /** All bits set marks an art index the definition does not declare. */
 inline constexpr std::uint16_t kUnavailableArtIndex = 0xFFFF;
-/** Generic art plus one row for each playable character class. */
-inline constexpr std::size_t kArtClassCapacity = 4;
 /** All bits set marks a socket lane whose type the definition does not declare. */
 inline constexpr std::uint16_t kUnavailableSocketType = 0xFFFF;
 /** A signed material override key is empty at -1. */
@@ -85,15 +80,7 @@ unavailable_plug_indices() noexcept {
     return result;
 }
 
-/** @return Generic and class-qualified art slots initialized to the empty sentinel. */
-[[nodiscard]] constexpr std::array<std::uint16_t, kArtClassCapacity>
-unavailable_art_indices() noexcept {
-    std::array<std::uint16_t, kArtClassCapacity> result{};
-    result.fill(kUnavailableArtIndex);
-    return result;
-}
-
-/** Installed-build fields required to generate one supported item instance. */
+/** Installed-build fields required to generate one configured item instance. */
 struct Definition {
     std::uint16_t definitionIndex{};
     /** The definition's own hash, which the character record collects for its overflow bank. */
@@ -113,8 +100,8 @@ struct Definition {
     std::array<Stat, kStatCapacity> stats{};
     /** Gear art definition index the render row publishes. */
     std::uint16_t gearArtIndex{kUnavailableArtIndex};
-    /** Generic, Titan, Hunter, and Warlock arrangement alternatives. */
-    std::array<std::uint16_t, kArtClassCapacity> artArrangementIndices{unavailable_art_indices()};
+    /** Art arrangement index the render row publishes beside it. */
+    std::uint16_t artArrangementIndex{kUnavailableArtIndex};
     /** Number of filled leading entries in `sandboxPerks`. */
     std::uint8_t sandboxPerkCount{};
     std::array<std::uint16_t, kSandboxPerkCapacity> sandboxPerks{};

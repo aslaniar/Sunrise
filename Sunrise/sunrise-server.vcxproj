@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|x64">
@@ -98,6 +98,7 @@
     <ClCompile Include="src\core\logging\log.cpp" />
     <ClCompile Include="src\core\logging\snapshot\log_snapshot_ring.cpp" />
     <ClCompile Include="src\core\logging\view\log_snapshot_view.cpp" />
+    <ClCompile Include="src\core\settings\address_text.cpp" />
     <ClCompile Include="src\core\settings\client\client_settings_parser.cpp" />
     <ClCompile Include="src\core\settings\client\client_ui_settings_parser.cpp" />
     <ClCompile Include="src\core\settings\client\external\client_external_settings_parser.cpp" />
@@ -105,6 +106,8 @@
     <ClCompile Include="src\core\settings\json_scalar.cpp" />
     <ClCompile Include="src\core\settings\json_structure.cpp" />
     <ClCompile Include="src\core\settings\server\entitlement_settings_parser.cpp" />
+    <ClCompile Include="src\core\settings\server\gameplay\gameplay_settings_parser.cpp" />
+    <ClCompile Include="src\core\settings\server\gameplay\gameplay_settings_validation.cpp" />
     <ClCompile Include="src\core\settings\server\server_settings_parser.cpp" />
     <ClCompile Include="src\core\settings\settings_parser.cpp" />
     <ClCompile Include="src\core\settings\settings_runtime.cpp" />
@@ -124,6 +127,37 @@
     <ClCompile Include="src\core\settings\state_settings.cpp" />
     <ClCompile Include="src\core\settings\steam\steam_settings_parser.cpp" />
     <ClCompile Include="src\core\ui\busy\ui_busy_state.cpp" />
+    <ClCompile Include="src\middleware\crypto\aes_cbc.cpp" />
+    <ClCompile Include="src\middleware\crypto\aes_gcm_encrypt.cpp" />
+    <ClCompile Include="src\middleware\crypto\ecc_p224.cpp" />
+    <ClCompile Include="src\middleware\crypto\ecc_p224_curve.cpp" />
+    <ClCompile Include="src\middleware\crypto\hmac.cpp" />
+    <ClCompile Include="src\middleware\crypto\lookup3.cpp" />
+    <ClCompile Include="src\middleware\crypto\modular_1024.cpp" />
+    <ClCompile Include="src\middleware\crypto\murmur3.cpp" />
+    <ClCompile Include="src\middleware\crypto\random_bytes.cpp" />
+    <ClCompile Include="src\middleware\crypto\sha256.cpp" />
+    <ClCompile Include="src\middleware\crypto\tiger192.cpp" />
+    <ClCompile Include="src\middleware\encoding\bit_raw.cpp" />
+    <ClCompile Include="src\middleware\gameplay\association\control_packet.cpp" />
+    <ClCompile Include="src\middleware\gameplay\association\protected_datagram.cpp" />
+    <ClCompile Include="src\middleware\gameplay\association\srp_exchange.cpp" />
+    <ClCompile Include="src\middleware\gameplay\descriptor\join_descriptor.cpp" />
+    <ClCompile Include="src\middleware\gameplay\dtls\association_keys.cpp" />
+    <ClCompile Include="src\middleware\gameplay\dtls\dtls_messages.cpp" />
+    <ClCompile Include="src\middleware\gameplay\dtls\record.cpp" />
+    <ClCompile Include="src\middleware\gameplay\group\member_messages.cpp" />
+    <ClCompile Include="src\middleware\gameplay\group\parameter_messages.cpp" />
+    <ClCompile Include="src\middleware\gameplay\group\parameter_registry.cpp" />
+    <ClCompile Include="src\middleware\gameplay\group\session_messages.cpp" />
+    <ClCompile Include="src\middleware\gameplay\group\session_state.cpp" />
+    <ClCompile Include="src\middleware\gameplay\group\view_message.cpp" />
+    <ClCompile Include="src\middleware\gameplay\nat\introduction.cpp" />
+    <ClCompile Include="src\middleware\gameplay\peer\connect_messages.cpp" />
+    <ClCompile Include="src\middleware\gameplay\peer\established_packet.cpp" />
+    <ClCompile Include="src\middleware\gameplay\peer\join_messages.cpp" />
+    <ClCompile Include="src\middleware\gameplay\peer\peer_container.cpp" />
+    <ClCompile Include="src\middleware\gameplay\peer\reliable_assembly.cpp" />
     <ClCompile Include="src\middleware\bap\account_translation\account_translation_response.cpp" />
     <ClCompile Include="src\middleware\bap\activity_host\activity_host_response.cpp" />
     <ClCompile Include="src\middleware\bap\activity_host_manager\request\activity_manager_request.cpp" />
@@ -242,6 +276,15 @@
     <ClCompile Include="src\middleware\web_service\messages\opcode601\opcode601_codec.cpp" />
     <ClCompile Include="src\middleware\web_service\status_fields.cpp" />
     <ClCompile Include="src\middleware\web_service\web_service_envelope.cpp" />
+    <ClCompile Include="src\server\gameplay\association\association_host.cpp" />
+    <ClCompile Include="src\server\gameplay\dtls\dtls_host.cpp" />
+    <ClCompile Include="src\server\gameplay\endpoint\gameplay_endpoint.cpp" />
+    <ClCompile Include="src\server\gameplay\gameplay_advertisement.cpp" />
+    <ClCompile Include="src\server\gameplay\gameplay_log.cpp" />
+    <ClCompile Include="src\server\gameplay\gameplay_runtime.cpp" />
+    <ClCompile Include="src\server\gameplay\group\group_host.cpp" />
+    <ClCompile Include="src\server\gameplay\group\group_host_sessions.cpp" />
+    <ClCompile Include="src\server\gameplay\peer\peer_transport.cpp" />
     <ClCompile Include="src\server\bap\bap_route.cpp" />
     <ClCompile Include="src\server\bap\encrypted\activity_host_manager\activity_host_manager_route.cpp" />
     <ClCompile Include="src\server\bap\encrypted\activity_message\activity_message_route.cpp" />
@@ -309,6 +352,7 @@
     <ClCompile Include="src\state\activity\activity_session_lookup.cpp" />
     <ClCompile Include="src\state\activity\activity_world_arrival.cpp" />
     <ClCompile Include="src\state\activity\bubble_authority\transactions\activity_bubble_authority_grant.cpp" />
+    <ClCompile Include="src\state\activity\transactions\activity_session_release.cpp" />
     <ClCompile Include="src\state\activity\defaults\activity_defaults_snapshot.cpp" />
     <ClCompile Include="src\state\activity\defaults\activity_defaults_validation.cpp" />
     <ClCompile Include="src\state\activity\destination\activity_destination_snapshot.cpp" />

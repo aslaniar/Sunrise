@@ -10,7 +10,7 @@
 
 #include "../../../core/ui/components/toggle/ui_toggle_component.h"
 #include "../../hooks/noclip/runtime.h"
-#include "../../teleport/teleport_settings_store.h"
+#include "../../movement/movement_settings_store.h"
 
 namespace sunrise::client::ui::teleport {
 namespace {

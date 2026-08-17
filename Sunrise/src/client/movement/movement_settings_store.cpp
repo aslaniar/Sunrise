@@ -1,6 +1,6 @@
 // Runtime-safe movement settings persisted beside the module after every interface change.
 
-#include "teleport_settings_store.h"
+#include "movement_settings_store.h"
 
 #include <Windows.h>
 

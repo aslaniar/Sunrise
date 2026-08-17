@@ -16,7 +16,7 @@
 #include "../../../core/ui/runtime/ui_visibility_runtime.h"
 #include "../../../state/account/account_state.h"
 #include "../../../state/runtime/runtime.h"
-#include "../../teleport/teleport_settings_store.h"
+#include "../../movement/movement_settings_store.h"
 #include "../noclip/runtime.h"
 #include "../polled_input/runtime.h"
 #include "internal.h"
