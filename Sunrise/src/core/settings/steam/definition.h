@@ -18,14 +18,14 @@ inline constexpr std::size_t kLanguageCapacity = kMaximumLanguageBytes + 1;
 struct User {
     /** Process-owned persona storage. Defaults to a neutral made-up name. */
     std::array<char, kPersonaNameCapacity> personaName{"Player"};
-    /** Steam API language token answered for GetCurrentGameLanguage/GetAvailableGameLanguages. */
-    std::array<char, kLanguageCapacity> language{"english"};
 };
 
 /** Read-only Steam compatibility settings parsed by Core. */
 struct Settings {
     /** Options for the single local user exposed through Steam interfaces. */
     User user;
+    /** Steam API language token answered for GetCurrentGameLanguage/GetAvailableGameLanguages. */
+    std::array<char, kLanguageCapacity> language{"english"};
 };
 
 } // namespace sunrise::core::settings::steam
