@@ -145,22 +145,17 @@ bool encode(const state::CharacterState& state,
     object.previewMirrors.fill(state.previewAvailable ? kNativeTrue : kNativeFalse);
     object.contentBypass = state.contentBypass ? kNativeTrue : kNativeFalse;
     object.seenMessages.fill(kSeenMessageByte);
-    // The 2d dynamic-state header (the client's character-record block at 0x2F00):
-    // the live shape = {0, tagA, tagB, 0, 0xFFFFFFFF x3, 0}. The two definition-hash
-    // slots (u32[1]/u32[2] per the 2dmap lane's positional evidence) carry the schema
-    // definition tags (0x80802C36/0x80802C35) as the non-sentinel candidates until the
-    // catalog resolution names the real hashes.
+    // The 2d mapping marker sweep (the measured reconciliation): unique marker u32s
+    // across the candidate header region (the packed offsets 0x2EFC..0x2F1C, the
+    // 4-byte grid) — the next boot's sync_header sampler shows WHERE each marker
+    // lands in the client's store +0x2F00 block, converting the static mapping
+    // (the 2dmap lane's flagged 0x10-shift uncertainty) into a measured delta.
     {
-        std::uint32_t* const header = reinterpret_cast<std::uint32_t*>(
-            reinterpret_cast<std::byte*>(&object.gateSeenPadding) + 4);
-        header[0] = 0;
-        header[1] = 0x80802C36u;
-        header[2] = 0x80802C35u;
-        header[3] = 0;
-        header[4] = 0xFFFFFFFFu;
-        header[5] = 0xFFFFFFFFu;
-        header[6] = 0xFFFFFFFFu;
-        header[7] = 0;
+        std::uint32_t* const sweep = reinterpret_cast<std::uint32_t*>(
+            reinterpret_cast<std::byte*>(&object.gateSeenPadding));
+        for (std::size_t i = 0; i < 9; ++i) {
+            sweep[i] = 0x6D6D6D01u + static_cast<std::uint32_t>(i);
+        }
     }
     for (inventory::layout::Entry& item : object.inventoryItems) {
         item.definitionIndex = kEmptyDefinitionIndex;
