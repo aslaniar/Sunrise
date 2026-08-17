@@ -221,8 +221,7 @@ bool initialize(void* module) noexcept {
         return fail("too_large");
     }
 
-    // Two banks this size would overflow the boot thread's stack, so they are static. Settings load
-    // once, on one thread, before any other runtime layer starts.
+    // Static because two 1 MiB banks overflow the stack. Settings load once, on one thread.
     static std::array<char, kConfigCapacity> buffer{};
     DWORD read = 0;
     const bool readOk =

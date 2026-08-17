@@ -5,8 +5,8 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
-#include <cstdio>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <string_view>
 
@@ -29,6 +29,7 @@ using patterns::signature_length;
 constexpr std::string_view kValidatorSignatureText =
     "40 53 48 83 EC 20 80 7C 24 58 00 44 0F B7 DA 4C 8B D1 BB 01 00 00 00 "
     "75 0D BB A3 FF FF FF 8B C3 48 83 C4 20 5B C3";
+/** Masked form of the validator text, which is the form the image scan takes. */
 constexpr auto kValidatorSignature =
     signature<signature_length(kValidatorSignatureText)>(kValidatorSignatureText);
 
@@ -36,8 +37,7 @@ constexpr auto kValidatorSignature =
  * The patchable registrar's extended-header authentication failure. Native code loads -89 here,
  * then joins the common result/cleanup path. The site is unique in this client build.
  */
-constexpr std::string_view kExtendedHeaderFailureText =
-    "B8 A7 FF FF FF E9 ? ? ? ?";
+constexpr std::string_view kExtendedHeaderFailureText = "B8 A7 FF FF FF E9 ? ? ? ?";
 constexpr auto kExtendedHeaderFailure =
     signature<signature_length(kExtendedHeaderFailureText)>(kExtendedHeaderFailureText);
 
@@ -48,6 +48,7 @@ constexpr auto kExtendedHeaderFailure =
  */
 constexpr std::string_view kCachedDataHashGateText =
     "84 C0 0F 85 ? ? ? ? E9 ? ? ? ? 48 8B 45 48 89 08";
+/** Masked form of the gate text, which is the form the image scan takes. */
 constexpr auto kCachedDataHashGate =
     signature<signature_length(kCachedDataHashGateText)>(kCachedDataHashGateText);
 
@@ -58,17 +59,16 @@ constexpr std::array<std::byte, 4> kSuccessResult{
 
 /** Replace JNZ rel32 (0F 85) with NOP; JMP rel32 (90 E9), retaining its native destination. */
 constexpr std::size_t kCachedDataBranchOffset = 2;
-constexpr std::array<std::byte, 2> kAlwaysTakeSuccessBranch{
-    std::byte{0x90}, std::byte{0xE9}};
+constexpr std::array<std::byte, 2> kAlwaysTakeSuccessBranch{std::byte{0x90}, std::byte{0xE9}};
 
 /** ABI recovered from the validator's native call site. */
 using ValidateHeader = std::int32_t(__fastcall*)(const std::uint32_t* validationMask,
-                                                  std::uint16_t packageGroup,
-                                                  std::uint64_t buildSignature,
-                                                  std::int32_t expectedFileSize,
-                                                  std::uint16_t localeToken,
-                                                  std::uint8_t rsaTrusted,
-                                                  const void* header) noexcept;
+                                                 std::uint16_t packageGroup,
+                                                 std::uint64_t buildSignature,
+                                                 std::int32_t expectedFileSize,
+                                                 std::uint16_t localeToken,
+                                                 std::uint8_t rsaTrusted,
+                                                 const void* header) noexcept;
 
 hooking::detour::Handle g_handle{};
 std::byte* g_extendedHeaderResult{};
@@ -130,13 +130,8 @@ std::int32_t __fastcall validate_header(const std::uint32_t* validationMask,
         }
     }
     const auto original = reinterpret_cast<ValidateHeader>(g_handle.original);
-    return original(validationMask,
-                    packageGroup,
-                    buildSignature,
-                    expectedFileSize,
-                    localeToken,
-                    1,
-                    header);
+    return original(
+        validationMask, packageGroup, buildSignature, expectedFileSize, localeToken, 1, header);
 }
 
 } // namespace
@@ -166,9 +161,8 @@ bool install() noexcept {
         return false;
     }
     g_extendedHeaderResult = extendedHeaderFailure + kResultImmediateOffset;
-    std::memcpy(g_extendedHeaderOriginal.data(),
-                g_extendedHeaderResult,
-                g_extendedHeaderOriginal.size());
+    std::memcpy(
+        g_extendedHeaderOriginal.data(), g_extendedHeaderResult, g_extendedHeaderOriginal.size());
     if (!write_code(g_extendedHeaderResult, kSuccessResult)) {
         (void)hooking::detour::uninstall(g_handle);
         g_extendedHeaderResult = nullptr;
@@ -178,9 +172,8 @@ bool install() noexcept {
         return false;
     }
     g_cachedDataBranch = cachedDataHashGate + kCachedDataBranchOffset;
-    std::memcpy(g_cachedDataBranchOriginal.data(),
-                g_cachedDataBranch,
-                g_cachedDataBranchOriginal.size());
+    std::memcpy(
+        g_cachedDataBranchOriginal.data(), g_cachedDataBranch, g_cachedDataBranchOriginal.size());
     if (!write_code(g_cachedDataBranch, kAlwaysTakeSuccessBranch)) {
         (void)write_code(g_extendedHeaderResult, g_extendedHeaderOriginal);
         (void)hooking::detour::uninstall(g_handle);
@@ -201,8 +194,7 @@ bool install() noexcept {
 bool uninstall() noexcept {
     bool restored = true;
     if (g_cachedDataBranch != nullptr) {
-        const bool cachedDataRestored =
-            write_code(g_cachedDataBranch, g_cachedDataBranchOriginal);
+        const bool cachedDataRestored = write_code(g_cachedDataBranch, g_cachedDataBranchOriginal);
         restored = restored && cachedDataRestored;
         if (cachedDataRestored) {
             g_cachedDataBranch = nullptr;

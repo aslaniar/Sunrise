@@ -1,4 +1,4 @@
-#include <array>
+﻿#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -91,6 +91,7 @@ bool Parser::server_settings(server::Settings& output) noexcept {
     bool hasWorldPopulation = false;
     bool hasWorldPopulationCarrier = false;
     bool hasWorldPopulationSchemaHash = false;
+    bool hasGameplay = false;
     for (;;) {
         std::string_view key;
         if (!string(key) || !consume(':')) {
@@ -198,6 +199,11 @@ bool Parser::server_settings(server::Settings& output) noexcept {
             }
             output.worldPopulationSchemaHash = static_cast<std::uint32_t>(value);
             hasWorldPopulationSchemaHash = true;
+        } else if (key == "gameplay") {
+            if (hasGameplay || !gameplay_settings(output.gameplay)) {
+                return false;
+            }
+            hasGameplay = true;
         } else if (!skip_value(0)) {
             return false;
         }
