@@ -145,17 +145,41 @@ bool encode(const state::CharacterState& state,
     object.previewMirrors.fill(state.previewAvailable ? kNativeTrue : kNativeFalse);
     object.contentBypass = state.contentBypass ? kNativeTrue : kNativeFalse;
     object.seenMessages.fill(kSeenMessageByte);
-    // The 2d mapping marker sweep (the measured reconciliation): unique marker u32s
-    // across the candidate header region (the packed offsets 0x2EFC..0x2F1C, the
-    // 4-byte grid) — the next boot's sync_header sampler shows WHERE each marker
-    // lands in the client's store +0x2F00 block, converting the static mapping
-    // (the 2dmap lane's flagged 0x10-shift uncertainty) into a measured delta.
+    // The 2d whole-record padding sweep: the offset-encoded markers in EVERY padding
+    // region — the sync_header sampler shows which (if any) padding field the client's
+    // schema walk places at its store +0x2F00 block. The marker = 0x6D6D0000 | (the
+    // field's packed offset & 0xFFFF), so one boot names the source field directly.
+    // (The 0x2EFC-grid sweep landed NOTHING — the packed offsets do not map to the
+    // client's store by a simple delta; the schema reorders.)
     {
-        std::uint32_t* const sweep = reinterpret_cast<std::uint32_t*>(
-            reinterpret_cast<std::byte*>(&object.gateSeenPadding));
-        for (std::size_t i = 0; i < 9; ++i) {
-            sweep[i] = 0x6D6D6D01u + static_cast<std::uint32_t>(i);
-        }
+        const auto mark = [&object](std::byte* const field, std::uint32_t marker) {
+            std::uint32_t* words = reinterpret_cast<std::uint32_t*>(field);
+            words[0] = marker;
+        };
+        mark(reinterpret_cast<std::byte*>(&object.summaryGatePadding),
+             0x6D6D0000u | 0x0B00u);
+        mark(reinterpret_cast<std::byte*>(&object.gateSeenPadding),
+             0x6D6D0000u | 0x0B10u);
+        mark(reinterpret_cast<std::byte*>(&object.seenRosterPadding),
+             0x6D6D0000u | 0x0B20u);
+        mark(reinterpret_cast<std::byte*>(&object.rosterDestinationPadding),
+             0x6D6D0000u | 0x0B30u);
+        mark(reinterpret_cast<std::byte*>(&object.progressPreviewPadding),
+             0x6D6D0000u | 0x0B40u);
+        mark(reinterpret_cast<std::byte*>(&object.previewProgressionPadding),
+             0x6D6D0000u | 0x0B50u);
+        mark(reinterpret_cast<std::byte*>(&object.valuesContentPadding),
+             0x6D6D0000u | 0x0B60u);
+        mark(reinterpret_cast<std::byte*>(&object.contentTailPadding),
+             0x6D6D0000u | 0x0B70u);
+        mark(reinterpret_cast<std::byte*>(&object.creationHeader),
+             0x6D6D0000u | 0x0B80u);
+        mark(reinterpret_cast<std::byte*>(&object.inventorySerialPadding),
+             0x6D6D0000u | 0x0B90u);
+        mark(reinterpret_cast<std::byte*>(&object.inventoryEquipmentPadding),
+             0x6D6D0000u | 0x0BA0u);
+        mark(reinterpret_cast<std::byte*>(&object.resetFlagsPadding),
+             0x6D6D0000u | 0x0BB0u);
     }
     for (inventory::layout::Entry& item : object.inventoryItems) {
         item.definitionIndex = kEmptyDefinitionIndex;
