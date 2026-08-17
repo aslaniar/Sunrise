@@ -27,10 +27,6 @@ enum class CaptureTarget {
     none,
     teleport,
     noclip,
-<<<<<<< HEAD:Sunrise/src/client/ui/teleport/teleport_panel.cpp
-=======
-    fly,
->>>>>>> 233c811 (noclip collision fix and fly):Sunrise/src/client/ui/movement/movement_panel.cpp
 };
 
 CaptureTarget g_capturing{CaptureTarget::none};
@@ -171,12 +167,8 @@ void draw() noexcept {
     ImGui::Spacing();
     ImGui::TextUnformatted("Noclip");
     ImGui::Separator();
-<<<<<<< HEAD:Sunrise/src/client/ui/teleport/teleport_panel.cpp
     ImGui::TextWrapped("Uses native horizontal rigid-body velocity while preserving the game's "
                        "vertical movement.");
-=======
-    ImGui::TextWrapped("Disable collision on the horizontal axis.");
->>>>>>> 233c811 (noclip collision fix and fly):Sunrise/src/client/ui/movement/movement_panel.cpp
     ImGui::Spacing();
 
     changed = core::ui::components::toggle::control("Available", settings.noclipEnabled) || changed;
@@ -195,53 +187,7 @@ void draw() noexcept {
         key_picker("noclip_key", CaptureTarget::noclip, settings.noclipToggleKey, controlWidth)
         || changed;
 
-<<<<<<< HEAD:Sunrise/src/client/ui/teleport/teleport_panel.cpp
     if (changed && !client::teleport::publish(settings)) {
-=======
-    ImGui::Spacing();
-    ImGui::Spacing();
-    ImGui::TextUnformatted("Fly");
-    ImGui::Separator();
-    ImGui::TextWrapped("Fly with your movement keys.");
-    ImGui::Spacing();
-
-    changed = core::ui::components::toggle::control("Enabled##fly", settings.flyEnabled) || changed;
-
-    ImGui::Spacing();
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Toggle key");
-    ImGui::SameLine(labelWidth);
-    changed =
-        key_picker("fly_key", CaptureTarget::fly, settings.flyToggleKey, controlWidth) || changed;
-
-    ImGui::Spacing();
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Speed");
-    ImGui::SameLine(labelWidth);
-    ImGui::SetNextItemWidth(controlWidth);
-    float flySpeed = settings.flySpeed;
-    if (ImGui::SliderFloat("##fly_speed",
-                           &flySpeed,
-                           client::movement::kMinimumFlySpeed,
-                           client::movement::kMaximumFlySpeed,
-                           "%.0f units/s")) {
-        settings.flySpeed = flySpeed;
-        changed = true;
-    }
-
-    ImGui::Spacing();
-    ImGui::Spacing();
-    ImGui::TextUnformatted("Sword Skate Fix");
-    ImGui::Separator();
-    ImGui::TextWrapped("Disable sword swings blocking ability usage.");
-    ImGui::Spacing();
-
-    changed =
-        core::ui::components::toggle::control("Enabled##sword_skate", settings.swordSkateEnabled)
-        || changed;
-
-    if (changed && !client::movement::publish(settings)) {
->>>>>>> 233c811 (noclip collision fix and fly):Sunrise/src/client/ui/movement/movement_panel.cpp
         ImGui::Spacing();
         ImGui::TextUnformatted("value out of range, not saved");
     }
