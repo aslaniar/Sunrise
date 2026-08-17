@@ -145,6 +145,23 @@ bool encode(const state::CharacterState& state,
     object.previewMirrors.fill(state.previewAvailable ? kNativeTrue : kNativeFalse);
     object.contentBypass = state.contentBypass ? kNativeTrue : kNativeFalse;
     object.seenMessages.fill(kSeenMessageByte);
+    // The 2d dynamic-state header (the client's character-record block at 0x2F00):
+    // the live shape = {0, tagA, tagB, 0, 0xFFFFFFFF x3, 0}. The two definition-hash
+    // slots (u32[1]/u32[2] per the 2dmap lane's positional evidence) carry the schema
+    // definition tags (0x80802C36/0x80802C35) as the non-sentinel candidates until the
+    // catalog resolution names the real hashes.
+    {
+        std::uint32_t* const header = reinterpret_cast<std::uint32_t*>(
+            reinterpret_cast<std::byte*>(&object.gateSeenPadding) + 4);
+        header[0] = 0;
+        header[1] = 0x80802C36u;
+        header[2] = 0x80802C35u;
+        header[3] = 0;
+        header[4] = 0xFFFFFFFFu;
+        header[5] = 0xFFFFFFFFu;
+        header[6] = 0xFFFFFFFFu;
+        header[7] = 0;
+    }
     for (inventory::layout::Entry& item : object.inventoryItems) {
         item.definitionIndex = kEmptyDefinitionIndex;
     }
