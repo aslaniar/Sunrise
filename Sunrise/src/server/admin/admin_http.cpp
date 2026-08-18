@@ -93,7 +93,7 @@ std::uint32_t query_number(std::string_view query,
 void journal(std::string_view verb, std::string_view args, bool ok) noexcept {
     core::path::Buffer path;
     if (!core::path::artifact_directory(GetModuleHandleW(nullptr), path)
-        || !core::path::append(path, L"\\Sunrise\\journal.txt")) {
+        || !core::path::append(path, L"\\journal.txt")) {
         return;
     }
     const HANDLE file = CreateFileW(path.chars.data(),
@@ -287,7 +287,7 @@ void handle_flags(SOCKET client, std::string_view query) noexcept {
 void handle_journal(SOCKET client) noexcept {
     core::path::Buffer path;
     if (!core::path::artifact_directory(GetModuleHandleW(nullptr), path)
-        || !core::path::append(path, L"\\Sunrise\\journal.txt")) {
+        || !core::path::append(path, L"\\journal.txt")) {
         respond(client, "500 Internal Server Error", "text/plain", "journal unavailable");
         return;
     }
