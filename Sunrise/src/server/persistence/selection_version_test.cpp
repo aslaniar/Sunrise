@@ -277,6 +277,19 @@ int run_selection_version_test(void* module) noexcept {
                       "equip_prepares_frame");
         harness.check(prepared.family.version == equip.after.family4Version,
                       "equip_frame_versions_match");
+        std::uint32_t itemObjectId = 0;
+        harness.check(middleware::datagen::object_id(
+                          middleware::datagen::kAccountFamily,
+                          middleware::datagen::kItemInstanceSlot,
+                          itemObjectId),
+                      "item_object_id_maps_equip");
+        harness.check(prepared.family.objects.size() == 2
+                          && prepared.family.objects[0].id == characterObjectId
+                          && prepared.family.objects[0].version
+                                 == equip.characterSoid
+                          && prepared.family.objects[1].id == itemObjectId
+                          && prepared.family.objects[1].version == pickSoid,
+                      "equip_frame_is_character_plus_item");
     }
 
     // THE DEFERRED-REPUSH CASES. (a) The version-zero replay is permitted only while the peer
