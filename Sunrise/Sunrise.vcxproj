@@ -497,6 +497,7 @@
     <ClCompile Include="src\server\bap\encrypted\push\queuez\queuez_subscription.cpp" />
     <ClCompile Include="src\server\bap\encrypted\push\queuez\queuez_change_character.cpp" />
     <ClCompile Include="src\server\bap\encrypted\push\queuez\queuez_subclass_equip.cpp" />
+    <ClCompile Include="src\server\bap\encrypted\push\queuez\queuez_subclass_selection.cpp" />
     <ClCompile Include="src\server\bap\encrypted\push\queuez\queuez_select_character.cpp" />
     <ClCompile Include="src\server\bap\encrypted\push\activity\activity_message_push.cpp" />
     <ClCompile Include="src\server\bap\encrypted\push\activity\activity_roster_push.cpp" />
@@ -512,6 +513,7 @@
     <ClCompile Include="src\server\bap\encrypted\push\snapshot\snapshot_object_compressor.cpp" />
     <ClCompile Include="src\server\bap\encrypted\push\snapshot\family4_selection_resolver.cpp" />
     <ClCompile Include="src\server\bap\encrypted\push\snapshot\family4_snapshot_preparer.cpp" />
+    <ClCompile Include="src\server\bap\encrypted\push\snapshot\family4_character_update.cpp" />
     <ClCompile Include="src\server\bap\encrypted\push\snapshot\family4_equip_update.cpp" />
     <ClCompile Include="src\server\bap\encrypted\push\snapshot\family4_selection_move.cpp" />
     <ClCompile Include="src\server\bap\encrypted\push\snapshot\initial_snapshot.cpp" />
