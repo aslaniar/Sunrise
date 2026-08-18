@@ -198,9 +198,19 @@ int run_selection_version_test(void* module) noexcept {
                       "selection1_prepares_frame");
         harness.check(prepared.family.version == selection1.after.family4Version,
                       "selection1_frame_versions_match");
+        std::uint32_t itemObjectId = 0;
+        harness.check(middleware::datagen::object_id(
+                          middleware::datagen::kAccountFamily,
+                          middleware::datagen::kItemInstanceSlot,
+                          itemObjectId),
+                      "item_object_id_maps");
         harness.check(prepared.family.type == queuez::kAccountFamilyType && prepared.family.flags == 0
                           && prepared.family.objects.size() == 1,
                       "selection1_frame_shape");
+        harness.check(prepared.family.objects.size() == 1
+                          && prepared.family.objects[0].id == itemObjectId
+                          && prepared.family.objects[0].version == subclassSoid,
+                      "selection1_frame_is_the_item_upsert");
         std::array<std::byte, state::kAesKeySize> key{};
         std::array<std::byte, state::kBapNonceSize> nonce{};
         std::size_t written = 0;
@@ -234,6 +244,9 @@ int run_selection_version_test(void* module) noexcept {
                       "selection2_prepares_frame");
         harness.check(prepared.family.version == selection2.after.family4Version,
                       "selection2_frame_versions_match");
+        harness.check(prepared.family.objects.size() == 1
+                          && prepared.family.objects[0].version == subclassSoid,
+                      "selection2_frame_is_the_item_upsert");
         std::array<std::byte, state::kAesKeySize> key{};
         std::array<std::byte, state::kBapNonceSize> nonce{};
         std::size_t written = 0;

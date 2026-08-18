@@ -3,8 +3,8 @@
 #include <optional>
 #include <span>
 
-#include "../../../../../middleware/datagen/family4/character/character_encoder.h"
-#include "../../../../../middleware/datagen/family4/character/layout.h"
+#include "../../../../../middleware/datagen/family4/instance/layout.h"
+#include "../../../../../middleware/datagen/family4/loadout/definition.h"
 #include "../../../../../state/runtime/runtime.h"
 #include "internal.h"
 #include "snapshot_storage.h"
@@ -15,58 +15,78 @@ namespace {
 namespace family4_datagen = middleware::datagen::family4;
 
 /**
- * Builds one Family-4 increment that republishes the resident character object at the staged
- * version. Shared by the subclass equip, the opcode-801 selection, and the opcode-2100 ability
- * change: every mutation of the character-level fields owes the Client exactly one delivered
- * frame at exactly one above its held version (the fork's stage_family4_refresh rule). The
- * deliverable frame is the character after-image — flags 0, exactly one object.
+ * Builds one Family-4 increment that republishes the SUBCLASS ITEM instance record at the
+ * staged version — the community fork's exact shape for the opcode-801 (its
+ * append_subclass_selection_notification publishes the subclass item upsert, never the
+ * character). The client's ability-node display reads the item's 36-slot socket-entry
+ * state, so the upsert is the record the display actually consults; the character-record
+ * shape (the earlier port) was accepted but invisible to the display. The item's sockets
+ * come from the already-committed mutation through the loadout resolve.
  */
-bool prepare_character_republish(Scratch& scratch,
-                                 std::uint32_t characterDefinitionId,
-                                 std::uint64_t characterSoid,
-                                 const queuez::SessionState& after,
-                                 Prepared& prepared) noexcept {
+bool prepare_item_republish(Scratch& scratch,
+                            std::uint64_t subclassInstanceSoid,
+                            std::uint64_t characterSoid,
+                            const queuez::SessionState& after,
+                            Prepared& prepared) noexcept {
     const Reservation reservation = reserve_prior(scratch, prepared);
     if (reservation.rawWriteOffset > scratch.plaintext.size()
         || reservation.compressedWriteOffset > scratch.sealed.size()) {
-        return report_failure("republish_reservation");
+        return report_failure("item_republish_reservation");
     }
     const state::AccountState account = state::account_snapshot();
     const std::optional<std::size_t> selectedIndex = find_character_index(account);
     Resolved selected{};
     if (!state::account::valid(account) || !selectedIndex.has_value()
         || !resolve(account, *selectedIndex, selected)
-        || account.characters[selected.characterIndex].soid != characterSoid) {
-        return report_failure("republish_selection");
+        || account.characters[selected.characterIndex].soid != characterSoid
+        || subclassInstanceSoid == 0) {
+        return report_failure("item_republish_selection");
     }
 
-    Prepared staged{};
-    staged.rawClearSize = reservation.rawClearSize;
-    staged.compressedClearSize = reservation.compressedClearSize;
+    // One selected loadout row names the subclass instance; its resolved sockets are the
+    // display's source. The item must be equipped and carry a resolved socket table.
+    family4_datagen::loadout::ResolvedInstances changed{};
+    for (std::size_t index = 0; index < selected.loadout.itemCount; ++index) {
+        const family4_datagen::loadout::ResolvedItem& item = selected.loadout.items[index];
+        if (item.instance.instanceSoid != subclassInstanceSoid) {
+            continue;
+        }
+        if (changed.itemCount != 0 || !item.equipped
+            || !item.instance.socketEntryContentsResolved
+            || item.instance.socketEntryListIndex == family4_datagen::instance::layout::kEmptyDefinitionIndex
+            || item.instance.socketEntryCount == 0) {
+            return report_failure("item_republish_item_shape");
+        }
+        changed.items[0] =
+            family4_datagen::loadout::SlottedInstance{item.equipmentSlot, item.instance};
+        changed.itemCount = 1;
+    }
+    if (changed.itemCount != 1) {
+        return report_failure("item_republish_item_missing");
+    }
+
     const auto rawStorage = std::span(scratch.plaintext).subspan(reservation.rawWriteOffset);
+    if (family4_datagen::instance::layout::kObjectSize > rawStorage.size()) {
+        return report_failure("item_republish_item_storage");
+    }
+    Prepared staged{};
+    staged.rawClearSize =
+        (std::max)(reservation.rawClearSize,
+                   reservation.rawWriteOffset + family4_datagen::instance::layout::kObjectSize);
     std::size_t compressedExtent = reservation.compressedWriteOffset;
-    if (family4_datagen::character::layout::kObjectSize > rawStorage.size()) {
-        return report_failure("republish_character_storage");
+    std::size_t itemCursor = 0;
+    if (!append_items(scratch,
+                      rawStorage,
+                      selected.itemInstanceObjectId,
+                      changed,
+                      0,
+                      staged,
+                      itemCursor,
+                      compressedExtent)
+        || itemCursor != 1) {
+        clear_after(scratch, reservation);
+        return report_failure("item_republish_item_object");
     }
-    const auto characterBytes =
-        rawStorage.first(family4_datagen::character::layout::kObjectSize);
-    if (!family4_datagen::character::encode(account.characters[selected.characterIndex],
-                                            selected.loadout,
-                                            selected.lightEvaluation,
-                                            characterBytes)) {
-        return report_failure("republish_character_object");
-    }
-    if (!append_object(scratch,
-                       characterBytes,
-                       characterDefinitionId,
-                       characterSoid,
-                       staged.objects[0],
-                       compressedExtent)) {
-        return report_failure("republish_character_object");
-    }
-    staged.rawClearSize = (std::max)(staged.rawClearSize,
-                                     reservation.rawWriteOffset
-                                         + family4_datagen::character::layout::kObjectSize);
     staged.compressedClearSize = (std::max)(reservation.compressedClearSize, compressedExtent);
     staged.family = middleware::queuez::Family{
         kAccountFamilyType,
@@ -77,33 +97,44 @@ bool prepare_character_republish(Scratch& scratch,
     };
     if (!commit(staged, prepared)) {
         clear_after(scratch, reservation);
-        return report_failure("republish_commit");
+        return report_failure("item_republish_commit");
     }
     return true;
 }
 
 } // namespace
 
-/** Builds the Family-4 increment that republishes the character after an opcode-801 selection. */
+/** Builds the Family-4 increment that republishes the subclass item after an opcode-801
+ *  selection — the fork's exact shape (one item upsert, the mutated sockets). */
 bool prepare_subclass_selection(Scratch& scratch,
                                 const queuez::SubclassSelection& selection,
                                 Prepared& prepared) noexcept {
-    return prepare_character_republish(scratch,
-                                       selection.characterDefinitionId,
-                                       selection.characterSoid,
-                                       selection.after,
-                                       prepared);
+    return prepare_item_republish(scratch,
+                                  selection.mutation.subclassInstanceSoid,
+                                  selection.characterSoid,
+                                  selection.after,
+                                  prepared);
 }
 
-/** Builds the Family-4 increment that republishes the character after an opcode-2100 change. */
+/** Builds the Family-4 increment that republishes the subclass item after an opcode-2100
+ *  change whose mutate succeeded — the same item-upsert shape (the display's source). */
 bool prepare_ability_change(Scratch& scratch,
                             const queuez::AbilityChange& change,
                             Prepared& prepared) noexcept {
-    return prepare_character_republish(scratch,
-                                       change.characterDefinitionId,
-                                       change.characterSoid,
-                                       change.after,
-                                       prepared);
+    const state::AccountState account = state::account_snapshot();
+    const std::optional<std::size_t> selectedIndex = find_character_index(account);
+    if (!state::account::valid(account) || !selectedIndex.has_value()) {
+        return report_failure("ability_change_selection");
+    }
+    const auto& slot =
+        account.characters[*selectedIndex]
+            .equipment.slots[static_cast<std::size_t>(
+                state::account::inventory::EquipmentSlot::subclass)];
+    if (!slot.has_value()) {
+        return report_failure("ability_change_subclass");
+    }
+    return prepare_item_republish(scratch, slot->instanceSoid, change.characterSoid,
+                                  change.after, prepared);
 }
 
 } // namespace sunrise::server::bap::encrypted::push::snapshot
