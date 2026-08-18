@@ -188,9 +188,10 @@ bool append_banner_move_notification(Scratch& scratch,
 }
 
 /**
- * Appends the Family-0 refresh a subclass equip owes: the same character's banner record
- * re-encodes from the mutated account, so the pair goes out as one increment (release the
- * held record, then upsert the anchor and the fresh record at the same key).
+ * Appends the Family-0 refresh a subclass mutation owes: the same character's banner record
+ * re-encodes from the mutated account and the in-place upsert goes out (the fork's shape —
+ * no release, so the ship/banner binding survives; the release-and-re-add of the same key
+ * tears it down and left the equip's display needing an inventory re-entry).
  * @return True when a frame went out and `after` carries the advanced ladder.
  */
 bool append_banner_refresh_notification(Scratch& scratch,
@@ -206,11 +207,11 @@ bool append_banner_refresh_notification(Scratch& scratch,
         return false;
     }
     snapshot::Prepared prepared{};
-    if (!snapshot::prepare_banner(scratch,
-                                  before.family4RootSoid,
-                                  after.family0Version,
-                                  characterSoid,
-                                  prepared)) {
+    if (!snapshot::prepare_banner_refresh(scratch,
+                                          before.family4RootSoid,
+                                          after.family0Version,
+                                          characterSoid,
+                                          prepared)) {
         core::log::write(core::log::Channel::server,
                          core::log::Level::warn,
                          "ev=queuez stage=banner_refresh result=fail reason=prepare");

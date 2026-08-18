@@ -118,4 +118,74 @@ bool prepare_banner(Scratch& scratch,
     return commit(staged, prepared);
 }
 
+/** Builds the family-zero IN-PLACE character-record upsert a subclass mutation owes.
+ *  The record is already resident: publishing its new body at the same key (no release, no
+ *  anchor) refreshes the appearance consumers without tearing down the ship/banner binding —
+ *  the community fork's exact shape (prepare_character_appearance_refresh, the record only,
+ *  flags 0, an increment at the family-zero version). */
+bool prepare_banner_refresh(Scratch& scratch,
+                            std::uint64_t familyRootSoid,
+                            std::int32_t version,
+                            std::uint64_t characterSoid,
+                            Prepared& prepared) noexcept {
+    const Reservation reservation = reserve_prior(scratch, prepared);
+    const state::AccountState account = state::account_snapshot();
+    if (reservation.rawWriteOffset > scratch.plaintext.size()) {
+        return false;
+    }
+    std::size_t selectedIndex = account.characterCount;
+    for (std::size_t index = 0; index < account.characterCount; ++index) {
+        if (account.characters[index].selected && account.characters[index].soid == characterSoid) {
+            selectedIndex = index;
+            break;
+        }
+    }
+    if (selectedIndex == account.characterCount) {
+        return false;
+    }
+
+    middleware::datagen::family4::loadout::ResolvedInstances instances{};
+    std::int32_t light = 0;
+    if (!middleware::datagen::family4::loadout::resolve_instances(account, selectedIndex, instances)
+        || !state::equipment::light::resolution::character_light(account, selectedIndex, light)) {
+        return false;
+    }
+    if (scratch.plaintext.size() - reservation.rawWriteOffset
+        < character_record::kFamily0RecordSize) {
+        return false;
+    }
+    const auto record =
+        std::span(scratch.plaintext)
+            .subspan(reservation.rawWriteOffset, character_record::kFamily0RecordSize);
+    const state::CharacterState& character = account.characters[selectedIndex];
+    if (!character_record::encode_family0(character, instances, light, record)) {
+        return false;
+    }
+    Prepared staged{};
+    staged.rawClearSize =
+        (std::max)(reservation.rawClearSize,
+                   reservation.rawWriteOffset + character_record::kFamily0RecordSize);
+    std::size_t compressedExtent = reservation.compressedWriteOffset;
+    std::size_t compressedSize = 0;
+    if (!compress_object(scratch,
+                         record,
+                         middleware::datagen::kBannerCharacterObjectId,
+                         character.soid,
+                         compressedExtent,
+                         staged.objects[0],
+                         compressedSize)) {
+        return false;
+    }
+    compressedExtent += compressedSize;
+    staged.compressedClearSize = (std::max)(reservation.compressedClearSize, compressedExtent);
+    staged.family = middleware::queuez::Family{
+        middleware::datagen::kBannerFamily,
+        familyRootSoid,
+        version,
+        0,
+        std::span(staged.objects).first(1),
+    };
+    return commit(staged, prepared);
+}
+
 } // namespace sunrise::server::bap::encrypted::push::snapshot

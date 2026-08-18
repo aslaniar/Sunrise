@@ -65,4 +65,15 @@ struct Prepared {
                                   std::uint64_t previousCharacter,
                                   Prepared& prepared) noexcept;
 
+/**
+ * Builds the family-zero in-place character-record upsert a subclass mutation owes: the
+ * resident record's new body at the same key (no release, no anchor, flags 0) — the fork's
+ * shape, which refreshes the appearance without tearing down the ship/banner binding.
+ */
+[[nodiscard]] bool prepare_banner_refresh(Scratch& scratch,
+                                          std::uint64_t familyRootSoid,
+                                          std::int32_t version,
+                                          std::uint64_t characterSoid,
+                                          Prepared& prepared) noexcept;
+
 } // namespace sunrise::server::bap::encrypted::push::snapshot
