@@ -287,6 +287,43 @@ append_subclass_equip_notification(Scratch& scratch,
                                    std::span<std::byte> response,
                                    std::size_t& written) noexcept;
 
+/**
+ * Appends the opcode-801 Family-4 character after-image.
+ * @param scratch Lock-owned transform buffers.
+ * @param selection Staged queuez after-image and the resident character keys.
+ * @param key Active AES-GCM session key.
+ * @param nonce Push-direction nonce after the correlated svc-11 response.
+ * @param response Caller-owned output containing the existing response prefix.
+ * @param written Existing byte count, updated after the complete push is appended.
+ * @return True when the single character upsert and the whole svc-123 frame fit.
+ */
+[[nodiscard]] bool
+append_subclass_selection_notification(Scratch& scratch,
+                                       const queuez::SubclassSelection& selection,
+                                       std::span<const std::byte, state::kAesKeySize> key,
+                                       std::span<const std::byte, state::kBapNonceSize> nonce,
+                                       std::span<std::byte> response,
+                                       std::size_t& written) noexcept;
+
+/**
+ * Appends the opcode-2100 Family-4 character after-image, only reached when the
+ * ability-change mutate succeeded.
+ * @param scratch Lock-owned transform buffers.
+ * @param change Staged queuez after-image and the resident character keys.
+ * @param key Active AES-GCM session key.
+ * @param nonce Push-direction nonce after the correlated svc-11 response.
+ * @param response Caller-owned output containing the existing response prefix.
+ * @param written Existing byte count, updated after the complete push is appended.
+ * @return True when the single character upsert and the whole svc-123 frame fit.
+ */
+[[nodiscard]] bool
+append_ability_change_notification(Scratch& scratch,
+                                   const queuez::AbilityChange& change,
+                                   std::span<const std::byte, state::kAesKeySize> key,
+                                   std::span<const std::byte, state::kBapNonceSize> nonce,
+                                   std::span<std::byte> response,
+                                   std::size_t& written) noexcept;
+
 } // namespace push
 
 } // namespace sunrise::server::bap::encrypted

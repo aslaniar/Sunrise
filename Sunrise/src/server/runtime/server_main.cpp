@@ -26,6 +26,7 @@
 #include "../persistence/cache_check.h"
 #include "../persistence/equip_diff_test.h"
 #include "../persistence/persistence.h"
+#include "../persistence/selection_version_test.h"
 #include "../transport/discovery_listener.h"
 #include "server_runtime.h"
 
@@ -318,6 +319,8 @@ int main(int argc, char** argv) {
     const bool s1Test = argc > 1 && std::strcmp(argv[1], "--s1-test") == 0;
     const bool equipDiff = argc > 1 && std::strcmp(argv[1], "--equip-diff") == 0;
     const bool cacheCheck = argc > 1 && std::strcmp(argv[1], "--cache-check") == 0;
+    const bool selectionVersionTest =
+        argc > 1 && std::strcmp(argv[1], "--selection-version-test") == 0;
     const HMODULE module = GetModuleHandleW(nullptr);
     if (!sunrise::core::settings::initialize(module)) {
         // Settings name their own failure; the sinks do not exist yet to carry a second line.
@@ -458,6 +461,23 @@ int main(int argc, char** argv) {
         // The subclass-equip diff test: the character object pre-equip vs post-equip
         // through the exact mutation + re-encode the live server's queuez path uses.
         const int verdict = sunrise::server::persistence::run_equip_diff_test(module);
+        sunrise::server::https::shutdown();
+        sunrise::server::transport::discovery::shutdown();
+        sunrise::server::shutdown();
+        sunrise::middleware::shutdown();
+        sunrise::state::content_manifest::shutdown();
+        sunrise::server::persistence::shutdown();
+        sunrise::state::shutdown();
+        sunrise::state::entitlements::clear();
+        sunrise::state::unlocks::clear();
+        sunrise::core::log::shutdown();
+        sunrise::core::settings::shutdown();
+        return verdict;
+    }
+    if (selectionVersionTest) {
+        // The family-4 version-discipline test: the replay + 801x2 + 403 ladder with the
+        // delivered versions asserted strictly consecutive, plus the deferred-repush cases.
+        const int verdict = sunrise::server::persistence::run_selection_version_test(module);
         sunrise::server::https::shutdown();
         sunrise::server::transport::discovery::shutdown();
         sunrise::server::shutdown();

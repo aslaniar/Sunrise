@@ -151,7 +151,25 @@ bool stage_service_outcome(Scratch& scratch,
                              core::log::Level::warn,
                              "ev=cache stage=restamp result=fail");
         }
-        const SessionState& bannerBefore = outcome.abilityChange.after;
+        // The changed ability fields live on the character record, so the Family-4 character
+        // after-image goes out exactly like the subclass equip: one frame, flags 0, one object,
+        // at exactly one above the peer's held version — before the family-zero banner refresh.
+        if (!push::append_ability_change_notification(scratch,
+                                                      outcome.abilityChange,
+                                                      key,
+                                                      nonce,
+                                                      response,
+                                                      written)) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             "ev=queuez stage=ability_change result=fail step=push");
+            return true;
+        }
+        middleware::secure_channel::advance_nonce(nonce);
+        after = outcome.abilityChange.after;
+        // The banner record re-encodes from the mutated account, so the family-zero pair
+        // follows the family-four increment as a same-key refresh.
+        const SessionState& bannerBefore = after;
         SessionState bannerAfter{};
         if (!push::append_banner_refresh_notification(scratch,
                                                       bannerBefore,
@@ -203,7 +221,28 @@ bool stage_service_outcome(Scratch& scratch,
                              core::log::Level::warn,
                              "ev=cache stage=restamp result=fail");
         }
-        const SessionState& bannerBefore = outcome.subclassSelection.after;
+        // The selected ability fields live on the character record, so the Family-4 character
+        // after-image goes out exactly like the subclass equip: one frame, flags 0, one object,
+        // at exactly one above the peer's held version — before the family-zero banner refresh.
+        // (The original port dropped the fork's append_subclass_selection_notification: the
+        // mirror advanced with nothing delivered, so the next delivered frame skipped versions
+        // and drew the client's out-of-order kick.)
+        if (!push::append_subclass_selection_notification(scratch,
+                                                          outcome.subclassSelection,
+                                                          key,
+                                                          nonce,
+                                                          response,
+                                                          written)) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             "ev=queuez stage=subclass_selection result=fail step=push");
+            return true;
+        }
+        middleware::secure_channel::advance_nonce(nonce);
+        after = outcome.subclassSelection.after;
+        // The banner record re-encodes from the mutated account, so the family-zero pair
+        // follows the family-four increment as a same-key refresh.
+        const SessionState& bannerBefore = after;
         SessionState bannerAfter{};
         if (!push::append_banner_refresh_notification(scratch,
                                                       bannerBefore,

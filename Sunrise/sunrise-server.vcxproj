@@ -314,10 +314,12 @@
     <ClCompile Include="src\server\bap\encrypted\push\queuez\queuez_push_reporting.cpp" />
     <ClCompile Include="src\server\bap\encrypted\push\queuez\queuez_select_character.cpp" />
     <ClCompile Include="src\server\bap\encrypted\push\queuez\queuez_subclass_equip.cpp" />
+    <ClCompile Include="src\server\bap\encrypted\push\queuez\queuez_subclass_selection.cpp" />
     <ClCompile Include="src\server\bap\encrypted\push\queuez\queuez_subscription.cpp" />
     <ClCompile Include="src\server\bap\encrypted\push\queuez\queuez_update_frame.cpp" />
     <ClCompile Include="src\server\bap\encrypted\push\snapshot\banner_snapshot.cpp" />
     <ClCompile Include="src\server\bap\encrypted\push\snapshot\family4_object_staging.cpp" />
+    <ClCompile Include="src\server\bap\encrypted\push\snapshot\family4_character_update.cpp" />
     <ClCompile Include="src\server\bap\encrypted\push\snapshot\family4_equip_update.cpp" />
     <ClCompile Include="src\server\bap\encrypted\push\snapshot\family4_selection_move.cpp" />
     <ClCompile Include="src\server\bap\encrypted\push\snapshot\family4_selection_resolver.cpp" />
@@ -343,6 +345,7 @@
     <ClCompile Include="src\server\persistence\account_memcmp_test.cpp" />
     <ClCompile Include="src\server\persistence\cache_check.cpp" />
     <ClCompile Include="src\server\persistence\equip_diff_test.cpp" />
+    <ClCompile Include="src\server\persistence\selection_version_test.cpp" />
     <ClCompile Include="src\server\persistence\persistence.cpp" />
     <ClCompile Include="src\server\runtime\server_main.cpp" />
     <ClCompile Include="src\server\runtime\server_runtime.cpp" />

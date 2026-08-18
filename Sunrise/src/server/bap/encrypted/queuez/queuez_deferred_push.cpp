@@ -115,6 +115,17 @@ bool consume_deferred(Session& session,
     }
     // One attempt is owed. Disarm before trying.
     session.family4RepushArmed = false;
+    // The delayed second copy is only owed while the peer still holds the initial version: a
+    // version-zero re-snapshot after the ladder advanced would regress the client's held
+    // version and draw the same out-of-order rejection the skipped-increment crash did. The
+    // mirror's version discipline is the client's contract; the repush never violates it.
+    if (session.queuez.family4Active
+        && session.queuez.family4Version != queuez::kInitialFamilyVersion) {
+        core::log::write(core::log::Channel::server,
+                         core::log::Level::warn,
+                         "ev=queuez stage=repush result=skip reason=version_advanced");
+        return false;
+    }
     touchesScratch = true;
 
     middleware::queuez::Subscription subscription{};

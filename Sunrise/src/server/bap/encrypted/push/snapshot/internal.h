@@ -113,6 +113,32 @@ inline constexpr std::size_t kSingleObjectCount = 1;
                                           const queuez::SubclassEquip& equip,
                                           Prepared& prepared) noexcept;
 
+/**
+ * Builds the Family-4 increment that republishes the resident character object after an
+ * opcode-801 subclass socket-entry selection. Exactly one object moves: the character
+ * after-image, flags 0, at exactly one above the peer's held version.
+ * @param scratch Object and compression storage owned by the lock.
+ * @param selection Checked after-image and the resident character keys.
+ * @param prepared Gets the single character upsert descriptor.
+ * @return True when State, mappings, layouts and the installed compression all fit.
+ */
+[[nodiscard]] bool prepare_subclass_selection(Scratch& scratch,
+                                              const queuez::SubclassSelection& selection,
+                                              Prepared& prepared) noexcept;
+
+/**
+ * Builds the Family-4 increment that republishes the resident character object after an
+ * opcode-2100 ability change whose mutate succeeded. Exactly one object moves: the character
+ * after-image, flags 0, at exactly one above the peer's held version.
+ * @param scratch Object and compression storage owned by the lock.
+ * @param change Checked after-image and the resident character keys.
+ * @param prepared Gets the single character upsert descriptor.
+ * @return True when State, mappings, layouts and the installed compression all fit.
+ */
+[[nodiscard]] bool prepare_ability_change(Scratch& scratch,
+                                          const queuez::AbilityChange& change,
+                                          Prepared& prepared) noexcept;
+
 /** Selected-character mappings the character and item-instance encoders need. */
 struct Resolved {
     std::size_t characterIndex{};
