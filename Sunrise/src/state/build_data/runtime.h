@@ -16,6 +16,7 @@
 #include "progressions/definition.h"
 #include "scenarios/definition.h"
 #include "socket_entry_lists/definition.h"
+#include "socket_entry_buckets/definition.h"
 #include "spawn_sets/definition.h"
 
 namespace sunrise::state::build_data {
@@ -222,6 +223,15 @@ publish_socket_entry_lists(std::span<const socket_entry_lists::Definition> defin
  */
 [[nodiscard]] bool find_socket_entry_list(std::uint16_t definitionIndex,
                                           socket_entry_lists::Definition& definition) noexcept;
+
+/**
+ * Finds one socket-entry list's resolved per-entry ability-bucket destinations.
+ * @param definitionIndex Native socket-entry-list index.
+ * @param buckets Receives the matching resolved row.
+ * @return True when the entry-bucket domain is published and holds that row.
+ */
+[[nodiscard]] bool find_socket_entry_buckets(
+    std::uint16_t definitionIndex, socket_entry_buckets::Definition& buckets) noexcept;
 
 /** @return True when a complete destination-layout domain, empty or not, is published. */
 [[nodiscard]] bool scenario_layouts_ready() noexcept;

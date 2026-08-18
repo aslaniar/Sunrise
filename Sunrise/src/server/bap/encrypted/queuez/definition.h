@@ -6,6 +6,7 @@
 
 #include "../../../../middleware/datagen/family4/loadout/definition.h"
 #include "../../../../state/account/account_state.h"
+#include "../../../../state/runtime/runtime.h"
 
 namespace sunrise::server::bap::encrypted::queuez {
 
@@ -88,6 +89,30 @@ struct SubclassEquip {
     std::uint32_t characterDefinitionId{};
     std::uint64_t characterSoid{};
     std::uint64_t itemSoid{};
+};
+
+/**
+ * Validated opcode-2100 ability-change after-image. The family-zero banner record carries
+ * the ability buckets, so the Family-4 character object stays put and only the banner pair
+ * moves; the after-image still bumps the Family-4 version for the correlated reply.
+ */
+struct AbilityChange {
+    SessionState after{};
+    std::uint32_t characterDefinitionId{};
+    std::uint64_t characterSoid{};
+    std::uint32_t definitionHash{};
+};
+
+/**
+ * Validated opcode-801 subclass socket-entry selection after-image. The selection commits in
+ * the outcome staging; the banner record carries the new ability buckets, so the moving object
+ * is the family-zero pair, exactly like the ability change.
+ */
+struct SubclassSelection {
+    SessionState after{};
+    std::uint32_t characterDefinitionId{};
+    std::uint64_t characterSoid{};
+    state::PendingSubclassSelection mutation{};
 };
 
 /** Queuez fields published after every staged frame is copied to caller output. */

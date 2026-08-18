@@ -17,4 +17,9 @@ bool persist_subclass_equip(std::uint64_t newlyEquippedSoid,
     return true;
 }
 
+/** In-process no-op: the ability picks are not persisted without a database. */
+bool persist_ability_change() noexcept {
+    return true;
+}
+
 } // namespace sunrise::server::persistence

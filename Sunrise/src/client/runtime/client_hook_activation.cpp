@@ -21,6 +21,7 @@
 #include "../hooks/package_validator/package_validator_iv.h"
 #include "../hooks/graphics/graphics_hook_lifecycle.h"
 #include "../hooks/ability_gate/ability_gate_observer.h"
+#include "../hooks/gate_trace/gate_trace_observer.h"
 #include "../hooks/handle_message/handle_message_observer.h"
 #include "../hooks/schema_capture/schema_capture_observer.h"
 #include "../hooks/network/runtime.h"
@@ -205,6 +206,11 @@ void clear_game_targets() noexcept {
     // caller RVAs that name the un-analyzed CUI gate chain and the definition-hash slots
     // for the mode-pair diff. They attach in BOTH modes (in-process and external).
     (void)hooks::ability_gate::install();
+    // The round-2 gate-trace observers: log-only detours on the character-bank byte test,
+    // the family-4 kind-0 diff-apply (the rollback executor), and the acquire-flag writer
+    // — the flag-map campaign's runtime foundation (the per-scope census + the swap's
+    // gate-check footprint). Attach in BOTH modes, like the ability_gate family.
+    (void)hooks::gate_trace::install();
     // The R1 schema-hash close: log-only observer on the schema-decode entry, so the
     // client's own player-baseline decode prints the real schemaTagHash (the
     // world_population_schema_hash knob value). Internal no-op while externalServer is

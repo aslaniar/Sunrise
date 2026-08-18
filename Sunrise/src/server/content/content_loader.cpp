@@ -17,6 +17,7 @@
 #include "../../state/build_data/inventory/buckets/inventory_bucket_catalog.h"
 #include "../../state/build_data/progressions/progression_catalog.h"
 #include "../../state/build_data/socket_entry_lists/socket_entry_list_catalog.h"
+#include "../../state/build_data/socket_entry_buckets/socket_entry_bucket_catalog.h"
 #include "content_loader.h"
 
 namespace sunrise::server::content {
@@ -26,6 +27,7 @@ namespace abilities = state::build_data::abilities;
 namespace buckets = state::build_data::inventory::buckets;
 namespace progressions = state::build_data::progressions;
 namespace socket_lists = state::build_data::socket_entry_lists;
+namespace socket_entry_buckets = state::build_data::socket_entry_buckets;
 
 /** One of the five decoded Option-B domain files, in swap order. */
 struct DomainFile {
@@ -37,11 +39,12 @@ struct DomainFile {
         socketEntryTables,
         abilityBuckets,
         progressions,
+        socketEntryBuckets,
     } kind;
 };
 
-/** The five decoded domains the loader swaps after cache::load. */
-constexpr std::array<DomainFile, 5> kDomainFiles{{
+/** The six decoded domains the loader swaps after cache::load. */
+constexpr std::array<DomainFile, 6> kDomainFiles{{
     {"inventoryBuckets",
      L"\\s1_domains_inventoryBuckets.json",
      DomainFile::Kind::inventoryBuckets},
@@ -53,12 +56,15 @@ constexpr std::array<DomainFile, 5> kDomainFiles{{
      DomainFile::Kind::socketEntryTables},
     {"abilityBuckets", L"\\s1_domains_abilityBuckets.json", DomainFile::Kind::abilityBuckets},
     {"progressions", L"\\s1_domains_progressions.json", DomainFile::Kind::progressions},
+    {"socketEntryBuckets",
+     L"\\s1_domains_socketEntryBuckets.json",
+     DomainFile::Kind::socketEntryBuckets},
 }};
 
 /** The generated domain files stay far under this fixed read buffer. */
-constexpr std::size_t kJsonCapacity = 64 * 1024;
+constexpr std::size_t kJsonCapacity = 2 * 1024 * 1024;
 /** Largest JSON value count the fixed parser arena accepts. */
-constexpr std::size_t kNodeCapacity = 4096;
+constexpr std::size_t kNodeCapacity = 262144;
 /** Sentinel arena index meaning "not present". */
 constexpr std::size_t kNpos = (std::numeric_limits<std::size_t>::max)();
 
@@ -497,6 +503,11 @@ struct AbilityRows {
 
 struct ProgressionRows {
     std::array<progressions::Definition, progressions::kDefinitionCapacity> rows{};
+    std::size_t count{};
+};
+
+struct SocketEntryBucketRows {
+    std::array<socket_entry_buckets::Definition, socket_entry_buckets::kDefinitionCapacity> rows{};
     std::size_t count{};
 };
 
@@ -1063,6 +1074,63 @@ template <typename Row, typename Equal>
     return true;
 }
 
+/** Parses the resolved per-entry ability-bucket rows (the pure JSON domain — no cache
+ *  counterpart; the rows replace the catalog outright). */
+[[nodiscard]] bool parse_socket_entry_bucket_rows(std::span<Node> nodes,
+                                                  std::size_t rowsNode,
+                                                  SocketEntryBucketRows& output) noexcept {
+    const Node& rows = nodes[rowsNode];
+    if (rows.kind != Node::Kind::array || rows.childCount == 0) {
+        return false;
+    }
+    output.count = 0;
+    for (std::size_t index = 0; index < rows.childCount; ++index) {
+        if (output.count >= output.rows.size()) {
+            return false;
+        }
+        const std::size_t rowNode = element(nodes, rowsNode, index);
+        if (rowNode == kNpos || nodes[rowNode].kind != Node::Kind::object) {
+            return false;
+        }
+        std::uint64_t socketEntryListIndex = 0;
+        if (!member_number(nodes, rowNode, "socketEntryListIndex", socketEntryListIndex, 0xFFFF)) {
+            return false;
+        }
+        const std::size_t bucketsNode = member_array(nodes, rowNode, "buckets");
+        if (bucketsNode == kNpos
+            || nodes[bucketsNode].childCount != socket_lists::kEntryCapacity) {
+            return false;
+        }
+        socket_entry_buckets::Definition definition{};
+        definition.socketEntryListIndex = static_cast<std::uint16_t>(socketEntryListIndex);
+        for (std::size_t entry = 0; entry < socket_lists::kEntryCapacity; ++entry) {
+            std::uint64_t bucket = 0;
+            if (!element_number(nodes, bucketsNode, entry, bucket, 0xFF)) {
+                return false;
+            }
+            definition.buckets[entry] = static_cast<std::uint8_t>(bucket);
+        }
+        output.rows[output.count++] = definition;
+    }
+    return true;
+}
+
+/** Swaps the resolved entry-bucket rows in from the JSON. */
+[[nodiscard]] bool swap_socket_entry_bucket_rows(std::span<Node> nodes,
+                                                 std::size_t rowsNode) noexcept {
+    static SocketEntryBucketRows parsed{};
+    if (!parse_socket_entry_bucket_rows(nodes, rowsNode, parsed)) {
+        report_fail("socketEntryBuckets", "parse");
+        return false;
+    }
+    report_swap("socketEntryBuckets", parsed.count, 0, true);
+    if (!socket_entry_buckets::replace(std::span(parsed.rows).first(parsed.count))) {
+        report_fail("socketEntryBuckets", "reject");
+        return false;
+    }
+    return true;
+}
+
 /** Swaps the ability-bucket rows from the JSON, stopping the boot on any contradiction. */
 [[nodiscard]] bool swap_ability_rows(std::span<Node> nodes, std::size_t rowsNode) noexcept {
     static AbilityRows parsed{};
@@ -1095,8 +1163,7 @@ template <typename Row, typename Equal>
 }
 
 /** Swaps the progression rows from the JSON over the cache rows. */
-[[nodiscard]] bool swap_progressions(std::span<Node> nodes, std::size_t rowsNode) noexcept {
-    static ProgressionRows parsed{};
+[[nodiscard]] bool swap_progressions(std::span<Node> nodes, std::size_t rowsNode) noexcept {    static ProgressionRows parsed{};
     static std::array<progressions::Definition, progressions::kDefinitionCapacity> cached{};
     if (!parse_progressions(nodes, rowsNode, parsed)) {
         report_fail("progressions", "parse");
@@ -1187,7 +1254,8 @@ template <typename Row, typename Equal>
         }
         return false;
     }
-    std::array<Node, kNodeCapacity> nodes{};
+    // The arena is too large for the stack (262k nodes); a static keeps it off the frame.
+    static std::array<Node, kNodeCapacity> nodes{};
     Parser parser(std::string_view(buffer.data(), size), nodes);
     std::size_t root = 0;
     if (!parser.parse(root)) {
@@ -1217,6 +1285,8 @@ template <typename Row, typename Equal>
         return swap_socket_lists(nodes, rowsNode);
     case DomainFile::Kind::socketEntryTables:
         return swap_entry_tables(nodes, rowsNode);
+    case DomainFile::Kind::socketEntryBuckets:
+        return swap_socket_entry_bucket_rows(nodes, rowsNode);
     case DomainFile::Kind::abilityBuckets:
         return swap_ability_rows(nodes, rowsNode);
     case DomainFile::Kind::progressions:

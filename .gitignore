@@ -13,3 +13,6 @@
 
 # CMake build files
 /build/
+
+# Build capture noise
+/build_out*.txt

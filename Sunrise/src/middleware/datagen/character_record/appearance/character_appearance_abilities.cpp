@@ -6,6 +6,15 @@ namespace {
 
 namespace buckets = state::build_data::abilities;
 
+/** The list's default selection — always present in the catalog (the enumeration's base). */
+constexpr buckets::Selection kFallbackSelection{
+    state::kDefaultMovementAbilityEntry,
+    state::kDefaultGrenadeAbilityEntry,
+    state::kDefaultSuperAbilityEntry,
+    state::kDefaultMeleeAbilityEntry,
+    state::kDefaultClassAbilityEntry,
+};
+
 /** @param character Authored character. @return Its 5 selected socket entries. */
 [[nodiscard]] buckets::Selection selection_of(const state::CharacterState& character) noexcept {
     return {character.movementAbilityEntry,
@@ -29,8 +38,14 @@ bool apply_ability_buckets(const state::CharacterState& character,
         buckets::Definition published{};
         if (!state::build_data::find_configured_item_detail(
                 instances.items[index].instance.baseDefinitionIndex, detail)
-            || !state::build_data::find_ability_buckets(
-                detail.socketEntryListIndex, selection_of(character), published)) {
+            || (!state::build_data::find_ability_buckets(
+                    detail.socketEntryListIndex, selection_of(character), published)
+                && !state::build_data::find_ability_buckets(
+                    detail.socketEntryListIndex, kFallbackSelection, published))) {
+            // The catalog may lack a persisted combination the content build rejects (the
+            // bundle-member picks); the fallback = the list's default selection, which the
+            // enumeration always carries. The roster/banner must never fail an encode over
+            // a stale pick combination.
             return false;
         }
         for (std::size_t bucket = 0; bucket < appearance.abilityBuckets.size(); ++bucket) {

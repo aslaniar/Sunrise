@@ -62,6 +62,48 @@ void shutdown() noexcept;
 [[nodiscard]] InvestmentState investment_snapshot() noexcept;
 
 /**
+ * Applies one opcode-2100 ability change to the selected character. The definition
+ * hash names a socket entry of the equipped subclass's entry list; the entry's
+ * competition group names the lane (movement/grenade/super/melee/class), and that
+ * lane's pick moves to the named entry.
+ * @param definitionHash The ability definition hash the Client's 2100 carried.
+ * @return True when a selected character equips a subclass that offers the entry
+ *         and the whole account stayed valid after the move.
+ */
+[[nodiscard]] bool apply_ability_change(std::uint32_t definitionHash) noexcept;
+
+/** One prepared opcode-801 subclass socket-entry selection, ready to commit. */
+struct PendingSubclassSelection {
+    state::CharacterState beforeCharacter{};
+    state::CharacterState afterCharacter{};
+    std::uint64_t accountSoid{};
+    std::uint64_t characterSoid{};
+    std::uint64_t subclassInstanceSoid{};
+    std::uint8_t requestedEntry{};
+    std::uint16_t socketEntryListIndex{};
+    std::size_t characterIndex{};
+    bool prepared{};
+};
+
+/**
+ * Prepares one checked subclass socket-entry selection without publishing account State.
+ * @param subclassInstanceSoid Instance key of the equipped subclass the selection names.
+ * @param requestedEntry Zero-based socket-entry index the Client picked.
+ * @param mutation Receives the before/after character pair when the entry routes.
+ * @return True when the entry's resolved bucket names one ability field it changes.
+ */
+[[nodiscard]] bool prepare_subclass_selection(std::uint64_t subclassInstanceSoid,
+                                              std::uint8_t requestedEntry,
+                                              PendingSubclassSelection& mutation) noexcept;
+
+/**
+ * Commits one prepared subclass selection behind an exact character staleness guard.
+ * @param mutation The prepared selection; cleared on failure.
+ * @return True when the whole account stayed valid and the selection published.
+ */
+[[nodiscard]] bool commit_subclass_selection(PendingSubclassSelection& mutation) noexcept;
+
+/**
  * Equips one storage item onto the selected character's subclass slot, returning the
  * displaced subclass to storage. The request must name a bucket-16 storage item the
  * selected character owns; the policy check and the mutation share the same data so the

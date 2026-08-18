@@ -134,6 +134,24 @@ bool process(const ServiceRoute& route,
         } else {
             outcome.subclassEquip = {};
         }
+        // An ability change stages the same way: the banner record is the moving object, and a
+        // missing resident character leaves the reply on its own.
+        if (webOutcome.hasAbilityChange
+            && queuez::stage_ability_change(
+                queuezState, webOutcome.abilityChangeHash, outcome.abilityChange)) {
+            outcome.hasAbilityChange = true;
+        } else {
+            outcome.abilityChange = {};
+        }
+        // A subclass socket-entry selection stages the same way: the mutation commits in the
+        // outcome staging, and the banner record carries the new ability buckets.
+        if (webOutcome.hasSubclassSelection
+            && queuez::stage_subclass_selection(
+                queuezState, webOutcome.subclassSelection, outcome.subclassSelection)) {
+            outcome.hasSubclassSelection = true;
+        } else {
+            outcome.subclassSelection = {};
+        }
         return true;
     }
     }

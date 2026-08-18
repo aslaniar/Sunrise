@@ -130,4 +130,67 @@ bool stage_subclass_equip(const SessionState& before,
     return valid(equip.after);
 }
 
+/** Stages the opcode-2100 ability change's after-image. */
+bool stage_ability_change(const SessionState& before,
+                          std::uint32_t definitionHash,
+                          AbilityChange& change) noexcept {
+    change = {};
+    std::uint32_t characterDefinitionId = 0;
+    if (!valid(before) || !before.family4Active || definitionHash == 0
+        || before.family4RootSoid == 0 || before.family4ResidentCount == 0
+        || !middleware::datagen::object_id(
+            kAccountFamilyType, middleware::datagen::kCharacterSlot, characterDefinitionId)) {
+        return false;
+    }
+    // The banner record the change republishes names this resident character.
+    std::size_t characterIndex = before.family4Residents.size();
+    for (std::size_t index = 0; index < before.family4ResidentCount; ++index) {
+        if (before.family4Residents[index].definitionId == characterDefinitionId) {
+            characterIndex = index;
+            break;
+        }
+    }
+    if (characterIndex >= before.family4Residents.size()
+        || before.family4Residents[characterIndex].objectSoid == 0) {
+        return false;
+    }
+    change.after = before;
+    change.after.family4Version = before.family4Version + 1;
+    change.characterDefinitionId = characterDefinitionId;
+    change.characterSoid = before.family4Residents[characterIndex].objectSoid;
+    change.definitionHash = definitionHash;
+    return valid(change.after);
+}
+
+/** Stages the opcode-801 subclass selection's after-image. */
+bool stage_subclass_selection(const SessionState& before,
+                              const state::PendingSubclassSelection& mutation,
+                              SubclassSelection& selection) noexcept {
+    selection = {};
+    std::uint32_t characterDefinitionId = 0;
+    if (!valid(before) || !before.family4Active || !mutation.prepared
+        || before.family4RootSoid == 0 || before.family4ResidentCount == 0
+        || !middleware::datagen::object_id(
+            kAccountFamilyType, middleware::datagen::kCharacterSlot, characterDefinitionId)) {
+        return false;
+    }
+    std::size_t characterIndex = before.family4Residents.size();
+    for (std::size_t index = 0; index < before.family4ResidentCount; ++index) {
+        if (before.family4Residents[index].definitionId == characterDefinitionId) {
+            characterIndex = index;
+            break;
+        }
+    }
+    if (characterIndex >= before.family4Residents.size()
+        || before.family4Residents[characterIndex].objectSoid == 0) {
+        return false;
+    }
+    selection.after = before;
+    selection.after.family4Version = before.family4Version + 1;
+    selection.characterDefinitionId = characterDefinitionId;
+    selection.characterSoid = before.family4Residents[characterIndex].objectSoid;
+    selection.mutation = mutation;
+    return valid(selection.after);
+}
+
 } // namespace sunrise::server::bap::encrypted::queuez

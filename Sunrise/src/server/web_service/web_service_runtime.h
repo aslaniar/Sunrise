@@ -5,6 +5,7 @@
 #include <span>
 
 #include "../../middleware/web_service/messages/opcode206.h"
+#include "../../state/runtime/runtime.h"
 
 namespace sunrise::server::web_service {
 
@@ -18,6 +19,12 @@ struct Outcome {
     /** An opcode-403 subclass equip passed its policy check; State and Family-4 must follow. */
     bool hasSubclassEquip{};
     std::uint64_t subclassEquipSoid{};
+    /** An opcode-2100 ability change arrived; the banner record must follow. */
+    bool hasAbilityChange{};
+    std::uint32_t abilityChangeHash{};
+    /** An opcode-801 subclass socket-entry selection prepared; State must commit. */
+    bool hasSubclassSelection{};
+    state::PendingSubclassSelection subclassSelection{};
 };
 
 /**

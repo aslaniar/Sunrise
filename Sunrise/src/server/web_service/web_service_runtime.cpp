@@ -9,6 +9,7 @@
 #include "../../middleware/web_service/messages/opcode501_codec.h"
 #include "../../middleware/web_service/messages/opcode503.h"
 #include "../../middleware/web_service/messages/opcode504.h"
+#include "../../middleware/web_service/messages/opcode801.h"
 #include "../../middleware/web_service/messages/opcode601/opcode601_codec.h"
 #include "../../middleware/web_service/web_service_envelope.h"
 #include "../../state/account/account_state.h"
@@ -230,6 +231,37 @@ bool consume(std::span<const std::byte> request,
         if (state::subclass_equip_request_valid(itemSoid)) {
             outcome.hasSubclassEquip = true;
             outcome.subclassEquipSoid = itemSoid;
+        }
+    }
+
+    // The opcode-2100 ability change: {u32 BE definition hash, u8 flag}. The policy check is
+    // read-only here; the mutation, the persistence, and the banner refresh run in the queuez
+    // outcome staging after this reply encodes (the opcode-403 pattern).
+    if (message.opcode == 2100) {
+        std::uint32_t definitionHash = 0;
+        if (message.payload.size() >= sizeof definitionHash) {
+            for (std::size_t byte = 0; byte < sizeof definitionHash; ++byte) {
+                definitionHash = (definitionHash << 8)
+                                 | static_cast<std::uint32_t>(message.payload[byte]);
+            }
+        }
+        if (definitionHash != 0) {
+            outcome.hasAbilityChange = true;
+            outcome.abilityChangeHash = definitionHash;
+        }
+    }
+
+    // The opcode-801 subclass socket-entry selection: {u64 subclass SOID, u8 biased entry}.
+    // The entry's resolved bucket names the ability field the selection updates; the mutation
+    // commits in the queuez outcome staging after this reply encodes.
+    if (message.opcode == middleware::web_service::messages::opcode801::kOpcode) {
+        middleware::web_service::messages::opcode801::Request selectionRequest{};
+        if (middleware::web_service::messages::opcode801::parse_request(
+                message, selectionRequest)
+            && state::prepare_subclass_selection(selectionRequest.subclassInstanceSoid,
+                                                 selectionRequest.socketEntry,
+                                                 outcome.subclassSelection)) {
+            outcome.hasSubclassSelection = true;
         }
     }
 

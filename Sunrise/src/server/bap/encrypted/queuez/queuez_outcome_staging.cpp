@@ -126,6 +126,111 @@ bool stage_service_outcome(Scratch& scratch,
                                                      bannerAfter)) {
             after = bannerAfter;
         }
+    } else if (outcome.hasAbilityChange) {
+        // The ability change moves only the family-zero banner record (the ability buckets
+        // live there), so no Family-4 increment goes out. Persist-before-publish keeps the
+        // same convergence contract as the subclass equip.
+        if (!state::apply_ability_change(outcome.abilityChange.definitionHash)) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             "ev=queuez stage=ability_change result=fail step=mutate");
+            return true;
+        }
+        if (!sunrise::server::persistence::persist_ability_change()) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             "ev=queuez stage=ability_change result=fail step=persist");
+            return true;
+        }
+        // The ability picks mix into the configured equipment hash, so the cache header
+        // re-stamps exactly like the subclass equip does.
+        const std::uint64_t postHash =
+            state::runtime::equipment::configured_hash(state::account_snapshot());
+        if (!state::build_data::cache::restamp_equipment_hash(postHash)) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             "ev=cache stage=restamp result=fail");
+        }
+        const SessionState& bannerBefore = outcome.abilityChange.after;
+        SessionState bannerAfter{};
+        if (!push::append_banner_refresh_notification(scratch,
+                                                      bannerBefore,
+                                                      outcome.abilityChange.characterSoid,
+                                                      key,
+                                                      nonce,
+                                                      response,
+                                                      written,
+                                                      bannerAfter)) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             "ev=queuez stage=ability_change result=fail step=push");
+            return true;
+        }
+        // The banner append advances the push nonce internally; no manual advance here.
+        after = bannerAfter;
+        std::array<char, 96> line{};
+        const int lineWritten = std::snprintf(line.data(),
+                                              line.size(),
+                                              "ev=queuez stage=ability_change result=ok hash=0x%08X",
+                                              outcome.abilityChange.definitionHash);
+        if (lineWritten > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::info,
+                             {line.data(), static_cast<std::size_t>(lineWritten)});
+        }
+    } else if (outcome.hasSubclassSelection) {
+        // The opcode-801 selection: commit the ability picks, persist them, re-stamp the
+        // equipment hash (the picks mix into it), and refresh the banner record that carries
+        // the new ability buckets — the same shape as the ability-change branch.
+        state::PendingSubclassSelection selectionMutation =
+            outcome.subclassSelection.mutation;
+        if (!state::commit_subclass_selection(selectionMutation)) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             "ev=queuez stage=subclass_selection result=fail step=commit");
+            return true;
+        }
+        if (!sunrise::server::persistence::persist_ability_change()) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             "ev=queuez stage=subclass_selection result=fail step=persist");
+            return true;
+        }
+        const std::uint64_t postHash =
+            state::runtime::equipment::configured_hash(state::account_snapshot());
+        if (!state::build_data::cache::restamp_equipment_hash(postHash)) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             "ev=cache stage=restamp result=fail");
+        }
+        const SessionState& bannerBefore = outcome.subclassSelection.after;
+        SessionState bannerAfter{};
+        if (!push::append_banner_refresh_notification(scratch,
+                                                      bannerBefore,
+                                                      outcome.subclassSelection.characterSoid,
+                                                      key,
+                                                      nonce,
+                                                      response,
+                                                      written,
+                                                      bannerAfter)) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             "ev=queuez stage=subclass_selection result=fail step=push");
+            return true;
+        }
+        // The banner append advances the push nonce internally; no manual advance here.
+        after = bannerAfter;
+        std::array<char, 96> line{};
+        const int lineWritten = std::snprintf(
+            line.data(),
+            line.size(),
+            "ev=queuez stage=subclass_selection result=ok entry=%u",
+            outcome.subclassSelection.mutation.requestedEntry);
+        if (lineWritten > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::info,
+                             {line.data(), static_cast<std::size_t>(lineWritten)});
+        }
     } else {
         return true;
     }

@@ -9,6 +9,7 @@
 #include "../../../middleware/bap/family_unsubscription.h"
 #include "../../../middleware/bap/frame.h"
 #include "../../../middleware/queuez/subscription.h"
+#include "../../../state/runtime/runtime.h"
 #include "../../web_service/web_service_runtime.h"
 #include "../internal.h"
 #include "activity_message/definition.h"
@@ -45,6 +46,10 @@ struct ServiceOutcome {
     queuez::SelectCharacter selectCharacter{};
     bool hasSubclassEquip{};
     queuez::SubclassEquip subclassEquip{};
+    bool hasAbilityChange{};
+    queuez::AbilityChange abilityChange{};
+    bool hasSubclassSelection{};
+    queuez::SubclassSelection subclassSelection{};
     bool hasActivitySessionAllocation{};
     state::activity::PendingAllocation activitySessionAllocation{};
     bool hasActivityTransaction{};

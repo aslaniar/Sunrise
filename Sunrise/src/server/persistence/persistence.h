@@ -68,4 +68,12 @@ void shutdown() noexcept;
 [[nodiscard]] bool persist_subclass_equip(std::uint64_t newlyEquippedSoid,
                                           std::uint64_t displacedSoid) noexcept;
 
+/**
+ * Persists the selected character's five ability-entry picks in one transaction, reading
+ * them from the published State (the opcode-2100 mutation already landed there). The scope
+ * is the selected character's row only.
+ * @return True when the update commits.
+ */
+[[nodiscard]] bool persist_ability_change() noexcept;
+
 } // namespace sunrise::server::persistence

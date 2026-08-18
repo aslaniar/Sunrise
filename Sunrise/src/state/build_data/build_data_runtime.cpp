@@ -75,8 +75,11 @@ bool initialize(void* module, std::uint64_t configuredEquipmentHash) noexcept {
         ReleaseSRWLockExclusive(&persistenceState.lock);
         return true;
     }
-    const cache::records::Domains domains =
-        runtime::persistence::occupied_domains(persistenceState, counts);
+    // The Domains aggregate is too large for the stack now that the ability catalog holds
+    // every reachable selection (512 rows); the load runs under the persistence lock, so a
+    // static copy is safe and keeps the aggregate out of the caller's frame.
+    static cache::records::Domains domains;
+    domains = runtime::persistence::occupied_domains(persistenceState, counts);
     bool detailsReplaced = false;
     if (domains.itemDetails.empty()) {
         items::details::clear();

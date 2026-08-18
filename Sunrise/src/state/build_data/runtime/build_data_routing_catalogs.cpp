@@ -2,6 +2,7 @@
 #include "../items/item_catalog.h"
 #include "../runtime.h"
 #include "../socket_entry_lists/socket_entry_list_catalog.h"
+#include "../socket_entry_buckets/socket_entry_bucket_catalog.h"
 #include "persistence/publication_transaction.h"
 
 namespace sunrise::state::build_data {
@@ -67,6 +68,13 @@ bool find_socket_entry_list(std::uint16_t definitionIndex,
                             socket_entry_lists::Definition& definition) noexcept {
     definition = {};
     return socket_entry_lists_ready() && socket_entry_lists::find(definitionIndex, definition);
+}
+
+/** Finds one list's resolved per-entry ability-bucket destinations. */
+bool find_socket_entry_buckets(std::uint16_t definitionIndex,
+                               socket_entry_buckets::Definition& buckets) noexcept {
+    buckets = {};
+    return socket_entry_buckets::find(definitionIndex, buckets);
 }
 
 } // namespace sunrise::state::build_data

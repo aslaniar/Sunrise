@@ -178,6 +178,7 @@
     <ClCompile Include="src\client\hooks\graphics\graphics_hook_lifecycle.cpp" />
     <ClCompile Include="src\client\persistence_stub.cpp" />
     <ClCompile Include="src\client\hooks\ability_gate\ability_gate_observer.cpp" />
+    <ClCompile Include="src\client\hooks\gate_trace\gate_trace_observer.cpp" />
     <ClCompile Include="src\client\hooks\handle_message\handle_message_observer.cpp" />
     <ClCompile Include="src\client\hooks\schema_capture\schema_capture_observer.cpp" />
     <ClCompile Include="src\client\hooks\graphics\graphics_hook_replacements.cpp" />
@@ -443,6 +444,7 @@
     <ClCompile Include="src\state\build_data\items\details\item_detail_catalog.cpp" />
     <ClCompile Include="src\state\build_data\constants\investment_constant_catalog.cpp" />
     <ClCompile Include="src\state\build_data\abilities\ability_bucket_catalog.cpp" />
+    <ClCompile Include="src\state\build_data\socket_entry_buckets\socket_entry_bucket_catalog.cpp" />
     <ClCompile Include="src\state\build_data\progressions\progression_catalog.cpp" />
     <ClCompile Include="src\state\build_data\runtime\domain_markers.cpp" />
     <ClCompile Include="src\state\build_data\inventory\buckets\inventory_bucket_catalog.cpp" />
@@ -615,6 +617,7 @@
     <ClCompile Include="src\middleware\web_service\messages\family5\family5_codec.cpp" />
     <ClCompile Include="src\middleware\web_service\messages\opcode205\opcode205_codec.cpp" />
     <ClCompile Include="src\middleware\web_service\messages\opcode503\opcode503_codec.cpp" />
+    <ClCompile Include="src\middleware\web_service\messages\opcode801_codec.cpp" />
     <ClCompile Include="src\middleware\web_service\messages\opcode206_codec.cpp" />
     <ClCompile Include="src\middleware\web_service\messages\opcode501_codec.cpp" />
     <ClCompile Include="src\middleware\web_service\messages\opcode505\opcode505_codec.cpp" />

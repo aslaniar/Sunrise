@@ -1492,4 +1492,54 @@ bool persist_subclass_equip(std::uint64_t newlyEquippedSoid,
     return ok;
 }
 
+/** Persists the selected character's five ability-entry picks. */
+bool persist_ability_change() noexcept {
+    const state::AccountState account = state::account_snapshot();
+    std::size_t characterIndex = account.characterCount;
+    for (std::size_t index = 0; index < account.characterCount; ++index) {
+        if (account.characters[index].selected) {
+            characterIndex = index;
+            break;
+        }
+    }
+    AcquireSRWLockExclusive(&g_lock);
+    if (g_database == nullptr || characterIndex >= account.characterCount) {
+        ReleaseSRWLockExclusive(&g_lock);
+        return false;
+    }
+    const state::CharacterState& character = account.characters[characterIndex];
+    static constexpr char kAbilitySql[] =
+        "UPDATE characters SET movement_ability_entry = ?, grenade_ability_entry = ?, "
+        "super_ability_entry = ?, melee_ability_entry = ?, class_ability_entry = ? "
+        "WHERE account_id = ? AND character_index = ?;";
+    bool ok = exec("BEGIN;");
+    sqlite3_stmt* statement = nullptr;
+    if (ok) {
+        ok = sqlite3_prepare_v2(g_database, kAbilitySql, -1, &statement, nullptr) == SQLITE_OK;
+    }
+    if (ok) {
+        ok = sqlite3_bind_int(statement, 1, character.movementAbilityEntry) == SQLITE_OK
+             && sqlite3_bind_int(statement, 2, character.grenadeAbilityEntry) == SQLITE_OK
+             && sqlite3_bind_int(statement, 3, character.superAbilityEntry) == SQLITE_OK
+             && sqlite3_bind_int(statement, 4, character.meleeAbilityEntry) == SQLITE_OK
+             && sqlite3_bind_int(statement, 5, character.classAbilityEntry) == SQLITE_OK
+             && bind_text(statement, 6, seed_account_id())
+             && sqlite3_bind_int(statement, 7, static_cast<int>(characterIndex)) == SQLITE_OK
+             && step_done(statement);
+        sqlite3_finalize(statement);
+    }
+    if (!ok) {
+        fail("persist_ability_change", error_text());
+        (void)exec("ROLLBACK;");
+        ReleaseSRWLockExclusive(&g_lock);
+        return false;
+    }
+    ok = exec("COMMIT;");
+    if (!ok) {
+        (void)exec("ROLLBACK;");
+    }
+    ReleaseSRWLockExclusive(&g_lock);
+    return ok;
+}
+
 } // namespace sunrise::server::persistence

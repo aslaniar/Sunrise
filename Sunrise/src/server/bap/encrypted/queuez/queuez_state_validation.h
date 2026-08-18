@@ -102,4 +102,30 @@ void stage_unsubscription(const SessionState& before,
                                         std::uint64_t itemSoid,
                                         SubclassEquip& equip) noexcept;
 
+/**
+ * Stages the opcode-2100 ability change. The family-zero banner record is the only object
+ * that moves (the ability buckets live there); the Family-4 version still bumps so the
+ * correlated reply carries a fresh peer version.
+ * @param before Current queuez state owned by the peer.
+ * @param definitionHash Ability definition hash the opcode-2100 request named.
+ * @param change Gets the after-image and the resident character keys.
+ * @return True only when a resident character object exists to refresh.
+ */
+[[nodiscard]] bool stage_ability_change(const SessionState& before,
+                                        std::uint32_t definitionHash,
+                                        AbilityChange& change) noexcept;
+
+/**
+ * Stages the opcode-801 subclass selection's after-image. The mutation is State-side; the
+ * queuez side only bumps the Family-4 version for the correlated reply and names the resident
+ * character whose banner record refreshes.
+ * @param before Current queuez state owned by the peer.
+ * @param mutation Prepared State mutation the outcome staging commits.
+ * @param selection Gets the after-image and the resident character keys.
+ * @return True only when a resident character object exists to refresh.
+ */
+[[nodiscard]] bool stage_subclass_selection(const SessionState& before,
+                                            const state::PendingSubclassSelection& mutation,
+                                            SubclassSelection& selection) noexcept;
+
 } // namespace sunrise::server::bap::encrypted::queuez
