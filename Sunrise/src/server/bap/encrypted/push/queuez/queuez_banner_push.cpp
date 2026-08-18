@@ -243,4 +243,69 @@ bool append_banner_refresh_notification(Scratch& scratch,
     return true;
 }
 
+/**
+ * Appends the Family-3 refresh a subclass equip owes: the resident roster-side character
+ * record re-encodes from the mutated account plus the account roster — the fork's third
+ * publication (the family-three record is a separate copy of the appearance, and the
+ * selector's icons are a roster-side read). One increment above the family-three version.
+ */
+bool append_roster_refresh_notification(Scratch& scratch,
+                                        const queuez::SessionState& before,
+                                        std::uint64_t characterSoid,
+                                        std::span<const std::byte, state::kAesKeySize> key,
+                                        std::array<std::byte, state::kBapNonceSize>& nonce,
+                                        std::span<std::byte> response,
+                                        std::size_t& written,
+                                        queuez::SessionState& after) noexcept {
+    after = before;
+    queuez::RosterAppearanceRefresh refresh{};
+    if (!queuez::stage_roster_appearance_refresh(before, characterSoid, true, refresh)) {
+        return false;
+    }
+    const state::AccountState account = state::account_snapshot();
+    std::size_t characterIndex = account.characterCount;
+    for (std::size_t index = 0; index < account.characterCount; ++index) {
+        if (account.characters[index].soid == characterSoid) {
+            characterIndex = index;
+            break;
+        }
+    }
+    snapshot::Prepared prepared{};
+    if (characterIndex >= account.characterCount
+        || !snapshot::prepare_roster_appearance_refresh(
+            scratch, refresh, account.characters[characterIndex], characterIndex, prepared)) {
+        core::log::write(core::log::Channel::server,
+                         core::log::Level::warn,
+                         "ev=queuez stage=roster_refresh result=fail reason=prepare");
+        after = before;
+        return false;
+    }
+    const std::size_t objectCount = prepared.family.objects.size();
+    const std::size_t beforeBytes = written;
+    if (objectCount != (refresh.includeRoster ? 2U : 1U)
+        || prepared.family.type != queuez::kRosterFamilyType
+        || !queuez_frame::append(scratch,
+                                 prepared.family,
+                                 prepared.rawClearSize,
+                                 prepared.compressedClearSize,
+                                 key,
+                                 nonce,
+                                 response,
+                                 written)) {
+        core::log::write(core::log::Channel::server,
+                         core::log::Level::warn,
+                         "ev=queuez stage=roster_refresh result=fail reason=frame");
+        after = before;
+        return false;
+    }
+    middleware::secure_channel::advance_nonce(nonce);
+    queuez_report::push("equip_roster",
+                        queuez::kRosterFamilyType,
+                        objectCount,
+                        written - beforeBytes,
+                        1);
+    after = refresh.after;
+    return true;
+}
+
 } // namespace sunrise::server::bap::encrypted::push

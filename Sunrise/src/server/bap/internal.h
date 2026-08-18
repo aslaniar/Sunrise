@@ -117,6 +117,10 @@ struct Session {
     std::uint64_t bannerRepushRoot{};
     /** True while one banner re-push is still owed to this peer. */
     bool bannerRepushArmed{};
+    /** Tick count after which the delayed ability-refresh pair may go out. */
+    std::uint64_t abilityRefreshDueTick{};
+    /** True while the appearance + roster refreshes owe their delayed re-send. */
+    bool abilityRefreshArmed{};
     /** Latest shared-account generation this peer has received. */
     std::uint64_t accountGeneration{};
     /** Newest shared-account generation owed as a full cross-peer refresh. */

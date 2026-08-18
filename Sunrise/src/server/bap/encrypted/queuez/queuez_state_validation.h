@@ -65,6 +65,21 @@ namespace sunrise::server::bap::encrypted::queuez {
                                          SessionState& after) noexcept;
 
 /**
+ * Stages one in-place Family-3 character refresh and its optional account roster upsert —
+ * the fork's shape: the family-three record is a separate copy of the appearance, so the
+ * equipment mutation owes it one increment above the peer's family-three version.
+ * @param before Current queuez state owned by the peer.
+ * @param characterSoid Resident character whose family-three record changed.
+ * @param includeRoster True when the roster's slot definitions changed too (the equip moves).
+ * @param refresh Gets the staged after-image.
+ * @return True only when the family-three store is active and names that root.
+ */
+[[nodiscard]] bool stage_roster_appearance_refresh(const SessionState& before,
+                                                   std::uint64_t characterSoid,
+                                                   bool includeRoster,
+                                                   RosterAppearanceRefresh& refresh) noexcept;
+
+/**
  * Stages the fixed first opcode-505 transition for one peer.
  * @param before Current queuez state owned by the peer.
  * @param change Gets the version-one after-image and the account definition.

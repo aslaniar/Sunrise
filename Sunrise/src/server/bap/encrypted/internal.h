@@ -234,6 +234,30 @@ append_banner_refresh_notification(Scratch& scratch,
                                    queuez::SessionState& after) noexcept;
 
 /**
+ * Appends the Family-3 refresh a subclass equip owes: the resident roster-side character
+ * record plus the account roster — the fork's third publication (the family-three record is
+ * a separate copy of the appearance).
+ * @param scratch Lock-owned transform buffers.
+ * @param before Queuez state visible to the current BAP peer.
+ * @param characterSoid Character whose family-three record changed.
+ * @param key Active AES-GCM session key.
+ * @param nonce Push-direction nonce, advanced only by a complete frame.
+ * @param response Caller-owned output containing prior frames.
+ * @param written Existing byte count, updated by a complete frame.
+ * @param after Receives the state published once the frame is copied.
+ * @return True when a frame went out and `after` carries the advanced ladder.
+ */
+[[nodiscard]] bool
+append_roster_refresh_notification(Scratch& scratch,
+                                   const queuez::SessionState& before,
+                                   std::uint64_t characterSoid,
+                                   std::span<const std::byte, state::kAesKeySize> key,
+                                   std::array<std::byte, state::kBapNonceSize>& nonce,
+                                   std::span<std::byte> response,
+                                   std::size_t& written,
+                                   queuez::SessionState& after) noexcept;
+
+/**
  * Appends the fixed opcode-505 Family-4 selection patch.
  * @param scratch Lock-owned transform buffers.
  * @param change Staged queuez after-image and account definition.

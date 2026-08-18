@@ -48,11 +48,16 @@ struct SessionState {
     std::int32_t family4Version{};
     /** Retail sets the full-snapshot flag once per family, then increments this by one. */
     std::int32_t family0Version{};
+    /** The family-three ladder (the fork's shape): the roster's root, version, and activity. */
+    std::uint64_t family3RootSoid{};
+    std::int32_t family3Version{};
     std::uint8_t family4ResidentCount{};
     Family3Phase family3Phase{Family3Phase::normal};
     bool family4Active{};
     /** Set once the family-zero full snapshot has been published to this peer. */
     bool family0Active{};
+    /** Set once the family-three full snapshot has been published to this peer. */
+    bool family3Active{};
 };
 
 /** Validated opcode-505 after-image and its resident account definition. */
@@ -115,6 +120,15 @@ struct SubclassSelection {
     state::PendingSubclassSelection mutation{};
 };
 
+/** Validated Family-3 appearance after-image for one character and its optional account roster
+ *  (the fork's shape: the family-three record is a separate copy of the appearance). */
+struct RosterAppearanceRefresh {
+    SessionState after{};
+    std::uint64_t characterSoid{};
+    /** Equipment moves change the roster's slot definition; socket-only changes do not. */
+    bool includeRoster{};
+};
+
 /** Queuez fields published after every staged frame is copied to caller output. */
 struct StagedPublication {
     SessionState after{};
@@ -123,6 +137,8 @@ struct StagedPublication {
     bool armsFamily4Repush{};
     /** Root the companion used, kept because an unmapped snapshot records no residents. */
     std::uint64_t family4RepushRoot{};
+    /** The ability-bucket rebuild runs asynchronously; the refresh pair owes a delayed re-send. */
+    bool armsAbilityRefresh{};
 };
 
 } // namespace sunrise::server::bap::encrypted::queuez

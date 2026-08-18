@@ -47,4 +47,13 @@ void publish_connection_fields(Session& session,
  */
 void arm_repushes(Session& session, const queuez::StagedPublication& queuezPublication) noexcept;
 
+/**
+ * Arms the delayed ability-refresh pair (the appearance + the roster re-send) when the
+ * publication asks for it — the fork's deferral of the ability-bucket rebuild's settle.
+ * @param session Connection-owned re-push timers.
+ * @param queuezPublication Staged queuez publication.
+ */
+void arm_ability_refresh(Session& session,
+                         const queuez::StagedPublication& queuezPublication) noexcept;
+
 } // namespace sunrise::server::bap::encrypted

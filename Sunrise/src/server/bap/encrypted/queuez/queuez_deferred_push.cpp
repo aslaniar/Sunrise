@@ -87,6 +87,68 @@ void report_repush(const char* stage, std::size_t bytes) noexcept {
     return true;
 }
 
+/** Sends the delayed ability-refresh pair once its delay has passed (the fork's deferral:
+ *  the ability-bucket rebuild runs asynchronously, so the appearance + the roster re-send
+ *  once the rebuild settles instead of racing the client's refresh). */
+[[nodiscard]] bool consume_ability_refresh(Session& session,
+                                           Scratch& scratch,
+                                           std::span<std::byte> response,
+                                           std::size_t& written,
+                                           bool& touchesScratch) noexcept {
+    if (!session.abilityRefreshArmed || GetTickCount64() < session.abilityRefreshDueTick) {
+        return false;
+    }
+    session.abilityRefreshArmed = false;
+    touchesScratch = true;
+
+    auto nextSendNonce = session.sendNonce;
+    std::size_t framedSize = 0;
+    queuez::SessionState current = session.queuez;
+    bool wrote = false;
+    const state::AccountState account = state::account_snapshot();
+    const std::uint64_t selected = state::account::selected_character_soid(account);
+    if (selected != 0 && current.family0Active) {
+        queuez::SessionState appearanceAfter{};
+        if (push::append_banner_refresh_notification(scratch,
+                                                     current,
+                                                     selected,
+                                                     state::bap().sessionKey,
+                                                     nextSendNonce,
+                                                     scratch.framed,
+                                                     framedSize,
+                                                     appearanceAfter)) {
+            current = appearanceAfter;
+            wrote = true;
+        }
+    }
+    if (selected != 0 && current.family3Active) {
+        queuez::SessionState rosterAfter{};
+        if (push::append_roster_refresh_notification(scratch,
+                                                     current,
+                                                     selected,
+                                                     state::bap().sessionKey,
+                                                     nextSendNonce,
+                                                     scratch.framed,
+                                                     framedSize,
+                                                     rosterAfter)) {
+            current = rosterAfter;
+            wrote = true;
+        }
+    }
+    if (!wrote || framedSize == 0 || framedSize > response.size() || !queuez::valid(current)) {
+        core::log::write(core::log::Channel::server,
+                         core::log::Level::warn,
+                         "ev=queuez stage=ability_refresh result=fail");
+        return false;
+    }
+    std::copy_n(scratch.framed.begin(), framedSize, response.begin());
+    written = framedSize;
+    session.sendNonce = nextSendNonce;
+    session.queuez = current;
+    report_repush("ability_refresh", framedSize);
+    return true;
+}
+
 } // namespace
 
 /**
@@ -106,6 +168,10 @@ bool consume_deferred(Session& session,
     written = 0;
     if (!session.authenticated) {
         return false;
+    }
+    // The swap's delayed refresh pair outranks every other owed push.
+    if (consume_ability_refresh(session, scratch, response, written, touchesScratch)) {
+        return true;
     }
     if (!session.family4RepushArmed || session.family4RepushRoot == 0
         || GetTickCount64() < session.family4RepushDueTick) {

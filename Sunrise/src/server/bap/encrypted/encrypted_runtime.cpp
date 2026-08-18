@@ -176,6 +176,7 @@ bool consume(Session& session,
                 session.queuez = nextQueuez;
             }
             arm_repushes(session, queuezPublication);
+            arm_ability_refresh(session, queuezPublication);
             publish_connection_fields(session, publication, connection);
         }
     }

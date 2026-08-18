@@ -126,6 +126,29 @@ bool stage_service_outcome(Scratch& scratch,
                                                      bannerAfter)) {
             after = bannerAfter;
         }
+        // The fork's third publication: the family-three roster-side appearance copy (the
+        // selector's icons are a roster-side read) follows the family-zero refresh at one
+        // exact +1 family-three revision.
+        const SessionState& rosterBefore = after;
+        SessionState rosterAfter{};
+        if (!push::append_roster_refresh_notification(scratch,
+                                                      rosterBefore,
+                                                      outcome.subclassEquip.characterSoid,
+                                                      key,
+                                                      nonce,
+                                                      response,
+                                                      written,
+                                                      rosterAfter)) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             "ev=queuez stage=subclass_equip result=fail step=roster");
+            return true;
+        }
+        after = rosterAfter;
+        // The ability-bucket rebuild runs asynchronously off the content pump; the refresh
+        // pair owes a delayed re-send once the rebuild settles (the fork's deferral — the
+        // inline rebuild races the client's refresh).
+        publication.armsAbilityRefresh = true;
     } else if (outcome.hasAbilityChange) {
         // The ability change moves only the family-zero banner record (the ability buckets
         // live there), so no Family-4 increment goes out. Persist-before-publish keeps the

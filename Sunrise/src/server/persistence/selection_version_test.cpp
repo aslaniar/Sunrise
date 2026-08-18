@@ -178,6 +178,25 @@ int run_selection_version_test(void* module) noexcept {
     harness.check(afterReplay.family4Version == queuez::kInitialFamilyVersion,
                   "replay_holds_initial_version");
 
+    // The family-zero and family-three subscriptions (the fork's full ladder): the equip's
+    // refresh pair stages only when both sides are active.
+    SessionState beforeAll = afterReplay;
+    bool family0Publish = false;
+    bool family0Incremental = false;
+    harness.check(queuez::stage_family0_subscription(beforeAll,
+                                                     account.characters[0].soid,
+                                                     family0Publish,
+                                                     family0Incremental,
+                                                     beforeAll),
+                  "family0_subscription_stages");
+    harness.check(beforeAll.family0Active, "family0_subscription_activates");
+    const middleware::queuez::Subscription rosterSub{queuez::kRosterFamilyType, accountSoid};
+    bool rosterPublish = false;
+    harness.check(
+        queuez::stage_family3_subscription(beforeAll, rosterSub, rosterPublish, beforeAll),
+        "roster_subscription_stages");
+    harness.check(beforeAll.family3Active, "roster_subscription_activates_family3");
+
     // THE FIRST 801: one prepared selection, staged at exactly +1, committed, and its
     // family-4 character after-image prepared + appended at the staged version.
     const std::optional<std::uint8_t> entry1 = find_changing_entry(subclassSoid);
@@ -187,7 +206,7 @@ int run_selection_version_test(void* module) noexcept {
     if (entry1.has_value()) {
         harness.check(state::prepare_subclass_selection(subclassSoid, *entry1, mutation1),
                       "entry1_prepares");
-        harness.check(queuez::stage_subclass_selection(afterReplay, mutation1, selection1),
+        harness.check(queuez::stage_subclass_selection(beforeAll, mutation1, selection1),
                       "selection1_stages");
         harness.check(selection1.after.family4Version == afterReplay.family4Version + 1,
                       "selection1_version_exactly_plus_one");
@@ -290,6 +309,60 @@ int run_selection_version_test(void* module) noexcept {
                           && prepared.family.objects[1].id == itemObjectId
                           && prepared.family.objects[1].version == pickSoid,
                       "equip_frame_is_character_plus_item");
+    }
+
+    // THE THREE-FRAME TRANSACTION (the fork's atomic shape): the family-0 in-place refresh
+    // and the family-3 roster-side refresh follow the family-4 pair, each at exactly +1.
+    {
+        queuez::SessionState bannerBefore = equip.after;
+        queuez::SessionState bannerAfter{};
+        harness.check(
+            queuez::stage_family0_refresh(bannerBefore, equip.characterSoid, bannerAfter),
+            "equip_family0_refresh_stages");
+        harness.check(bannerAfter.family0Version == bannerBefore.family0Version + 1,
+                      "equip_family0_refresh_plus_one");
+        bap::Scratch scratch{};
+        snapshot::Prepared bannerPrepared{};
+        harness.check(snapshot::prepare_banner_refresh(scratch,
+                                                       bannerAfter.family4RootSoid,
+                                                       bannerAfter.family0Version,
+                                                       equip.characterSoid,
+                                                       bannerPrepared),
+                      "equip_family0_refresh_prepares_frame");
+        harness.check(bannerPrepared.family.flags == 0
+                          && bannerPrepared.family.objects.size() == 1,
+                      "equip_family0_refresh_inplace_shape");
+
+        queuez::RosterAppearanceRefresh rosterRefresh{};
+        harness.check(queuez::stage_roster_appearance_refresh(
+                          bannerAfter, equip.characterSoid, true, rosterRefresh),
+                      "equip_roster_refresh_stages");
+        harness.check(rosterRefresh.after.family3Version == bannerAfter.family3Version + 1,
+                      "equip_roster_refresh_plus_one");
+        const state::AccountState liveAfter = state::account_snapshot();
+        std::size_t characterIndex = liveAfter.characterCount;
+        for (std::size_t index = 0; index < liveAfter.characterCount; ++index) {
+            if (liveAfter.characters[index].soid == equip.characterSoid) {
+                characterIndex = index;
+                break;
+            }
+        }
+        harness.check(characterIndex < liveAfter.characterCount, "equip_roster_character_found");
+        if (characterIndex < liveAfter.characterCount) {
+            snapshot::Prepared rosterPrepared{};
+            harness.check(snapshot::prepare_roster_appearance_refresh(
+                              scratch,
+                              rosterRefresh,
+                              liveAfter.characters[characterIndex],
+                              characterIndex,
+                              rosterPrepared),
+                          "equip_roster_refresh_prepares_frame");
+            harness.check(rosterPrepared.family.type == queuez::kRosterFamilyType
+                              && rosterPrepared.family.version
+                                     == rosterRefresh.after.family3Version
+                              && rosterPrepared.family.objects.size() == 2,
+                          "equip_roster_frame_shape");
+        }
     }
 
     // THE DEFERRED-REPUSH CASES. (a) The version-zero replay is permitted only while the peer

@@ -116,4 +116,98 @@ bool prepare_roster(Scratch& scratch,
     return commit(staged, prepared);
 }
 
+/** Builds one incremental Family-3 character record and its optional changed account roster
+ *  (the fork's shape — the roster-side appearance copy the equip owes). */
+bool prepare_roster_appearance_refresh(Scratch& scratch,
+                                       const queuez::RosterAppearanceRefresh& refresh,
+                                       const state::CharacterState& afterCharacter,
+                                       std::size_t characterIndex,
+                                       Prepared& prepared) noexcept {
+    const Reservation reservation = reserve_prior(scratch, prepared);
+    if (reservation.rawWriteOffset > scratch.plaintext.size()
+        || reservation.compressedWriteOffset > scratch.sealed.size()) {
+        return report_failure("roster_refresh_reservation");
+    }
+    state::AccountState account = state::account_snapshot();
+    if (!refresh.after.family3Active || refresh.after.family3RootSoid == 0
+        || refresh.after.family3Version <= kInitialFamilyVersion || refresh.characterSoid == 0
+        || afterCharacter.soid != refresh.characterSoid || characterIndex >= account.characterCount
+        || account.characters[characterIndex].soid != refresh.characterSoid
+        || account.primarySoid != refresh.after.family3RootSoid) {
+        return report_failure("roster_refresh_mutation");
+    }
+    account.characters[characterIndex] = afterCharacter;
+    if (!state::account::valid(account)
+        || state::account::selected_character_soid(account) != refresh.characterSoid) {
+        return report_failure("roster_refresh_selection");
+    }
+
+    middleware::datagen::family4::loadout::ResolvedInstances instances{};
+    std::int32_t light = 0;
+    if (!middleware::datagen::family4::loadout::resolve_instances(
+            account, characterIndex, instances)
+        || !state::equipment::light::resolution::character_light(account, characterIndex, light)) {
+        return report_failure("roster_refresh_resolve");
+    }
+
+    const std::size_t rosterSize =
+        refresh.includeRoster ? middleware::datagen::family3::kRosterSize : 0U;
+    const std::size_t rawSize = character_record::kFamily3RecordSize + rosterSize;
+    const auto rawStorage = std::span(scratch.plaintext).subspan(reservation.rawWriteOffset);
+    if (rawSize > rawStorage.size()) {
+        return report_failure("roster_refresh_storage");
+    }
+    const auto characterBytes = rawStorage.first(character_record::kFamily3RecordSize);
+    if (!character_record::encode_family3(afterCharacter, instances, light, characterBytes)) {
+        return report_failure("roster_refresh_character");
+    }
+    std::span<std::byte> rosterBytes{};
+    if (refresh.includeRoster) {
+        rosterBytes = rawStorage.subspan(character_record::kFamily3RecordSize, rosterSize);
+        std::size_t encodedRosterSize = 0;
+        if (!middleware::datagen::family3::encode_roster(account, rosterBytes, encodedRosterSize)
+            || encodedRosterSize != rosterSize) {
+            return report_failure("roster_refresh_roster");
+        }
+    }
+
+    Prepared staged{};
+    staged.rawClearSize =
+        (std::max)(reservation.rawClearSize, reservation.rawWriteOffset + rawSize);
+    std::size_t compressedExtent = reservation.compressedWriteOffset;
+    std::size_t objectCount = 0;
+    if (!append_object(scratch,
+                       characterBytes,
+                       middleware::datagen::kRosterCharacterObjectId,
+                       refresh.characterSoid,
+                       staged.objects[objectCount++],
+                       compressedExtent)) {
+        clear_after(scratch, reservation);
+        return report_failure("roster_refresh_character_object");
+    }
+    if (refresh.includeRoster
+        && !append_object(scratch,
+                          rosterBytes,
+                          middleware::datagen::kRosterObjectId,
+                          account.primarySoid,
+                          staged.objects[objectCount++],
+                          compressedExtent)) {
+        clear_after(scratch, reservation);
+        return report_failure("roster_refresh_roster_object");
+    }
+    staged.compressedClearSize = (std::max)(reservation.compressedClearSize, compressedExtent);
+    staged.family = middleware::queuez::Family{
+        kRosterFamilyType,
+        refresh.after.family3RootSoid,
+        refresh.after.family3Version,
+        0,
+        std::span(staged.objects).first(objectCount),
+    };
+    if (!commit(staged, prepared)) {
+        clear_after(scratch, reservation);
+        return report_failure("roster_refresh_commit");
+    }
+    return true;
+}
+
 } // namespace sunrise::server::bap::encrypted::push::snapshot

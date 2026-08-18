@@ -9,6 +9,8 @@ namespace {
 constexpr std::uint64_t kFamily4RepushDelayMs = 400;
 /** The banner pair lands the same unsolicited way and hits the same record-state race. */
 constexpr std::uint64_t kBannerRepushDelayMs = 400;
+/** The ability-bucket rebuild's settling window before the refresh pair re-sends. */
+constexpr std::uint64_t kAbilityRefreshDelayMs = 500;
 /**
  * How long the roster keeps its faster cadence after a load starts.
  * The slice-set load step costs 9.2 to 14.1 s, so this covers it.
@@ -80,6 +82,17 @@ void arm_repushes(Session& session, const queuez::StagedPublication& queuezPubli
     session.bannerRepushDueTick = now + kBannerRepushDelayMs;
     session.bannerRepushRoot = queuezPublication.family4RepushRoot;
     session.bannerRepushArmed = true;
+}
+
+/** Arms the delayed ability-refresh pair when the publication asks for it. */
+void arm_ability_refresh(Session& session,
+                         const queuez::StagedPublication& queuezPublication) noexcept {
+    if (!queuezPublication.armsAbilityRefresh) {
+        return;
+    }
+    const std::uint64_t now = GetTickCount64();
+    session.abilityRefreshDueTick = now + kAbilityRefreshDelayMs;
+    session.abilityRefreshArmed = true;
 }
 
 } // namespace sunrise::server::bap::encrypted

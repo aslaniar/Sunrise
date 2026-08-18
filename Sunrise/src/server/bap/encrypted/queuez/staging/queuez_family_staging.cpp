@@ -155,22 +155,56 @@ bool stage_family3_subscription(const SessionState& before,
         || subscription.familyRootSoid == 0) {
         return false;
     }
-    if (before.family4Active && subscription.familyRootSoid != before.family4RootSoid) {
+    if ((before.family4Active && subscription.familyRootSoid != before.family4RootSoid)
+        || (before.family3Active && subscription.familyRootSoid != before.family3RootSoid)) {
         return false;
+    }
+    if (!before.family3Active) {
+        // Publication is transactional: the caller installs this seed only after the full frame
+        // is copied. Until then the before-image remains inactive and version zero has no meaning.
+        publish = true;
+        after.family3RootSoid = subscription.familyRootSoid;
+        after.family3Version = kInitialFamilyVersion;
+        after.family3Active = true;
+        return valid(after);
     }
     if (before.family3Phase == Family3Phase::normal) {
         publish = true;
-        return true;
+        // An explicit subscription establishes a fresh client-side store. Its current full body
+        // is version zero even when the prior subscribed store had consumed incrementals.
+        after.family3Version = kInitialFamilyVersion;
+        return valid(after);
     }
     if (!before.family4Active) {
         return false;
     }
     if (before.family3Phase == Family3Phase::publishOnce) {
         publish = true;
+        after.family3Version = kInitialFamilyVersion;
         after.family3Phase = Family3Phase::responseOnly;
-        return true;
+        return valid(after);
     }
     return before.family3Phase == Family3Phase::responseOnly;
+}
+
+/** Stages one in-place Family-3 character refresh and its optional account roster upsert
+ *  (the fork's shape — the roster record is a separate copy of the appearance). */
+bool stage_roster_appearance_refresh(const SessionState& before,
+                                     std::uint64_t characterSoid,
+                                     bool includeRoster,
+                                     RosterAppearanceRefresh& refresh) noexcept {
+    refresh = {};
+    if (!valid(before) || !before.family3Active || before.family3RootSoid == 0
+        || characterSoid == 0
+        || before.family3Version == (std::numeric_limits<std::int32_t>::max)()
+        || (before.family4Active && before.family4RootSoid != before.family3RootSoid)) {
+        return false;
+    }
+    refresh.after = before;
+    ++refresh.after.family3Version;
+    refresh.characterSoid = characterSoid;
+    refresh.includeRoster = includeRoster;
+    return valid(refresh.after);
 }
 
 void stage_unsubscription(const SessionState& before,

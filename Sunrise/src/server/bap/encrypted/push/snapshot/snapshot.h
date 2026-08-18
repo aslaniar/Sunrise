@@ -76,4 +76,20 @@ struct Prepared {
                                           std::uint64_t characterSoid,
                                           Prepared& prepared) noexcept;
 
+/**
+ * Builds one incremental Family-3 character record and its optional changed account roster
+ * (the fork's shape — the roster-side appearance copy an equipment mutation owes).
+ * @param scratch Object and compression storage owned by the lock.
+ * @param refresh Staged family-three after-image and the character key.
+ * @param afterCharacter The character's committed after-image.
+ * @param characterIndex The character's row in the account.
+ * @param prepared Gets the character (+ optional roster) upsert descriptors.
+ * @return True when State, mappings, layouts and the installed compression all fit.
+ */
+[[nodiscard]] bool prepare_roster_appearance_refresh(Scratch& scratch,
+                                                     const queuez::RosterAppearanceRefresh& refresh,
+                                                     const state::CharacterState& afterCharacter,
+                                                     std::size_t characterIndex,
+                                                     Prepared& prepared) noexcept;
+
 } // namespace sunrise::server::bap::encrypted::push::snapshot
