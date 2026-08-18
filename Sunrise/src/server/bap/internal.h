@@ -180,4 +180,30 @@ namespace encrypted {
 
 } // namespace encrypted
 
+/** One session's ladder read for the admin surface. */
+struct LadderRow {
+    std::uint32_t id{};
+    bool authenticated{};
+    bool family4Active{};
+    std::int32_t family4Version{};
+    std::int32_t family0Version{};
+    std::uint64_t family4RootSoid{};
+    bool family4RepushArmed{};
+};
+
+/**
+ * Copies the per-session queuez mirrors into caller storage behind the BAP lock — the
+ * admin /ladder and /state reads.
+ * @param rows Caller-owned storage sized for the session count.
+ * @return The filled row count.
+ */
+[[nodiscard]] std::size_t ladder_snapshot(std::span<LadderRow> rows) noexcept;
+
+/**
+ * Arms the deferred Family-4 re-push on every authenticated session whose mirror is
+ * active — the admin /repush verb (the manual release test for the tower-gating).
+ * @return The armed session count.
+ */
+[[nodiscard]] std::size_t arm_deferred_repush() noexcept;
+
 } // namespace sunrise::server::bap

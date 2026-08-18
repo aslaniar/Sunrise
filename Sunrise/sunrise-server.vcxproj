@@ -338,6 +338,7 @@
     <ClCompile Include="src\server\bap\encrypted\routing\bap_service_routing.cpp" />
     <ClCompile Include="src\server\bap\encrypted\transactions\service_outcome_commit.cpp" />
     <ClCompile Include="src\server\bap\plaintext.cpp" />
+    <ClCompile Include="src\server\admin\admin_http.cpp" />
     <ClCompile Include="src\server\content\content_loader.cpp" />
     <ClCompile Include="src\server\http\https_listener.cpp" />
     <ClCompile Include="src\server\http\server_http.cpp" />

@@ -76,4 +76,19 @@ void shutdown() noexcept;
  */
 [[nodiscard]] bool persist_ability_change() noexcept;
 
+/**
+ * Sets one inclusive flag range in the persisted bank — the admin verb's DB half (the
+ * runtime's mutate_flags covers the live table; the caller journals the pair). Applies
+ * to the next boot's load.
+ * @param scope One of "account", "profile", "character", "character_object".
+ * @param first First flag index in the range.
+ * @param last Last flag index in the range.
+ * @param value The new byte.
+ * @return True when the update commits.
+ */
+[[nodiscard]] bool update_flag_range(std::string_view scope,
+                                     std::uint32_t first,
+                                     std::uint32_t last,
+                                     std::uint8_t value) noexcept;
+
 } // namespace sunrise::server::persistence

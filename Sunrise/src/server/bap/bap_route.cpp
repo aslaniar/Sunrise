@@ -222,4 +222,43 @@ void shutdown() noexcept {
     ReleaseSRWLockExclusive(&g_lock);
 }
 
+/** Copies the per-session queuez mirrors into caller storage behind the BAP lock. */
+std::size_t ladder_snapshot(std::span<LadderRow> rows) noexcept {
+    AcquireSRWLockShared(&g_lock);
+    std::size_t count = 0;
+    for (const Session& session : g_sessions) {
+        if (count >= rows.size()) {
+            break;
+        }
+        if (session.id == 0) {
+            continue;
+        }
+        rows[count++] = LadderRow{session.id,
+                                  session.authenticated,
+                                  session.queuez.family4Active,
+                                  session.queuez.family4Version,
+                                  session.queuez.family0Version,
+                                  session.queuez.family4RootSoid,
+                                  session.family4RepushArmed};
+    }
+    ReleaseSRWLockShared(&g_lock);
+    return count;
+}
+
+/** Arms the deferred Family-4 re-push on every authenticated session. */
+std::size_t arm_deferred_repush() noexcept {
+    AcquireSRWLockExclusive(&g_lock);
+    std::size_t armed = 0;
+    for (Session& session : g_sessions) {
+        if (session.id == 0 || !session.authenticated || !session.queuez.family4Active) {
+            continue;
+        }
+        session.family4RepushArmed = true;
+        session.family4RepushDueTick = 0;
+        ++armed;
+    }
+    ReleaseSRWLockExclusive(&g_lock);
+    return armed;
+}
+
 } // namespace sunrise::server::bap

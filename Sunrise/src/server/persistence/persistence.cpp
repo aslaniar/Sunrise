@@ -926,6 +926,36 @@ bool load_storage(std::string_view accountId,
 
 } // namespace
 
+/** Sets one inclusive flag range in the persisted bank — the admin verb's DB half. */
+bool update_flag_range(std::string_view scope,
+                       std::uint32_t first,
+                       std::uint32_t last,
+                       std::uint8_t value) noexcept {
+    if (g_database == nullptr || first > last) {
+        return false;
+    }
+    static constexpr char kUpdateSql[] =
+        "UPDATE flags SET value = ? WHERE account_id = ? AND scope = ? "
+        "AND flag_index >= ? AND flag_index <= ?;";
+    sqlite3_stmt* statement = nullptr;
+    if (sqlite3_prepare_v2(g_database, kUpdateSql, -1, &statement, nullptr) != SQLITE_OK) {
+        fail("update_flag_range_prepare", error_text());
+        return false;
+    }
+    const bool ok =
+        sqlite3_bind_int(statement, 1, value) == SQLITE_OK
+        && bind_text(statement, 2, seed_account_id()) && bind_text(statement, 3, scope)
+        && sqlite3_bind_int(statement, 4, static_cast<int>(first)) == SQLITE_OK
+        && sqlite3_bind_int(statement, 5, static_cast<int>(last)) == SQLITE_OK
+        && step_done(statement);
+    sqlite3_finalize(statement);
+    if (!ok) {
+        fail("update_flag_range_step", error_text());
+        return false;
+    }
+    return true;
+}
+
 /** Opens and migrates the state database, seeding it from settings when empty. */
 bool initialize(void* module) noexcept {
     AcquireSRWLockExclusive(&g_lock);

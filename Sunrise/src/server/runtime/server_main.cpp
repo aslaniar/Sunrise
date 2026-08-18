@@ -21,6 +21,7 @@
 #include "../../state/unlocks/definition.h"
 #include "../../state/unlocks/unlocks_runtime.h"
 #include "../http/https_listener.h"
+#include "../admin/admin_http.h"
 #include "../content/content_loader.h"
 #include "../persistence/account_memcmp_test.h"
 #include "../persistence/cache_check.h"
@@ -345,6 +346,7 @@ int main(int argc, char** argv) {
         sunrise::server::report_stage_failure(stage);
         // Reverse every stage because the failing expression may have completed earlier stages.
         sunrise::server::https::shutdown();
+        sunrise::server::admin::shutdown();
         sunrise::server::transport::discovery::shutdown();
         sunrise::server::shutdown();
         sunrise::middleware::shutdown();
@@ -409,6 +411,7 @@ int main(int argc, char** argv) {
         // when the cache is refused), right after the persistence stage.
         const int verdict = sunrise::server::persistence::run_cache_check(module);
         sunrise::server::https::shutdown();
+        sunrise::server::admin::shutdown();
         sunrise::server::transport::discovery::shutdown();
         sunrise::server::shutdown();
         sunrise::middleware::shutdown();
@@ -428,6 +431,7 @@ int main(int argc, char** argv) {
         sunrise::server::report_stage_failure(stage);
         // Reverse every stage because the failing expression may have completed earlier stages.
         sunrise::server::https::shutdown();
+        sunrise::server::admin::shutdown();
         sunrise::server::transport::discovery::shutdown();
         sunrise::server::shutdown();
         sunrise::middleware::shutdown();
@@ -445,6 +449,7 @@ int main(int argc, char** argv) {
     if (s1Test) {
         const int verdict = sunrise::server::persistence::run_account_memcmp_test(module);
         sunrise::server::https::shutdown();
+        sunrise::server::admin::shutdown();
         sunrise::server::transport::discovery::shutdown();
         sunrise::server::shutdown();
         sunrise::middleware::shutdown();
@@ -462,6 +467,7 @@ int main(int argc, char** argv) {
         // through the exact mutation + re-encode the live server's queuez path uses.
         const int verdict = sunrise::server::persistence::run_equip_diff_test(module);
         sunrise::server::https::shutdown();
+        sunrise::server::admin::shutdown();
         sunrise::server::transport::discovery::shutdown();
         sunrise::server::shutdown();
         sunrise::middleware::shutdown();
@@ -479,6 +485,7 @@ int main(int argc, char** argv) {
         // delivered versions asserted strictly consecutive, plus the deferred-repush cases.
         const int verdict = sunrise::server::persistence::run_selection_version_test(module);
         sunrise::server::https::shutdown();
+        sunrise::server::admin::shutdown();
         sunrise::server::transport::discovery::shutdown();
         sunrise::server::shutdown();
         sunrise::middleware::shutdown();
@@ -505,11 +512,14 @@ int main(int argc, char** argv) {
         stage = "discovery";
     } else if (!sunrise::server::https::initialize()) {
         stage = "https";
+    } else if (!sunrise::server::admin::initialize()) {
+        stage = "admin";
     }
     if (stage != nullptr) {
         sunrise::server::report_stage_failure(stage);
         // Reverse every stage because the failing expression may have completed earlier stages.
         sunrise::server::https::shutdown();
+        sunrise::server::admin::shutdown();
         sunrise::server::transport::discovery::shutdown();
         sunrise::server::shutdown();
         sunrise::middleware::shutdown();
@@ -536,6 +546,7 @@ int main(int argc, char** argv) {
                               sunrise::core::log::Level::info,
                               "ev=shutdown stage=console_signal result=ok");
     sunrise::server::https::shutdown();
+    sunrise::server::admin::shutdown();
     sunrise::server::transport::discovery::shutdown();
     sunrise::server::shutdown();
     sunrise::middleware::shutdown();
