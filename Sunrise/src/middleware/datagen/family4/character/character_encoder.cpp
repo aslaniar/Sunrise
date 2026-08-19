@@ -183,11 +183,23 @@ bool encode(const state::CharacterState& state,
         }
     }
 
-    // The tail stamp (0xB74C/0xB74D) stays the static zeros the community fork ships:
-    // the FNV mark+clear pair (40bf3f4) wrote both bytes on every equip — raising the
-    // "something changed" signal and wiping it in the same breath, so the UI's dirty-bit
-    // polls read zeros and never rebuilt (the re-entry bug). The fork's swaps work with
-    // static zeros; the equip now rides the row-notify path like the 801 flow.
+    // The mark-only stamp (the boot-I refinement): the low byte at 0xB74C carries the
+    // FNV over the equipped SOIDs so the equip's change fires the client's mark-arm
+    // (the refresh chain — the rebuild's trigger, the only refresh we've ever seen the
+    // client fire). The high byte at 0xB74D stays the constant zero so the clear-arm's
+    // compare never differs — the dirty bits stay set and the pop-ups stay dead (the
+    // boot-I's two-sided verdict: the full revert killed the pop-ups but also the only
+    // rebuild trigger).
+    std::uint32_t contentStampHash = 0x811C9DC5u;
+    for (const std::uint64_t soid : object.equippedInstanceSoids) {
+        for (int byte = 0; byte < 8; ++byte) {
+            contentStampHash ^= static_cast<std::uint8_t>(soid >> (byte * 8));
+            contentStampHash *= 0x01000193u;
+        }
+    }
+    const std::uint16_t contentStamp = static_cast<std::uint16_t>(contentStampHash);
+    object.contentTailPadding[layout::kContentTailPaddingSize - 4] =
+        static_cast<std::byte>(contentStamp & 0xFFu);
 
     // Commit only after validation so callers never receive a partially initialized object.
     std::fill(output.begin(), output.end(), std::byte{});
