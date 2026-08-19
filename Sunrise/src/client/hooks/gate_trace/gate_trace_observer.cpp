@@ -51,10 +51,6 @@ constexpr std::uintptr_t kStampGateRva = 0xE82AB0;
 /** Image RVA of FUN_140E80FC0, the 5-byte UI-refresh thunk (the record key in RDX, the
  *  0x100-B out buffer in R8 — both logged raw, never dereferenced). */
 constexpr std::uintptr_t kUiRefreshRva = 0xE80FC0;
-/** Image RVA of FUN_140E01960, the WorldServer wire reader — the only entry to the
- *  stamp-chain path (the walker + the notify). The channel census: does the equip's
- *  frame arrive here, or via the BAP apply? */
-constexpr std::uintptr_t kWsWireRva = 0xE01960;
 /** Image RVA of FUN_1416F1320, the BAP message-queue response-event apply — the
  *  silent store-commit path (no walker, no notify). The channel census's other arm. */
 constexpr std::uintptr_t kBapApplyRva = 0x16F1320;
@@ -93,9 +89,6 @@ using StampGate = bool(__fastcall*)(void*, void*) noexcept;
 /** Decompile-verified ABI: `void FUN_140e80fc0(void* rcx, void* rdx, void* r8)` — the
  *  UI-refresh thunk; RDX = the record key, R8 = the out buffer (raw, no post-read). */
 using UiRefresh = void(__fastcall*)(void*, void*, void*) noexcept;
-/** Decompile-verified ABI: `void FUN_140e01960(longlong p1, undefined4 p2, undefined8 p3,
- *  uint p4)` — the WorldServer wire reader (4 register args, all logged raw). */
-using WsWire = void(__fastcall*)(void*, std::uintptr_t, void*, std::uintptr_t) noexcept;
 /** Decompile-verified ABI: `void FUN_1416f1320(longlong p1)` — the BAP response-event
  *  apply (1 register arg, logged raw). */
 using BapApply = void(__fastcall*)(void*) noexcept;
@@ -112,7 +105,6 @@ hooking::detour::Handle g_exprEvalHandle{};
 hooking::detour::Handle g_stampConsumeHandle{};
 hooking::detour::Handle g_stampGateHandle{};
 hooking::detour::Handle g_uiRefreshHandle{};
-hooking::detour::Handle g_wsWireHandle{};
 hooking::detour::Handle g_bapApplyHandle{};
 std::atomic<CharTest> g_originalChar{nullptr};
 std::atomic<RollbackApply> g_originalRollback{nullptr};
@@ -126,7 +118,6 @@ std::atomic<ExprEval> g_originalExprEval{nullptr};
 std::atomic<StampConsume> g_originalStampConsume{nullptr};
 std::atomic<StampGate> g_originalStampGate{nullptr};
 std::atomic<UiRefresh> g_originalUiRefresh{nullptr};
-std::atomic<WsWire> g_originalWsWire{nullptr};
 std::atomic<BapApply> g_originalBapApply{nullptr};
 
 /** @return The module base, for the caller-RVA line. */
@@ -470,41 +461,10 @@ __declspec(noinline) void __fastcall ui_refresh_observer(void* rcx, void* rdx,
     }
 }
 
-/** Runs the original WorldServer wire reader, then logs the raw register args + the
- *  caller. THE CHANNEL CENSUS: a family-4 frame arriving HERE takes the walker + the
- *  stamp-chain path (the panel notify); one arriving via the BAP apply doesn't. */
-__declspec(noinline) void __fastcall ws_wire_observer(void* rcx,
-                                                      std::uintptr_t rdx,
-                                                      void* r8,
-                                                      std::uintptr_t r9) noexcept {
-    const WsWire original = g_originalWsWire.load(std::memory_order_acquire);
-    if (original != nullptr) {
-        original(rcx, rdx, r8, r9);
-    }
-    const std::uintptr_t caller = reinterpret_cast<std::uintptr_t>(caller_address());
-    const std::uintptr_t base = module_base();
-    const std::uintptr_t callerRva = caller >= base ? caller - base : 0;
-    std::array<char, kLineCapacity> line{};
-    const int written = std::snprintf(
-        line.data(),
-        line.size(),
-        "ev=gate_trace stage=ws_wire rcx=0x%llX rdx=0x%llX r8=0x%llX r9=0x%llX "
-        "caller=+0x%llX",
-        static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(rcx)),
-        static_cast<unsigned long long>(rdx),
-        static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(r8)),
-        static_cast<unsigned long long>(r9),
-        static_cast<unsigned long long>(callerRva));
-    if (written > 0) {
-        core::log::write(core::log::Channel::client,
-                         core::log::Level::info,
-                         {line.data(), static_cast<std::size_t>(written)});
-    }
-}
-
 /** Runs the original BAP response-event apply, then logs the raw arg + the caller.
  *  THE CHANNEL CENSUS's other arm: a family-4 frame arriving HERE commits silently
- *  (no walker, no notify) — the equip's no-refresh path. */
+ *  (no walker, no notify) — the equip's no-refresh path. The cool path: ~51 calls
+ *  per session (boot-K), safe to observe. */
 __declspec(noinline) void __fastcall bap_apply_observer(void* rcx) noexcept {
     const BapApply original = g_originalBapApply.load(std::memory_order_acquire);
     if (original != nullptr) {
@@ -544,15 +504,14 @@ __declspec(noinline) void __fastcall bap_apply_observer(void* rcx) noexcept {
 
 } // namespace
 
-/** Attaches the fourteen observers in either server mode. */
+/** Attaches the thirteen observers in either server mode. */
 bool install() noexcept {
     if (g_charHandle.attached && g_rollbackHandle.attached && g_acquireHandle.attached
         && g_pollHandle.attached && g_sessionHandle.attached
         && g_sessionWrapHandle.attached && g_bitPrimHandle.attached
         && g_resolveHandle.attached && g_exprEvalHandle.attached
         && g_stampConsumeHandle.attached && g_stampGateHandle.attached
-        && g_uiRefreshHandle.attached && g_wsWireHandle.attached
-        && g_bapApplyHandle.attached) {
+        && g_uiRefreshHandle.attached && g_bapApplyHandle.attached) {
         return true;
     }
     std::byte* const base = reinterpret_cast<std::byte*>(GetModuleHandleW(nullptr));
@@ -574,7 +533,6 @@ bool install() noexcept {
         || !diagnostics::contains(range, baseValue + kStampConsumeRva)
         || !diagnostics::contains(range, baseValue + kStampGateRva)
         || !diagnostics::contains(range, baseValue + kUiRefreshRva)
-        || !diagnostics::contains(range, baseValue + kWsWireRva)
         || !diagnostics::contains(range, baseValue + kBapApplyRva)) {
         return fail_install("target");
     }
@@ -603,16 +561,14 @@ bool install() noexcept {
                                               reinterpret_cast<void*>(&stamp_gate_observer)};
     const hooking::detour::Spec uiRefreshSpec{base + kUiRefreshRva,
                                               reinterpret_cast<void*>(&ui_refresh_observer)};
-    const hooking::detour::Spec wsWireSpec{base + kWsWireRva,
-                                           reinterpret_cast<void*>(&ws_wire_observer)};
     const hooking::detour::Spec bapApplySpec{base + kBapApplyRva,
                                              reinterpret_cast<void*>(&bap_apply_observer)};
-    const std::array<hooking::detour::Spec, 14> specs{
+    const std::array<hooking::detour::Spec, 13> specs{
         charSpec,   rollbackSpec, acquireSpec,     pollSpec,
         sessionSpec, sessionWrapSpec, bitPrimSpec, resolveSpec,
         exprEvalSpec, stampConsumeSpec, stampGateSpec, uiRefreshSpec,
-        wsWireSpec, bapApplySpec};
-    std::array<hooking::detour::Handle, 14> handles{};
+        bapApplySpec};
+    std::array<hooking::detour::Handle, 13> handles{};
     if (!hooking::detour::install(specs, handles)) {
         return fail_install("attach");
     }
@@ -628,8 +584,7 @@ bool install() noexcept {
     g_stampConsumeHandle = handles[9];
     g_stampGateHandle = handles[10];
     g_uiRefreshHandle = handles[11];
-    g_wsWireHandle = handles[12];
-    g_bapApplyHandle = handles[13];
+    g_bapApplyHandle = handles[12];
     g_originalChar.store(reinterpret_cast<CharTest>(g_charHandle.original),
                          std::memory_order_release);
     g_originalRollback.store(reinterpret_cast<RollbackApply>(g_rollbackHandle.original),
@@ -655,8 +610,6 @@ bool install() noexcept {
                               std::memory_order_release);
     g_originalUiRefresh.store(reinterpret_cast<UiRefresh>(g_uiRefreshHandle.original),
                               std::memory_order_release);
-    g_originalWsWire.store(reinterpret_cast<WsWire>(g_wsWireHandle.original),
-                           std::memory_order_release);
     g_originalBapApply.store(reinterpret_cast<BapApply>(g_bapApplyHandle.original),
                              std::memory_order_release);
     std::array<char, kLineCapacity> line{};
@@ -671,7 +624,7 @@ bool install() noexcept {
     return true;
 }
 
-/** Detaches all fourteen observers and drops their trampolines. */
+/** Detaches all thirteen observers and drops their trampolines. */
 bool uninstall() noexcept {
     (void)hooking::detour::uninstall(g_charHandle);
     (void)hooking::detour::uninstall(g_rollbackHandle);
@@ -685,7 +638,6 @@ bool uninstall() noexcept {
     (void)hooking::detour::uninstall(g_stampConsumeHandle);
     (void)hooking::detour::uninstall(g_stampGateHandle);
     (void)hooking::detour::uninstall(g_uiRefreshHandle);
-    (void)hooking::detour::uninstall(g_wsWireHandle);
     (void)hooking::detour::uninstall(g_bapApplyHandle);
     g_charHandle = {};
     g_rollbackHandle = {};
@@ -699,7 +651,6 @@ bool uninstall() noexcept {
     g_stampConsumeHandle = {};
     g_stampGateHandle = {};
     g_uiRefreshHandle = {};
-    g_wsWireHandle = {};
     g_bapApplyHandle = {};
     g_originalChar.store(nullptr, std::memory_order_release);
     g_originalRollback.store(nullptr, std::memory_order_release);
@@ -713,7 +664,6 @@ bool uninstall() noexcept {
     g_originalStampConsume.store(nullptr, std::memory_order_release);
     g_originalStampGate.store(nullptr, std::memory_order_release);
     g_originalUiRefresh.store(nullptr, std::memory_order_release);
-    g_originalWsWire.store(nullptr, std::memory_order_release);
     g_originalBapApply.store(nullptr, std::memory_order_release);
     return true;
 }
@@ -725,8 +675,7 @@ bool is_installed() noexcept {
            || g_sessionWrapHandle.attached || g_bitPrimHandle.attached
            || g_resolveHandle.attached || g_exprEvalHandle.attached
            || g_stampConsumeHandle.attached || g_stampGateHandle.attached
-           || g_uiRefreshHandle.attached || g_wsWireHandle.attached
-           || g_bapApplyHandle.attached;
+           || g_uiRefreshHandle.attached || g_bapApplyHandle.attached;
 }
 
 } // namespace sunrise::client::hooks::gate_trace

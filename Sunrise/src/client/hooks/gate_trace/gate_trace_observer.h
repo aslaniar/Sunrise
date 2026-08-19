@@ -4,7 +4,10 @@
  * changed, so the hooks are safe on every path. The pass-2 lesson holds: no observer
  * dereferences an assumed register shape; only decompile-verified entry ABIs are read.
  *
- * The twelve deployed observers (install count=12):
+ * The thirteen deployed observers (install count=13 — the ws_wire 0xE01960 observer was
+ * STRIPPED 2026-08-19 after boot-K re-triggered the tower stall: a per-frame wire-reader
+ * detour is a HOT PATH — never hook it with a logging observer. The bap_apply stays: the
+ * cool path, ~51 calls/session):
  * 1. FUN_140E06090 (destiny2 + 0xE06090): the character-object acquiredFlags byte test —
  *    `FUN_140be1cb0() + 0x9348 + idx == 2` (bool). The sibling of the ability_gate
  *    observer's FUN_140E06070 (the account bank). The character bank's per-index read
@@ -30,22 +33,20 @@
  *     logged raw).
  * 12. FUN_140E80FC0 (+0xE80FC0): the 5-byte UI-refresh thunk (the record key in RDX, the
  *     out buffer in R8 — raw, no post-read).
- * 13. FUN_140E01960 (+0xE01960): the WorldServer wire reader — the channel census: a
- *     frame arriving here takes the walker + the stamp-chain path (the panel notify).
- * 14. FUN_1416F1320 (+0x16F1320): the BAP response-event apply — the channel census's
+ * 13. FUN_1416F1320 (+0x16F1320): the BAP response-event apply — the channel census's
  *     other arm: a frame arriving here commits silently (the equip's no-refresh path).
  *
- * All fourteen attach in BOTH modes (in-process and external), like the ability_gate family.
+ * All thirteen attach in BOTH modes (in-process and external), like the ability_gate family.
  * The expr_vm hook (FUN_140540320) = OPTIONAL and NOT attached by default.
  */
 #pragma once
 
 namespace sunrise::client::hooks::gate_trace {
 
-/** Attaches the fourteen observers in either server mode. */
+/** Attaches the thirteen observers in either server mode. */
 bool install() noexcept;
 
-/** Detaches all fourteen observers and drops their trampolines. */
+/** Detaches all thirteen observers and drops their trampolines. */
 bool uninstall() noexcept;
 
 /** @return True while any observer is attached. */
