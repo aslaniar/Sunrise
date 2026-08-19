@@ -30,18 +30,22 @@
  *     logged raw).
  * 12. FUN_140E80FC0 (+0xE80FC0): the 5-byte UI-refresh thunk (the record key in RDX, the
  *     out buffer in R8 — raw, no post-read).
+ * 13. FUN_140E01960 (+0xE01960): the WorldServer wire reader — the channel census: a
+ *     frame arriving here takes the walker + the stamp-chain path (the panel notify).
+ * 14. FUN_1416F1320 (+0x16F1320): the BAP response-event apply — the channel census's
+ *     other arm: a frame arriving here commits silently (the equip's no-refresh path).
  *
- * All twelve attach in BOTH modes (in-process and external), like the ability_gate family.
+ * All fourteen attach in BOTH modes (in-process and external), like the ability_gate family.
  * The expr_vm hook (FUN_140540320) = OPTIONAL and NOT attached by default.
  */
 #pragma once
 
 namespace sunrise::client::hooks::gate_trace {
 
-/** Attaches the twelve observers in either server mode. */
+/** Attaches the fourteen observers in either server mode. */
 bool install() noexcept;
 
-/** Detaches all twelve observers and drops their trampolines. */
+/** Detaches all fourteen observers and drops their trampolines. */
 bool uninstall() noexcept;
 
 /** @return True while any observer is attached. */
