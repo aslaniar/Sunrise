@@ -74,7 +74,7 @@ bool stage_service_outcome(Scratch& scratch,
         }
     } else if (outcome.hasSubclassEquip) {
         // Persist-before-publish: the mutation lands in memory and the two rows commit before
-        // the character after-image goes out, so a crash mid-flow converges at the next boot.
+        // the item-republish frame goes out, so a crash mid-flow converges at the next boot.
         // A persist failure reverts the memory swap (the F4 handling), so no observer sees a
         // state the database refused.
         std::uint64_t displacedSoid = 0;

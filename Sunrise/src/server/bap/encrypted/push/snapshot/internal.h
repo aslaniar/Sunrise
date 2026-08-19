@@ -118,11 +118,14 @@ inline constexpr std::size_t kSingleObjectCount = 1;
                                           Prepared& prepared) noexcept;
 
 /**
- * Builds the Family-4 increment that republishes the resident character object after a
- * subclass equip. Exactly one object moves: the character after-image.
+ * Builds the Family-4 increment for the opcode-403 subclass equip — the SAME item-only
+ * upsert shape as the opcode-801/2100 flows (the fix-A experiment: the two-object
+ * character-plus-item frame was accepted but never refreshed the panel live; the
+ * item-only frames are the boot-proven display-updating delivery, so the equip now
+ * reuses the shared builder byte-for-byte).
  * @param scratch Object and compression storage owned by the lock.
  * @param equip Checked after-image and the resident character keys.
- * @param prepared Gets the single character upsert descriptor.
+ * @param prepared Gets the single item-upsert descriptor.
  * @return True when State, mappings, layouts and the installed compression all fit.
  */
 [[nodiscard]] bool prepare_subclass_equip(Scratch& scratch,
@@ -130,12 +133,32 @@ inline constexpr std::size_t kSingleObjectCount = 1;
                                           Prepared& prepared) noexcept;
 
 /**
- * Builds the Family-4 increment that republishes the resident character object after an
- * opcode-801 subclass socket-entry selection. Exactly one object moves: the character
- * after-image, flags 0, at exactly one above the peer's held version.
+ * Builds the Family-4 increment that republishes the SUBCLASS ITEM instance record at the
+ * staged version — the shared item-only upsert shape behind the opcode-801 selection, the
+ * opcode-2100 ability change, and (the fix-A experiment) the opcode-403 subclass equip.
+ * Exactly one object moves: the picked subclass item's instance record (the client's
+ * ability-node display reads its 36-slot socket-entry state). The item's sockets come from
+ * the already-committed mutation through the loadout resolve.
+ * @param scratch Object and compression storage owned by the lock.
+ * @param subclassInstanceSoid The picked subclass item's instance SOID.
+ * @param characterSoid The resident character key (the frame's version bookkeeping).
+ * @param after The staged after-image carrying the family-4 root and version.
+ * @param prepared Gets the single item-upsert descriptor.
+ * @return True when State, mappings, layouts and the installed compression all fit.
+ */
+[[nodiscard]] bool prepare_item_republish(Scratch& scratch,
+                                          std::uint64_t subclassInstanceSoid,
+                                          std::uint64_t characterSoid,
+                                          const queuez::SessionState& after,
+                                          Prepared& prepared) noexcept;
+
+/**
+ * Builds the Family-4 increment that republishes the subclass item after an opcode-801
+ * selection — the item-only upsert (the fork's exact shape), flags 0, at exactly one
+ * above the peer's held version.
  * @param scratch Object and compression storage owned by the lock.
  * @param selection Checked after-image and the resident character keys.
- * @param prepared Gets the single character upsert descriptor.
+ * @param prepared Gets the single item-upsert descriptor.
  * @return True when State, mappings, layouts and the installed compression all fit.
  */
 [[nodiscard]] bool prepare_subclass_selection(Scratch& scratch,
@@ -143,12 +166,12 @@ inline constexpr std::size_t kSingleObjectCount = 1;
                                               Prepared& prepared) noexcept;
 
 /**
- * Builds the Family-4 increment that republishes the resident character object after an
- * opcode-2100 ability change whose mutate succeeded. Exactly one object moves: the character
- * after-image, flags 0, at exactly one above the peer's held version.
+ * Builds the Family-4 increment that republishes the subclass item after an opcode-2100
+ * ability change whose mutate succeeded — the item-only upsert, flags 0, at exactly one
+ * above the peer's held version.
  * @param scratch Object and compression storage owned by the lock.
  * @param change Checked after-image and the resident character keys.
- * @param prepared Gets the single character upsert descriptor.
+ * @param prepared Gets the single item-upsert descriptor.
  * @return True when State, mappings, layouts and the installed compression all fit.
  */
 [[nodiscard]] bool prepare_ability_change(Scratch& scratch,

@@ -321,13 +321,10 @@ int run_selection_version_test(void* module) noexcept {
                           middleware::datagen::kItemInstanceSlot,
                           itemObjectId),
                       "item_object_id_maps_equip");
-        harness.check(prepared.family.objects.size() == 2
-                          && prepared.family.objects[0].id == characterObjectId
-                          && prepared.family.objects[0].version
-                                 == equip.characterSoid
-                          && prepared.family.objects[1].id == itemObjectId
-                          && prepared.family.objects[1].version == pickSoid,
-                      "equip_frame_is_character_plus_item");
+        harness.check(prepared.family.objects.size() == 1
+                          && prepared.family.objects[0].id == itemObjectId
+                          && prepared.family.objects[0].version == pickSoid,
+                      "equip_frame_is_item_only");
     }
 
     // THE THREE-FRAME TRANSACTION (the fork's atomic shape): the family-0 in-place refresh

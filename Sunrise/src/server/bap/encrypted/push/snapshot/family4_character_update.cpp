@@ -14,6 +14,8 @@ namespace {
 
 namespace family4_datagen = middleware::datagen::family4;
 
+} // namespace
+
 /**
  * Builds one Family-4 increment that republishes the SUBCLASS ITEM instance record at the
  * staged version — the community fork's exact shape for the opcode-801 (its
@@ -21,7 +23,9 @@ namespace family4_datagen = middleware::datagen::family4;
  * character). The client's ability-node display reads the item's 36-slot socket-entry
  * state, so the upsert is the record the display actually consults; the character-record
  * shape (the earlier port) was accepted but invisible to the display. The item's sockets
- * come from the already-committed mutation through the loadout resolve.
+ * come from the already-committed mutation through the loadout resolve. SHARED by the
+ * opcode-801 selection, the opcode-2100 ability change, and (the fix-A experiment) the
+ * opcode-403 subclass equip — the three flows publish the identical item-only shape.
  */
 bool prepare_item_republish(Scratch& scratch,
                             std::uint64_t subclassInstanceSoid,
@@ -101,8 +105,6 @@ bool prepare_item_republish(Scratch& scratch,
     }
     return true;
 }
-
-} // namespace
 
 /** Builds the Family-4 increment that republishes the subclass item after an opcode-801
  *  selection — the fork's exact shape (one item upsert, the mutated sockets). */
