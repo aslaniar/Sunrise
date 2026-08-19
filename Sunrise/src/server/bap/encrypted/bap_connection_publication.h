@@ -56,4 +56,12 @@ void arm_repushes(Session& session, const queuez::StagedPublication& queuezPubli
 void arm_ability_refresh(Session& session,
                          const queuez::StagedPublication& queuezPublication) noexcept;
 
+/**
+ * Arms the join's own family-4 refresh (the tower's slice-set waits on the requirement
+ * evaluation the swap's traffic otherwise has to wake by accident).
+ * @param session Connection-owned re-push timers.
+ * @param fields Fields captured before the commit (the join flag).
+ */
+void arm_join_refresh(Session& session, const ConnectionFields& fields) noexcept;
+
 } // namespace sunrise::server::bap::encrypted

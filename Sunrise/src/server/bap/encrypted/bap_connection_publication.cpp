@@ -95,4 +95,18 @@ void arm_ability_refresh(Session& session,
     session.abilityRefreshArmed = true;
 }
 
+/** Arms the join's own family-4 refresh: the tower's slice-set waits on the requirement
+ *  evaluation that the swap's traffic otherwise has to wake by accident (the boot-G
+ *  black-screen). The re-push delivers the version-zero snapshot the fresh mirror accepts,
+ *  and the client's apply wakes the evaluator the join never reached on its own. */
+void arm_join_refresh(Session& session, const ConnectionFields& fields) noexcept {
+    if (!fields.joinsActivity || session.queuez.family4RootSoid == 0) {
+        return;
+    }
+    const std::uint64_t now = GetTickCount64();
+    session.family4RepushDueTick = now + kFamily4RepushDelayMs;
+    session.family4RepushRoot = session.queuez.family4RootSoid;
+    session.family4RepushArmed = true;
+}
+
 } // namespace sunrise::server::bap::encrypted

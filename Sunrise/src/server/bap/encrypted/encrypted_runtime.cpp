@@ -178,6 +178,7 @@ bool consume(Session& session,
             arm_repushes(session, queuezPublication);
             arm_ability_refresh(session, queuezPublication);
             publish_connection_fields(session, publication, connection);
+            arm_join_refresh(session, connection);
         }
     }
     clear_prefix(scratch.plaintext, plaintextSize);

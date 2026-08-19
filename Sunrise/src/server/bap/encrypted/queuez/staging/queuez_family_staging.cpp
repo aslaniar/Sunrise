@@ -1,8 +1,11 @@
 #include "queuez_family_staging.h"
 
+#include <array>
 #include <cstddef>
+#include <cstdio>
 #include <limits>
 
+#include "../../../../../core/logging/log.h"
 #include "../queuez_state_validation.h"
 
 namespace sunrise::server::bap::encrypted::queuez {
@@ -20,7 +23,11 @@ bool staging::same_state(const SessionState& left, const SessionState& right) no
     if (!valid(left) || !valid(right) || left.family4RootSoid != right.family4RootSoid
         || left.family4Version != right.family4Version
         || left.family4ResidentCount != right.family4ResidentCount
-        || left.family3Phase != right.family3Phase || left.family4Active != right.family4Active) {
+        || left.family3Phase != right.family3Phase
+        || left.family3RootSoid != right.family3RootSoid
+        || left.family3Version != right.family3Version
+        || left.family3Active != right.family3Active
+        || left.family4Active != right.family4Active) {
         return false;
     }
     for (std::size_t index = 0; index < left.family4Residents.size(); ++index) {
@@ -43,7 +50,10 @@ namespace {
                                  const SessionState& candidate) noexcept {
     if (!valid(state) || !valid(candidate) || state.family4RootSoid != candidate.family4RootSoid
         || state.family4Version != candidate.family4Version
-        || state.family4ResidentCount != candidate.family4ResidentCount) {
+        || state.family4ResidentCount != candidate.family4ResidentCount
+        || state.family3RootSoid != candidate.family3RootSoid
+        || state.family3Version != candidate.family3Version
+        || state.family3Active != candidate.family3Active) {
         return false;
     }
     for (std::size_t index = 0; index < state.family4ResidentCount; ++index) {
@@ -76,6 +86,12 @@ bool stage_family4_snapshot(const SessionState& before,
     candidate.family4Version = family.version;
     candidate.family4ResidentCount = static_cast<std::uint8_t>(family.objects.size());
     candidate.family3Phase = before.family3Phase;
+    // The family-three ladder must survive the family-four staging: the client's subscription
+    // order varies, and a family-three-first order (the boot-G) wipes these fields unless the
+    // scratch-built candidate carries them (the boot-G roster-refusal bug).
+    candidate.family3RootSoid = before.family3RootSoid;
+    candidate.family3Version = before.family3Version;
+    candidate.family3Active = before.family3Active;
     candidate.family4Active = true;
     for (std::size_t index = 0; index < family.objects.size(); ++index) {
         const middleware::queuez::Object& object = family.objects[index];
@@ -198,6 +214,22 @@ bool stage_roster_appearance_refresh(const SessionState& before,
         || characterSoid == 0
         || before.family3Version == (std::numeric_limits<std::int32_t>::max)()
         || (before.family4Active && before.family4RootSoid != before.family3RootSoid)) {
+        std::array<char, core::log::kLineCapacity> line{};
+        const int written = std::snprintf(
+            line.data(),
+            line.size(),
+            "ev=queuez stage=roster_refresh result=fail reason=stage active=%u root=0x%llX "
+            "version=%d character=0x%llX family4_active=%u",
+            before.family3Active ? 1U : 0U,
+            static_cast<unsigned long long>(before.family3RootSoid),
+            before.family3Version,
+            static_cast<unsigned long long>(characterSoid),
+            before.family4Active ? 1U : 0U);
+        if (written > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             {line.data(), static_cast<std::size_t>(written)});
+        }
         return false;
     }
     refresh.after = before;
@@ -211,7 +243,8 @@ void stage_unsubscription(const SessionState& before,
                           std::uint64_t familyRootSoid,
                           SessionState& after) noexcept {
     after = before;
-    if (before.family4Active && familyRootSoid == before.family4RootSoid) {
+    if ((before.family4Active && familyRootSoid == before.family4RootSoid)
+        || (before.family3Active && familyRootSoid == before.family3RootSoid)) {
         after = {};
     }
 }

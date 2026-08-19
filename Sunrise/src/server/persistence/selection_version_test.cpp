@@ -197,6 +197,25 @@ int run_selection_version_test(void* module) noexcept {
         "roster_subscription_stages");
     harness.check(beforeAll.family3Active, "roster_subscription_activates_family3");
 
+    // THE REVERSED-ORDER GATE (the boot-G bug): the family-3 subscription FIRST, then the
+    // family-4 replay — the family-3 ladder must survive the family-4 staging (the
+    // scratch-built candidate used to drop these fields).
+    {
+        SessionState reversed{};
+        bool reversedRosterPublish = false;
+        harness.check(queuez::stage_family3_subscription(
+                          reversed, rosterSub, reversedRosterPublish, reversed),
+                      "reversed_roster_stages_first");
+        SessionState reversedReplay{};
+        harness.check(queuez::stage_family4_snapshot(reversed, replayFamily, reversedReplay),
+                      "reversed_replay_stages");
+        harness.check(reversedReplay.family3Active
+                          && reversedReplay.family3RootSoid == accountSoid
+                          && reversedReplay.family3Version
+                                 == queuez::kInitialFamilyVersion,
+                      "reversed_replay_preserves_family3");
+    }
+
     // THE FIRST 801: one prepared selection, staged at exactly +1, committed, and its
     // family-4 character after-image prepared + appended at the staged version.
     const std::optional<std::uint8_t> entry1 = find_changing_entry(subclassSoid);
