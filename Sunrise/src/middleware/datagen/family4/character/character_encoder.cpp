@@ -183,24 +183,11 @@ bool encode(const state::CharacterState& state,
         }
     }
 
-    // The native character-object observer's tail stamp: on every diff the client
-    // compares bytes 0xB74C/0xB74D (the last 4 bytes of the object) against its store
-    // and marks its content-state changed when they differ. Publish a loadout-stable
-    // stamp so ordinary pushes stay quiescent and equipment changes (the subclass
-    // swap) trigger the client's content refresh. FNV-1a over the equipped SOIDs,
-    // truncated to 16 bits, little-endian at 0xB74C.
-    std::uint32_t contentStampHash = 0x811C9DC5u;
-    for (const std::uint64_t soid : object.equippedInstanceSoids) {
-        for (int byte = 0; byte < 8; ++byte) {
-            contentStampHash ^= static_cast<std::uint8_t>(soid >> (byte * 8));
-            contentStampHash *= 0x01000193u;
-        }
-    }
-    const std::uint16_t contentStamp = static_cast<std::uint16_t>(contentStampHash);
-    object.contentTailPadding[layout::kContentTailPaddingSize - 4] =
-        static_cast<std::byte>(contentStamp & 0xFFu);
-    object.contentTailPadding[layout::kContentTailPaddingSize - 3] =
-        static_cast<std::byte>(contentStamp >> 8);
+    // The tail stamp (0xB74C/0xB74D) stays the static zeros the community fork ships:
+    // the FNV mark+clear pair (40bf3f4) wrote both bytes on every equip — raising the
+    // "something changed" signal and wiping it in the same breath, so the UI's dirty-bit
+    // polls read zeros and never rebuilt (the re-entry bug). The fork's swaps work with
+    // static zeros; the equip now rides the row-notify path like the 801 flow.
 
     // Commit only after validation so callers never receive a partially initialized object.
     std::fill(output.begin(), output.end(), std::byte{});
