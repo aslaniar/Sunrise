@@ -5,6 +5,8 @@
 
 #include "../../../../../middleware/datagen/family4/instance/layout.h"
 #include "../../../../../middleware/datagen/family4/loadout/definition.h"
+#include "../../../../../middleware/datagen/family4/loadout/subclass_socket_selection.h"
+#include "../../../../../state/build_data/runtime.h"
 #include "../../../../../state/runtime/runtime.h"
 #include "internal.h"
 #include "snapshot_storage.h"
@@ -26,12 +28,17 @@ namespace family4_datagen = middleware::datagen::family4;
  * come from the already-committed mutation through the loadout resolve. SHARED by the
  * opcode-801 selection, the opcode-2100 ability change, and (the fix-A experiment) the
  * opcode-403 subclass equip — the three flows publish the identical item-only shape.
+ * When clearedSockets is set, the item's socket-entry states are rebuilt to the
+ * BASELINE (absent/ready per the ready mask, no active picks) — the synthetic-reset
+ * frame the equip publishes first so the following select frame's ready→active
+ * transitions form the merge-class socket diff the client's notify keys on.
  */
 bool prepare_item_republish(Scratch& scratch,
                             std::uint64_t subclassInstanceSoid,
                             std::uint64_t characterSoid,
                             const queuez::SessionState& after,
-                            Prepared& prepared) noexcept {
+                            Prepared& prepared,
+                            bool clearedSockets) noexcept {
     const Reservation reservation = reserve_prior(scratch, prepared);
     if (reservation.rawWriteOffset > scratch.plaintext.size()
         || reservation.compressedWriteOffset > scratch.sealed.size()) {
@@ -63,6 +70,20 @@ bool prepare_item_republish(Scratch& scratch,
         }
         changed.items[0] =
             family4_datagen::loadout::SlottedInstance{item.equipmentSlot, item.instance};
+        if (clearedSockets) {
+            // The synthetic reset: rebuild the states to the baseline (absent/ready,
+            // no active picks, no selectors) so the select frame's transition = the
+            // merge-class diff the client's notify keys on.
+            state::build_data::socket_entry_lists::Definition list{};
+            if (!state::build_data::find_socket_entry_list(
+                    changed.items[0].instance.socketEntryListIndex, list)) {
+                return report_failure("item_republish_cleared_list");
+            }
+            family4_datagen::loadout::resolve_socket_states_baseline(
+                list,
+                changed.items[0].instance.socketEntryStates,
+                changed.items[0].instance.socketSelectors);
+        }
         changed.itemCount = 1;
     }
     if (changed.itemCount != 1) {

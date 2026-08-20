@@ -304,8 +304,8 @@ int run_selection_version_test(void* module) noexcept {
     queuez::SubclassEquip equip{};
     harness.check(queuez::stage_subclass_equip(selection2.after, pickSoid, equip),
                   "equip_stages");
-    harness.check(equip.after.family4Version == selection2.after.family4Version + 1,
-                  "equip_version_exactly_plus_one");
+    harness.check(equip.after.family4Version == selection2.after.family4Version + 2,
+                  "equip_version_exactly_plus_two");
     // THE SERIAL HAND-OFF GATE (the 6164a3b rule): the mover takes the freshest generation,
     // the displaced item keeps the mover's PRIOR serial, and the swap consumes exactly two
     // counter values.
@@ -358,15 +358,28 @@ int run_selection_version_test(void* module) noexcept {
     }
     {
         bap::Scratch scratch{};
-        snapshot::Prepared prepared{};
-        harness.check(snapshot::prepare_subclass_equip(scratch, equip, prepared),
-                      "equip_prepares_frame");
-        harness.check(prepared.family.version == equip.after.family4Version,
-                      "equip_frame_versions_match");
-        harness.check(prepared.family.objects.size() == 1
-                          && prepared.family.objects[0].id == characterObjectId
-                          && prepared.family.objects[0].version == equip.characterSoid,
-                      "equip_frame_is_the_character_upsert");
+        snapshot::Prepared resetPrepared{};
+        snapshot::Prepared selectPrepared{};
+        harness.check(snapshot::prepare_subclass_equip(scratch, equip, resetPrepared, selectPrepared),
+                      "equip_prepares_frames");
+        harness.check(resetPrepared.family.version == equip.after.family4Version - 1,
+                      "equip_reset_frame_version_minus_one");
+        harness.check(selectPrepared.family.version == equip.after.family4Version,
+                      "equip_select_frame_versions_match");
+        std::uint32_t itemObjectId = 0;
+        harness.check(middleware::datagen::object_id(
+                          middleware::datagen::kAccountFamily,
+                          middleware::datagen::kItemInstanceSlot,
+                          itemObjectId),
+                      "equip_item_object_id_maps");
+        harness.check(resetPrepared.family.objects.size() == 1
+                          && resetPrepared.family.objects[0].id == itemObjectId
+                          && resetPrepared.family.objects[0].version == pickSoid,
+                      "equip_reset_frame_is_the_item_upsert");
+        harness.check(selectPrepared.family.objects.size() == 1
+                          && selectPrepared.family.objects[0].id == itemObjectId
+                          && selectPrepared.family.objects[0].version == pickSoid,
+                      "equip_select_frame_is_the_item_upsert");
     }
 
     // THE THREE-FRAME TRANSACTION (the fork's atomic shape): the family-0 in-place refresh

@@ -1,4 +1,5 @@
 #include <cstddef>
+#include <limits>
 
 #include "../../../../../middleware/datagen/definitions.h"
 #include "../queuez_state_validation.h"
@@ -123,7 +124,12 @@ bool stage_subclass_equip(const SessionState& before,
         return false;
     }
     equip.after = before;
-    equip.after.family4Version = before.family4Version + 1;
+    // The synthetic reset→select sequence consumes TWO family-4 versions (the reset at
+    // +1, the select at +2), so the after-image advances exactly two steps.
+    if (before.family4Version >= (std::numeric_limits<std::int32_t>::max)() - 1) {
+        return false;
+    }
+    equip.after.family4Version = before.family4Version + 2;
     equip.characterDefinitionId = characterDefinitionId;
     equip.characterSoid = before.family4Residents[characterIndex].objectSoid;
     equip.itemSoid = itemSoid;

@@ -118,19 +118,21 @@ inline constexpr std::size_t kSingleObjectCount = 1;
                                           Prepared& prepared) noexcept;
 
 /**
- * Builds the Family-4 increment for the opcode-403 subclass equip — the CHARACTER upsert
- * (the fix-A revert). The character object is the only record that carries both the equipped
- * state and the inventory-row mutation serials, so the equip republishes it as one object
- * keyed (characterDefinitionId, characterSoid), flags 0, at the staged +1 version. The
- * item-only republish stays the opcode-801/2100 shape (unchanged).
+ * Builds the Family-4 increments for the opcode-403 subclass equip — the synthetic
+ * reset→select two-frame sequence (see family4_equip_update.cpp). Frame 1 = the item
+ * reset to the baseline socket states at the staged version − 1; frame 2 = the item
+ * with the pick-reset's sockets applied at the staged version. The two frames consume
+ * exactly two version steps (the staging advances +2).
  * @param scratch Object and compression storage owned by the lock.
  * @param equip Checked after-image and the resident character keys.
- * @param prepared Gets the single character-upsert descriptor.
+ * @param resetPrepared Gets the reset item-upsert descriptor (version − 1).
+ * @param selectPrepared Gets the select item-upsert descriptor (the staged version).
  * @return True when State, mappings, layouts and the installed compression all fit.
  */
 [[nodiscard]] bool prepare_subclass_equip(Scratch& scratch,
                                           const queuez::SubclassEquip& equip,
-                                          Prepared& prepared) noexcept;
+                                          Prepared& resetPrepared,
+                                          Prepared& selectPrepared) noexcept;
 
 /**
  * Builds the Family-4 increment that republishes the SUBCLASS ITEM instance record at the
@@ -144,13 +146,16 @@ inline constexpr std::size_t kSingleObjectCount = 1;
  * @param characterSoid The resident character key (the frame's version bookkeeping).
  * @param after The staged after-image carrying the family-4 root and version.
  * @param prepared Gets the single item-upsert descriptor.
+ * @param clearedSockets When true, the item's socket-entry states rebuild to the
+ *        BASELINE (absent/ready, no active picks) — the synthetic-reset frame.
  * @return True when State, mappings, layouts and the installed compression all fit.
  */
 [[nodiscard]] bool prepare_item_republish(Scratch& scratch,
                                           std::uint64_t subclassInstanceSoid,
                                           std::uint64_t characterSoid,
                                           const queuez::SessionState& after,
-                                          Prepared& prepared) noexcept;
+                                          Prepared& prepared,
+                                          bool clearedSockets = false) noexcept;
 
 /**
  * Builds the Family-4 increment that republishes the subclass item after an opcode-801

@@ -55,10 +55,9 @@ void subclass_selection(const state::CharacterState& character,
                           class_ability_bucket(character.characterClass)};
 }
 
-/** Resolves one item's socket-entry states and selector lanes. */
-void resolve_socket_states(
+/** Resolves ONLY the baseline states — the synthetic-reset frame's source. */
+void resolve_socket_states_baseline(
     const build_socket_lists::Definition& definition,
-    const state::CharacterState& character,
     std::array<instance::SocketEntryState, instance::layout::kSocketEntryStateCapacity>& output,
     std::array<instance::SocketSelector, kSelectorBucketCount>& selectors) noexcept {
     output.fill(instance::SocketEntryState::absent);
@@ -69,6 +68,15 @@ void resolve_socket_states(
             output[index] = instance::SocketEntryState::ready;
         }
     }
+}
+
+/** Resolves one item's socket-entry states and selector lanes. */
+void resolve_socket_states(
+    const build_socket_lists::Definition& definition,
+    const state::CharacterState& character,
+    std::array<instance::SocketEntryState, instance::layout::kSocketEntryStateCapacity>& output,
+    std::array<instance::SocketSelector, kSelectorBucketCount>& selectors) noexcept {
+    resolve_socket_states_baseline(definition, output, selectors);
     // Only a subclass keeps an entry table, so this lookup is what identifies one.
     build_socket_lists::EntryTable entries{};
     if (!state::build_data::find_socket_entry_table(definition.definitionIndex, entries)) {

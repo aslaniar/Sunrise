@@ -50,4 +50,15 @@ void resolve_socket_states(
     std::array<instance::SocketEntryState, instance::layout::kSocketEntryStateCapacity>& output,
     std::array<instance::SocketSelector, kSelectorBucketCount>& selectors) noexcept;
 
+/**
+ * Resolves ONLY the baseline states (absent/ready per the ready mask, no active picks, no
+ * selectors). The synthetic-reset frame's source: the equip publishes the item cleared to this
+ * baseline first so the following select frame's multi-entry ready→active transitions form the
+ * merge-class socket diff the client's notify keys on.
+ */
+void resolve_socket_states_baseline(
+    const state::build_data::socket_entry_lists::Definition& definition,
+    std::array<instance::SocketEntryState, instance::layout::kSocketEntryStateCapacity>& output,
+    std::array<instance::SocketSelector, kSelectorBucketCount>& selectors) noexcept;
+
 } // namespace sunrise::middleware::datagen::family4::loadout
