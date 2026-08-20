@@ -306,8 +306,56 @@ int run_selection_version_test(void* module) noexcept {
                   "equip_stages");
     harness.check(equip.after.family4Version == selection2.after.family4Version + 1,
                   "equip_version_exactly_plus_one");
+    // THE SERIAL HAND-OFF GATE (the 6164a3b rule): the mover takes the freshest generation,
+    // the displaced item keeps the mover's PRIOR serial, and the swap consumes exactly two
+    // counter values.
     std::uint64_t displaced = 0;
-    harness.check(state::equip_subclass_item(pickSoid, displaced), "equip_mutates");
+    {
+        const state::AccountState preEquip = state::account_snapshot();
+        const state::CharacterState& preCharacter = preEquip.characters[0];
+        const auto& preSubclass =
+            preCharacter.equipment
+                .slots[static_cast<std::size_t>(state::account::inventory::EquipmentSlot::subclass)];
+        harness.check(preSubclass.has_value() && preSubclass->instanceSoid == subclassSoid,
+                      "equip_serial_pre_subclass_matches");
+        const std::uint32_t counterBefore = preCharacter.nextInventorySerial;
+        std::int32_t pickSerialBefore = 0;
+        bool pickSerialFound = false;
+        for (std::size_t index = 0; index < preCharacter.storageItemCount; ++index) {
+            if (preCharacter.storageItems[index].instanceSoid == pickSoid) {
+                pickSerialBefore = preCharacter.storageItems[index].mutationSerial;
+                pickSerialFound = true;
+                break;
+            }
+        }
+        harness.check(pickSerialFound, "equip_serial_pick_found_before");
+        harness.check(state::equip_subclass_item(pickSoid, displaced), "equip_mutates");
+        harness.check(displaced == subclassSoid, "equip_displaces_previous_subclass");
+        const state::AccountState postEquip = state::account_snapshot();
+        const state::CharacterState& postCharacter = postEquip.characters[0];
+        const auto& postSubclass =
+            postCharacter.equipment
+                .slots[static_cast<std::size_t>(state::account::inventory::EquipmentSlot::subclass)];
+        harness.check(postSubclass.has_value() && postSubclass->instanceSoid == pickSoid,
+                      "equip_serial_post_subclass_matches");
+        harness.check(
+            postSubclass.has_value()
+                && postSubclass->mutationSerial == static_cast<std::int32_t>(counterBefore),
+            "equip_serial_mover_takes_freshest");
+        std::int32_t displacedSerial = 0;
+        bool displacedSerialFound = false;
+        for (std::size_t index = 0; index < postCharacter.storageItemCount; ++index) {
+            if (postCharacter.storageItems[index].instanceSoid == subclassSoid) {
+                displacedSerial = postCharacter.storageItems[index].mutationSerial;
+                displacedSerialFound = true;
+                break;
+            }
+        }
+        harness.check(displacedSerialFound, "equip_serial_displaced_in_storage");
+        harness.check(displacedSerial == pickSerialBefore, "equip_serial_displaced_keeps_prior");
+        harness.check(postCharacter.nextInventorySerial == counterBefore + 2,
+                      "equip_serial_counter_consumes_two");
+    }
     {
         bap::Scratch scratch{};
         snapshot::Prepared prepared{};
@@ -315,16 +363,10 @@ int run_selection_version_test(void* module) noexcept {
                       "equip_prepares_frame");
         harness.check(prepared.family.version == equip.after.family4Version,
                       "equip_frame_versions_match");
-        std::uint32_t itemObjectId = 0;
-        harness.check(middleware::datagen::object_id(
-                          middleware::datagen::kAccountFamily,
-                          middleware::datagen::kItemInstanceSlot,
-                          itemObjectId),
-                      "item_object_id_maps_equip");
         harness.check(prepared.family.objects.size() == 1
-                          && prepared.family.objects[0].id == itemObjectId
-                          && prepared.family.objects[0].version == pickSoid,
-                      "equip_frame_is_item_only");
+                          && prepared.family.objects[0].id == characterObjectId
+                          && prepared.family.objects[0].version == equip.characterSoid,
+                      "equip_frame_is_the_character_upsert");
     }
 
     // THE THREE-FRAME TRANSACTION (the fork's atomic shape): the family-0 in-place refresh
