@@ -307,7 +307,7 @@ append_select_character_notification(Scratch& scratch,
 append_subclass_equip_notification(Scratch& scratch,
                                    const queuez::SubclassEquip& equip,
                                    std::span<const std::byte, state::kAesKeySize> key,
-                                   std::span<const std::byte, state::kBapNonceSize> nonce,
+                                   std::span<std::byte, state::kBapNonceSize> nonce,
                                    std::span<std::byte> response,
                                    std::size_t& written) noexcept;
 
