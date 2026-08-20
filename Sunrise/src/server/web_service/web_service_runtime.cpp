@@ -219,7 +219,10 @@ bool consume(std::span<const std::byte> request,
 
     // The opcode-403 subclass equip: {u64 BE item soid, u8 flag}. The policy check is
     // read-only here; the mutation, the persistence, and the Family-4 delta run in the
-    // queuez outcome staging after this reply encodes (the opcode-504 pattern).
+    // queuez outcome staging (the opcode-504 pattern). The reply itself is NOT encoded
+    // here: the BAP body layer stages the Family-4 revision first and encodes the
+    // statusPair with its promised value (the upstream contract — "Stage that revision
+    // before encoding the reply, or the Client completes against the old store").
     if (message.opcode == 403) {
         std::uint64_t itemSoid = 0;
         if (message.payload.size() >= sizeof itemSoid) {
@@ -273,7 +276,11 @@ bool consume(std::span<const std::byte> request,
 
     middleware::web_service::ResponseShape shape{};
     resolve_response_shape(message.opcode, shape);
-    if (!middleware::web_service::encode_response(
+    // The opcode-403 reply encodes in the BAP body layer AFTER the queuez stage, so its
+    // status-pair value can promise the staged Family-4 revision. Every other opcode's
+    // reply encodes here with the plain status.
+    if (message.opcode != 403
+        && !middleware::web_service::encode_response(
             message, shape, middleware::web_service::StatusResponse{}, response, written)) {
         return encode_echo(message, response, written);
     }

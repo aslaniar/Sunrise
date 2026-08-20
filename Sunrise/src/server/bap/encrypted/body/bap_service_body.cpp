@@ -125,12 +125,48 @@ bool process(const ServiceRoute& route,
         } else {
             outcome.selectCharacter = {};
         }
-        // A subclass equip whose resident character object cannot be found leaves the reply on
-        // its own; the mutation and the delta run together in the outcome staging.
-        if (webOutcome.hasSubclassEquip
-            && queuez::stage_subclass_equip(
-                queuezState, webOutcome.subclassEquipSoid, outcome.subclassEquip)) {
-            outcome.hasSubclassEquip = true;
+        // A subclass equip whose resident character object cannot be found leaves the plain
+        // reply; the mutation and the delta run together in the outcome staging.
+        if (message.opcode == 403) {
+            if (webOutcome.hasSubclassEquip
+                && queuez::stage_subclass_equip(
+                    queuezState, webOutcome.subclassEquipSoid, outcome.subclassEquip)) {
+                outcome.hasSubclassEquip = true;
+                // THE PROMISED REPLY (the upstream 403 contract): the status-pair value names
+                // the exact staged Family-4 revision whose following Queuez frame makes it
+                // authoritative — the Client completes the optimistic equip against the store
+                // this value names (upstream: "Stage that revision before encoding the reply,
+                // or the Client completes against the old store").
+                middleware::web_service::StatusResponse status{};
+                status.value = outcome.subclassEquip.after.family4Version;
+                if (!middleware::web_service::encode_response(
+                        message,
+                        middleware::web_service::ResponseShape::statusPair,
+                        status,
+                        output,
+                        written)) {
+                    core::log::write(core::log::Channel::server,
+                                     core::log::Level::warn,
+                                     "ev=ws403 stage=response result=fail");
+                    return false;
+                }
+            } else {
+                outcome.subclassEquip = {};
+                // consume() left the 403 reply unencoded so the stage could promise its
+                // revision; a refused equip still answers with the plain status pair (the 505
+                // failure contract — the Client waits on the echoed transaction id).
+                if (!middleware::web_service::encode_response(
+                        message,
+                        middleware::web_service::ResponseShape::statusPair,
+                        middleware::web_service::StatusResponse{},
+                        output,
+                        written)) {
+                    core::log::write(core::log::Channel::server,
+                                     core::log::Level::warn,
+                                     "ev=ws403 stage=response result=fail");
+                    return false;
+                }
+            }
         } else {
             outcome.subclassEquip = {};
         }
