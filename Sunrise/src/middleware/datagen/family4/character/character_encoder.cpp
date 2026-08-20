@@ -54,7 +54,9 @@ constexpr std::int32_t kOccupiedRowWatermark = 1;
  */
 [[nodiscard]] bool valid(const loadout::ResolvedLoadout& resolvedLoadout) noexcept {
     if (resolvedLoadout.itemCount > resolvedLoadout.items.size()
-        || resolvedLoadout.nextInventorySerial != resolvedLoadout.itemCount) {
+        || resolvedLoadout.nextInventorySerial < resolvedLoadout.itemCount
+        || resolvedLoadout.nextInventorySerial
+               > static_cast<std::uint32_t>((std::numeric_limits<std::int32_t>::max)())) {
         return false;
     }
 
@@ -70,6 +72,9 @@ constexpr std::int32_t kOccupiedRowWatermark = 1;
             || itemInstance.bounds.itemDefinitionCount > instance::layout::kDefinitionIndexCapacity
             || itemInstance.baseDefinitionIndex == kEmptyDefinitionIndex
             || itemInstance.baseDefinitionIndex >= itemInstance.bounds.itemDefinitionCount
+            || item.mutationSerial < 0
+            || static_cast<std::uint32_t>(item.mutationSerial)
+                   >= resolvedLoadout.nextInventorySerial
             || occupiedRows[item.inventoryRow]
             || std::find(instanceSoids.cbegin(), priorSoidsEnd, itemInstance.instanceSoid)
                    != priorSoidsEnd
@@ -173,6 +178,8 @@ bool encode(const state::CharacterState& state,
         inventoryRow.definitionIndex = item.instance.baseDefinitionIndex;
         inventoryRow.instanceSoid = item.instance.instanceSoid;
         inventoryRow.quantity = item.quantity;
+        inventoryRow.mutationSerial = item.mutationSerial;
+        inventoryRow.flags = item.flags;
         // Both companion arrays are indexed by inventory row, not by equipment slot, and the
         // client's own producer marks every row it fills.
         object.newItemFlags[item.inventoryRow / kBitsPerFlagByte] |=

@@ -262,7 +262,7 @@ bool resolve(const state::AccountState& account,
                   return first.inventoryRow < second.inventoryRow;
               });
     for (std::size_t index = 0; index < staged.itemCount; ++index) {}
-    staged.nextInventorySerial = static_cast<std::uint32_t>(staged.itemCount);
+    staged.nextInventorySerial = account.characters[selectedCharacterIndex].nextInventorySerial;
 
     // Counts are the publication-stability gate for the mappings resolved above.
     if (state::build_data::item_definition_count() != itemDefinitionCount
