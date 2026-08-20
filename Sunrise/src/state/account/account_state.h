@@ -99,6 +99,11 @@ struct CharacterState {
     std::array<account::inventory::Item, account::inventory::kCharacterStorageCapacity>
         storageItems{};
     std::size_t storageItemCount{};
+    /**
+     * Next row generation; equip transactions consume two values for the two moved items (the
+     * mover takes the freshest, the displaced is handed the mover's prior serial afterwards).
+     */
+    std::uint32_t nextInventorySerial{};
 };
 
 /** Account identity shared by backend object families. */

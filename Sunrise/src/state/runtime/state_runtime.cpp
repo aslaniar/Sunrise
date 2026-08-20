@@ -50,6 +50,48 @@ template <std::size_t Size>
            >= 0;
 }
 
+/**
+ * Seeds canonical character row generations before installed build data is needed. The stamp
+ * only runs while the whole account's serial space is still zero: a fresh settings-authored
+ * account gets ascending serials (equipment in semantic slot order, then storage in authored
+ * order) and a counter equal to the item count — the same assignment the database migration
+ * seeds for legacy rows — while a database-loaded or already-equipped account keeps its
+ * persisted serials untouched.
+ */
+[[nodiscard]] bool seed_inventory_runtime_fields(AccountState& accountState) noexcept {
+    if (!account::valid(accountState)) {
+        return false;
+    }
+    bool serialSpaceUsed = false;
+    for (const CharacterState& character : accountState.characters) {
+        serialSpaceUsed = serialSpaceUsed || character.nextInventorySerial != 0;
+        for (const std::optional<account::inventory::Item>& item : character.equipment.slots) {
+            serialSpaceUsed = serialSpaceUsed || (item.has_value() && item->mutationSerial != 0);
+        }
+        for (std::size_t index = 0; index < character.storageItemCount; ++index) {
+            serialSpaceUsed = serialSpaceUsed || character.storageItems[index].mutationSerial != 0;
+        }
+    }
+    if (serialSpaceUsed) {
+        return account::valid(accountState);
+    }
+    for (std::size_t characterIndex = 0; characterIndex < accountState.characterCount;
+         ++characterIndex) {
+        CharacterState& character = accountState.characters[characterIndex];
+        std::uint32_t next = 0;
+        for (std::optional<account::inventory::Item>& item : character.equipment.slots) {
+            if (item.has_value()) {
+                item->mutationSerial = static_cast<std::int32_t>(next++);
+            }
+        }
+        for (std::size_t index = 0; index < character.storageItemCount; ++index) {
+            character.storageItems[index].mutationSerial = static_cast<std::int32_t>(next++);
+        }
+        character.nextInventorySerial = next;
+    }
+    return account::valid(accountState);
+}
+
 } // namespace
 
 /**
@@ -72,10 +114,12 @@ bool initialize(void* module, const AccountState& initialAccount) noexcept {
 bool initialize(void* module,
                 const AccountState& initialAccount,
                 const activity::defaults::ActivityDefaults& activityDefaults) noexcept {
-    if (!account::valid(initialAccount) || !activity::defaults::valid(activityDefaults)) {
+    AccountState runtimeAccount = initialAccount;
+    if (!seed_inventory_runtime_fields(runtimeAccount)
+        || !activity::defaults::valid(activityDefaults)) {
         return false;
     }
-    if (!build_data::initialize(module, runtime::equipment::configured_hash(initialAccount))) {
+    if (!build_data::initialize(module, runtime::equipment::configured_hash(runtimeAccount))) {
         return false;
     }
     {
@@ -85,8 +129,8 @@ bool initialize(void* module,
             std::snprintf(line.data(),
                           line.size(),
                           "ev=account stage=identity primary=0x%016llX characters=%zu",
-                          static_cast<unsigned long long>(initialAccount.primarySoid),
-                          initialAccount.characterCount);
+                          static_cast<unsigned long long>(runtimeAccount.primarySoid),
+                          runtimeAccount.characterCount);
         if (written > 0) {
             core::log::write(core::log::Channel::state,
                              core::log::Level::info,
@@ -106,7 +150,7 @@ bool initialize(void* module,
     // The published relay port is the one the listener binds, so both move with one setting.
     initialized.signOn.relayPort = core::settings::get().server.bapPort;
     initialized.signOn.tokenLifetimeSeconds = kDefaultTokenLifetimeSeconds;
-    initialized.account = initialAccount;
+    initialized.account = runtimeAccount;
     initialized.activity.defaults = activityDefaults;
     initialized.investment.family5.objectSoid = kGlobalFamily5Soid;
     // Only the override lists come from settings. Identity and gate stay owned by State.
