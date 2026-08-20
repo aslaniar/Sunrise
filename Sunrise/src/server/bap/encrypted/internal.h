@@ -298,7 +298,8 @@ append_select_character_notification(Scratch& scratch,
  * @param scratch Lock-owned transform buffers.
  * @param equip Staged queuez after-image and the resident character keys.
  * @param key Active AES-GCM session key.
- * @param nonce Push-direction nonce after the correlated svc-11 response.
+ * @param nonce Push-direction nonce after the correlated svc-11 response (advanced by the
+ *        caller after this one frame returns, exactly like the ability-change branch).
  * @param response Caller-owned output containing the existing response prefix.
  * @param written Existing byte count, updated after the complete push is appended.
  * @return True when the single character upsert and the whole svc-123 frame fit.
@@ -307,7 +308,7 @@ append_select_character_notification(Scratch& scratch,
 append_subclass_equip_notification(Scratch& scratch,
                                    const queuez::SubclassEquip& equip,
                                    std::span<const std::byte, state::kAesKeySize> key,
-                                   std::span<std::byte, state::kBapNonceSize> nonce,
+                                   std::span<const std::byte, state::kBapNonceSize> nonce,
                                    std::span<std::byte> response,
                                    std::size_t& written) noexcept;
 

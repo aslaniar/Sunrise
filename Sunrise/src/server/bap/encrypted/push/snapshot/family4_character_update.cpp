@@ -26,8 +26,8 @@ namespace family4_datagen = middleware::datagen::family4;
  * state, so the upsert is the record the display actually consults; the character-record
  * shape (the earlier port) was accepted but invisible to the display. The item's sockets
  * come from the already-committed mutation through the loadout resolve. SHARED by the
- * opcode-801 selection, the opcode-2100 ability change, and (the fix-A experiment) the
- * opcode-403 subclass equip — the three flows publish the identical item-only shape.
+ * opcode-801 selection and the opcode-2100 ability change — the opcode-403 equip publishes
+ * the character upsert instead (family4_equip_update.cpp).
  * When clearedSockets is set, the item's socket-entry states are rebuilt to the
  * BASELINE (absent/ready per the ready mask, no active picks) — the synthetic-reset
  * frame the equip publishes first so the following select frame's ready→active

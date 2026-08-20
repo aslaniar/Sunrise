@@ -18,39 +18,70 @@ namespace family4_datagen = middleware::datagen::family4;
 } // namespace
 
 /**
- * Builds the Family-4 increments for a subclass equip — the SYNTHETIC RESET→SELECT
- * two-frame sequence (the boot-M lane's fix, the census-proven missing surface). The
- * client's panel live-update keys on the kind-3 socket diff's MERGE class (the
- * multi-entry ready→active transition) — the equip's single frame never produced a
- * content delta (the pick-reset's sockets equal the store's record), so the equip now
- * publishes: frame 1 = the item RESET to the baseline socket states (absent/ready, no
- * active picks) at the staged version − 1; frame 2 = the item with the pick-reset's
- * sockets APPLIED at the staged version — frame 2's ready→active transitions = the
- * merge-class diff → the notify → the panel re-reads. The serials + the banner + the
- * roster + the delayed ability refresh stay (the upstream's grid-ordering model).
+ * Builds the Family-4 increment for a subclass equip — the CHARACTER upsert (the upstream's
+ * exact shape; the restore of the 8df11ab builder, replacing the boot-P synthetic
+ * reset→select two-frame). The item-only republish carries no equipped state: the
+ * character object is the only record that publishes both the equipped SOIDs and the
+ * inventory-row mutation serials, so the equip's after-image goes out as one character
+ * object keyed (characterDefinitionId, characterSoid), flags 0, at the staged +1 version.
  */
 bool prepare_subclass_equip(Scratch& scratch,
                             const queuez::SubclassEquip& equip,
-                            Prepared& resetPrepared,
-                            Prepared& selectPrepared) noexcept {
-    queuez::SessionState resetAfter = equip.after;
-    if (resetAfter.family4Version <= 1) {
-        return report_failure("equip_reset_version");
+                            Prepared& prepared) noexcept {
+    const Reservation reservation = reserve_prior(scratch, prepared);
+    if (reservation.rawWriteOffset > scratch.plaintext.size()
+        || reservation.compressedWriteOffset > scratch.sealed.size()) {
+        return report_failure("equip_reservation");
     }
-    resetAfter.family4Version = equip.after.family4Version - 1;
-    if (!prepare_item_republish(scratch,
-                                equip.itemSoid,
-                                equip.characterSoid,
-                                resetAfter,
-                                resetPrepared,
-                                /*clearedSockets=*/true)) {
-        return report_failure("equip_reset_frame");
+    const state::AccountState account = state::account_snapshot();
+    const std::optional<std::size_t> selectedIndex = find_character_index(account);
+    Resolved selected{};
+    if (!state::account::valid(account) || !selectedIndex.has_value()
+        || !resolve(account, *selectedIndex, selected)
+        || account.characters[selected.characterIndex].soid != equip.characterSoid) {
+        return report_failure("equip_selection");
     }
-    return prepare_item_republish(scratch,
-                                  equip.itemSoid,
-                                  equip.characterSoid,
-                                  equip.after,
-                                  selectPrepared);
+
+    Prepared staged{};
+    staged.rawClearSize = reservation.rawClearSize;
+    staged.compressedClearSize = reservation.compressedClearSize;
+    const auto rawStorage = std::span(scratch.plaintext).subspan(reservation.rawWriteOffset);
+    std::size_t compressedExtent = reservation.compressedWriteOffset;
+    if (family4_datagen::character::layout::kObjectSize > rawStorage.size()) {
+        return report_failure("equip_character_storage");
+    }
+    const auto characterBytes =
+        rawStorage.first(family4_datagen::character::layout::kObjectSize);
+    if (!family4_datagen::character::encode(account.characters[selected.characterIndex],
+                                            selected.loadout,
+                                            selected.lightEvaluation,
+                                            characterBytes)) {
+        return report_failure("equip_character_object");
+    }
+    if (!append_object(scratch,
+                       characterBytes,
+                       equip.characterDefinitionId,
+                       equip.characterSoid,
+                       staged.objects[0],
+                       compressedExtent)) {
+        return report_failure("equip_character_object");
+    }
+    staged.rawClearSize = (std::max)(staged.rawClearSize,
+                                     reservation.rawWriteOffset
+                                         + family4_datagen::character::layout::kObjectSize);
+    staged.compressedClearSize = (std::max)(reservation.compressedClearSize, compressedExtent);
+    staged.family = middleware::queuez::Family{
+        kAccountFamilyType,
+        equip.after.family4RootSoid,
+        equip.after.family4Version,
+        0,
+        std::span(staged.objects).first(1),
+    };
+    if (!commit(staged, prepared)) {
+        clear_after(scratch, reservation);
+        return report_failure("equip_commit");
+    }
+    return true;
 }
 
 } // namespace sunrise::server::bap::encrypted::push::snapshot

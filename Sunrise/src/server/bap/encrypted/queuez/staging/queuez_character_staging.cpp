@@ -124,12 +124,13 @@ bool stage_subclass_equip(const SessionState& before,
         return false;
     }
     equip.after = before;
-    // The synthetic reset→select sequence consumes TWO family-4 versions (the reset at
-    // +1, the select at +2), so the after-image advances exactly two steps.
-    if (before.family4Version >= (std::numeric_limits<std::int32_t>::max)() - 1) {
+    // The equip republishes ONE character object at exactly one step above the peer's held
+    // version (the upstream's +1 discipline); the same value is what the opcode-403
+    // status-pair reply promises before the frame publishes.
+    if (before.family4Version == (std::numeric_limits<std::int32_t>::max)()) {
         return false;
     }
-    equip.after.family4Version = before.family4Version + 2;
+    equip.after.family4Version = before.family4Version + 1;
     equip.characterDefinitionId = characterDefinitionId;
     equip.characterSoid = before.family4Residents[characterIndex].objectSoid;
     equip.itemSoid = itemSoid;

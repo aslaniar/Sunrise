@@ -118,26 +118,26 @@ inline constexpr std::size_t kSingleObjectCount = 1;
                                           Prepared& prepared) noexcept;
 
 /**
- * Builds the Family-4 increments for the opcode-403 subclass equip — the synthetic
- * reset→select two-frame sequence (see family4_equip_update.cpp). Frame 1 = the item
- * reset to the baseline socket states at the staged version − 1; frame 2 = the item
- * with the pick-reset's sockets applied at the staged version. The two frames consume
- * exactly two version steps (the staging advances +2).
+ * Builds the Family-4 increment for the opcode-403 subclass equip — the CHARACTER upsert
+ * (the restore of the 8df11ab builder). The character object is the only record that
+ * carries both the equipped state and the inventory-row mutation serials, so the equip
+ * republishes it as one object keyed (characterDefinitionId, characterSoid), flags 0, at
+ * the staged +1 version. The item-only republish stays the opcode-801/2100 shape
+ * (unchanged).
  * @param scratch Object and compression storage owned by the lock.
  * @param equip Checked after-image and the resident character keys.
- * @param resetPrepared Gets the reset item-upsert descriptor (version − 1).
- * @param selectPrepared Gets the select item-upsert descriptor (the staged version).
+ * @param prepared Gets the single character-upsert descriptor.
  * @return True when State, mappings, layouts and the installed compression all fit.
  */
 [[nodiscard]] bool prepare_subclass_equip(Scratch& scratch,
                                           const queuez::SubclassEquip& equip,
-                                          Prepared& resetPrepared,
-                                          Prepared& selectPrepared) noexcept;
+                                          Prepared& prepared) noexcept;
 
 /**
  * Builds the Family-4 increment that republishes the SUBCLASS ITEM instance record at the
- * staged version — the shared item-only upsert shape behind the opcode-801 selection, the
- * opcode-2100 ability change, and (the fix-A experiment) the opcode-403 subclass equip.
+ * staged version — the shared item-only upsert shape behind the opcode-801 selection and
+ * the opcode-2100 ability change (the opcode-403 equip publishes the character upsert
+ * instead).
  * Exactly one object moves: the picked subclass item's instance record (the client's
  * ability-node display reads its 36-slot socket-entry state). The item's sockets come from
  * the already-committed mutation through the loadout resolve.

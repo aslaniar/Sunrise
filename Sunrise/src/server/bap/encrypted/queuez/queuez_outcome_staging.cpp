@@ -74,7 +74,7 @@ bool stage_service_outcome(Scratch& scratch,
         }
     } else if (outcome.hasSubclassEquip) {
         // Persist-before-publish: the mutation lands in memory and the two rows commit before
-        // the item-republish frame goes out, so a crash mid-flow converges at the next boot.
+        // the character-upsert frame goes out, so a crash mid-flow converges at the next boot.
         // A persist failure reverts the memory swap (the F4 handling), so no observer sees a
         // state the database refused.
         std::uint64_t displacedSoid = 0;
@@ -145,8 +145,14 @@ bool stage_service_outcome(Scratch& scratch,
             return true;
         }
         after = rosterAfter;
-        // The ability-bucket rebuild runs asynchronously off the content pump; the refresh
-        // pair owes a delayed re-send once the rebuild settles (the fork's deferral — the
+        // THE DELAYED ABILITY REFRESH ARM (the upstream 05111eb semantics — "Arm the delayed
+        // ability refresh on subclass equipment swaps too"): the equipped subclass changed, so
+        // the appearance/roster refreshes above may have encoded against picks that do not
+        // name the new list's entries (the banner falls back to the list defaults, never
+        // fails). The ability-bucket domain itself stays valid — this fork publishes the full
+        // stage-mirror enumeration (the 486-row catalog), not the upstream's live-selection
+        // keyed rows, so no invalidation applies (recorded OPEN-3) — and the refresh pair
+        // owes a delayed re-send once the resolution settles (the fork's deferral — the
         // inline rebuild races the client's refresh).
         publication.armsAbilityRefresh = true;
     } else if (outcome.hasAbilityChange) {
