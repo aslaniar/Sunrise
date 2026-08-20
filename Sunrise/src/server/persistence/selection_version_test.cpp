@@ -7,15 +7,18 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <optional>
 #include <span>
 
 #include "../../core/logging/log.h"
 #include "../../middleware/datagen/definitions.h"
 #include "../../middleware/queuez/queuez_update.h"
+#include "../../middleware/web_service/web_service_envelope.h"
 #include "../../state/account/account_state.h"
 #include "../../state/account/inventory/inventory_state.h"
 #include "../../state/runtime/runtime.h"
+#include "../web_service/web_service_runtime.h"
 #include "../bap/encrypted/push/snapshot/internal.h"
 #include "../bap/encrypted/queuez/queuez_state_validation.h"
 #include "../bap/internal.h"
@@ -298,14 +301,14 @@ int run_selection_version_test(void* module) noexcept {
                       "selection2_full_frame_appends");
     }
 
-    // THE 403 EQUIP: the working reference path — staged at exactly +1 over the second
-    // selection and delivered the same way. With the fix, this lands at version 3 against the
-    // client's held 2 instead of skipping to 4.
+    // THE 403 EQUIP: the upstream-exact delivery — staged at exactly +1 over the second
+    // selection, the reply promising that same revision, and ONE character-upsert frame
+    // delivered at it (the boot-P synthetic reset→select two-frame is gone).
     queuez::SubclassEquip equip{};
     harness.check(queuez::stage_subclass_equip(selection2.after, pickSoid, equip),
                   "equip_stages");
-    harness.check(equip.after.family4Version == selection2.after.family4Version + 2,
-                  "equip_version_exactly_plus_two");
+    harness.check(equip.after.family4Version == selection2.after.family4Version + 1,
+                  "equip_version_exactly_plus_one");
     // THE SERIAL HAND-OFF GATE (the 6164a3b rule): the mover takes the freshest generation,
     // the displaced item keeps the mover's PRIOR serial, and the swap consumes exactly two
     // counter values.
@@ -320,10 +323,12 @@ int run_selection_version_test(void* module) noexcept {
                       "equip_serial_pre_subclass_matches");
         const std::uint32_t counterBefore = preCharacter.nextInventorySerial;
         std::int32_t pickSerialBefore = 0;
+        std::size_t pickRowBefore = preCharacter.storageItemCount;
         bool pickSerialFound = false;
         for (std::size_t index = 0; index < preCharacter.storageItemCount; ++index) {
             if (preCharacter.storageItems[index].instanceSoid == pickSoid) {
                 pickSerialBefore = preCharacter.storageItems[index].mutationSerial;
+                pickRowBefore = index;
                 pickSerialFound = true;
                 break;
             }
@@ -342,6 +347,17 @@ int run_selection_version_test(void* module) noexcept {
             postSubclass.has_value()
                 && postSubclass->mutationSerial == static_cast<std::int32_t>(counterBefore),
             "equip_serial_mover_takes_freshest");
+        // THE CLICKED-ROW PLACEMENT (D4): the displaced item sits in the row the player
+        // clicked — the pick's pre-equip storage row — not the storage tail (the upstream's
+        // std::swap shape).
+        harness.check(pickRowBefore < postCharacter.storageItemCount,
+                      "equip_clicked_row_in_bounds");
+        harness.check(pickRowBefore < postCharacter.storageItemCount
+                          && postCharacter.storageItems[pickRowBefore].instanceSoid
+                                 == subclassSoid,
+                      "equip_clicked_row_holds_displaced");
+        harness.check(postCharacter.storageItemCount == preCharacter.storageItemCount,
+                      "equip_clicked_row_keeps_storage_count");
         std::int32_t displacedSerial = 0;
         bool displacedSerialFound = false;
         for (std::size_t index = 0; index < postCharacter.storageItemCount; ++index) {
@@ -358,28 +374,120 @@ int run_selection_version_test(void* module) noexcept {
     }
     {
         bap::Scratch scratch{};
-        snapshot::Prepared resetPrepared{};
-        snapshot::Prepared selectPrepared{};
-        harness.check(snapshot::prepare_subclass_equip(scratch, equip, resetPrepared, selectPrepared),
-                      "equip_prepares_frames");
-        harness.check(resetPrepared.family.version == equip.after.family4Version - 1,
-                      "equip_reset_frame_version_minus_one");
-        harness.check(selectPrepared.family.version == equip.after.family4Version,
-                      "equip_select_frame_versions_match");
-        std::uint32_t itemObjectId = 0;
-        harness.check(middleware::datagen::object_id(
-                          middleware::datagen::kAccountFamily,
-                          middleware::datagen::kItemInstanceSlot,
-                          itemObjectId),
-                      "equip_item_object_id_maps");
-        harness.check(resetPrepared.family.objects.size() == 1
-                          && resetPrepared.family.objects[0].id == itemObjectId
-                          && resetPrepared.family.objects[0].version == pickSoid,
-                      "equip_reset_frame_is_the_item_upsert");
-        harness.check(selectPrepared.family.objects.size() == 1
-                          && selectPrepared.family.objects[0].id == itemObjectId
-                          && selectPrepared.family.objects[0].version == pickSoid,
-                      "equip_select_frame_is_the_item_upsert");
+        snapshot::Prepared prepared{};
+        harness.check(snapshot::prepare_subclass_equip(scratch, equip, prepared),
+                      "equip_prepares_frame");
+        harness.check(prepared.family.version == equip.after.family4Version,
+                      "equip_frame_versions_match");
+        harness.check(prepared.family.type == queuez::kAccountFamilyType
+                          && prepared.family.flags == 0
+                          && prepared.family.objects.size() == 1,
+                      "equip_frame_shape_single_object");
+        harness.check(prepared.family.objects.size() == 1
+                          && prepared.family.objects[0].id == characterObjectId
+                          && prepared.family.objects[0].version == equip.characterSoid,
+                      "equip_frame_is_the_character_upsert");
+        std::array<std::byte, state::kAesKeySize> key{};
+        std::array<std::byte, state::kBapNonceSize> nonce{};
+        std::size_t written = 0;
+        harness.check(push::append_subclass_equip_notification(
+                          scratch,
+                          equip,
+                          std::span<const std::byte, state::kAesKeySize>(key),
+                          std::span<const std::byte, state::kBapNonceSize>(nonce),
+                          std::span(scratch.responseBody),
+                          written),
+                      "equip_full_frame_appends");
+    }
+    // THE PROMISED REPLY (D1): the full production sequence for the swap-back equip —
+    // consume() defers the reply, the BAP body layer stages at +1, and the encoded
+    // status-pair value round-trips as the staged revision (the upstream contract:
+    // status.value = the staged Family-4 version, never the INT32_MIN default).
+    {
+        const std::uint64_t swapBackSoid = subclassSoid; // now the displaced storage item
+        std::array<std::byte, 64> request{};
+        // {u16 BE opcode 403, u32 BE transaction id 0x7B, u64 BE item soid, u8 flag 1}
+        request[0] = std::byte{0x01};
+        request[1] = std::byte{0x93};
+        request[2] = std::byte{0x00};
+        request[3] = std::byte{0x00};
+        request[4] = std::byte{0x00};
+        request[5] = std::byte{0x7B};
+        for (std::size_t byte = 0; byte < 8; ++byte) {
+            request[6 + byte] = std::byte{static_cast<std::uint8_t>(
+                (swapBackSoid >> (8U * (7U - byte))) & 0xFFULL)};
+        }
+        request[14] = std::byte{0x01};
+        const std::span<const std::byte> body(request.data(), 15);
+        std::array<std::byte, 64> response{};
+        std::size_t written = 0;
+        sunrise::server::web_service::Outcome webOutcome{};
+        harness.check(sunrise::server::web_service::consume(
+                          body, std::span(response), written, webOutcome),
+                      "reply_consume_parses");
+        harness.check(webOutcome.hasSubclassEquip && webOutcome.subclassEquipSoid == swapBackSoid,
+                      "reply_consume_policy_accepts");
+        harness.check(written == 0, "reply_consume_defers_encode");
+        queuez::SubclassEquip swapBack{};
+        harness.check(queuez::stage_subclass_equip(equip.after, swapBackSoid, swapBack),
+                      "reply_stage_swaps_back");
+        harness.check(swapBack.after.family4Version == equip.after.family4Version + 1,
+                      "reply_staged_version_plus_one");
+        middleware::web_service::Message message{};
+        harness.check(middleware::web_service::parse_request(body, message),
+                      "reply_message_parses");
+        middleware::web_service::StatusResponse status{};
+        status.value = swapBack.after.family4Version;
+        harness.check(middleware::web_service::encode_response(
+                          message,
+                          middleware::web_service::ResponseShape::statusPair,
+                          status,
+                          std::span(response),
+                          written),
+                      "reply_status_pair_encodes");
+        harness.check(written == middleware::web_service::kEnvelopeHeaderSize + 5,
+                      "reply_status_pair_size");
+        // Decode the 5-bit code + 32-bit value + 2-bit trailer from the MSB-first bit
+        // stream — the exact inverse of status_fields.cpp write_code/write_value.
+        const auto bit_at = [&](int bit) noexcept {
+            const std::byte byte = response[6 + bit / 8];
+            return (std::to_integer<unsigned>(byte) >> (7 - bit % 8)) & 1U;
+        };
+        std::uint32_t code = 0;
+        for (int bit = 0; bit < 5; ++bit) {
+            code = (code << 1) | bit_at(bit);
+        }
+        std::uint32_t biasedValue = 0;
+        for (int bit = 0; bit < 32; ++bit) {
+            biasedValue = (biasedValue << 1) | bit_at(5 + bit);
+        }
+        const std::int64_t decodedValue =
+            static_cast<std::int64_t>(biasedValue) - 2147483648LL; // the -INT32_MIN bias
+        harness.check(code == 1U, "reply_status_code_is_success");
+        harness.check(decodedValue == swapBack.after.family4Version,
+                      "reply_value_is_the_staged_revision");
+        // The refuse-path contrast: the plain pair still decodes as the INT32_MIN default,
+        // proving the promised value is exactly what this fix changes.
+        std::size_t plainWritten = 0;
+        middleware::web_service::StatusResponse plain{};
+        harness.check(middleware::web_service::encode_response(
+                          message,
+                          middleware::web_service::ResponseShape::statusPair,
+                          plain,
+                          std::span(response),
+                          plainWritten),
+                      "reply_plain_pair_encodes");
+        std::uint32_t plainBiased = 0;
+        const auto plain_bit_at = [&](int bit) noexcept {
+            const std::byte byte = response[6 + bit / 8];
+            return (std::to_integer<unsigned>(byte) >> (7 - bit % 8)) & 1U;
+        };
+        for (int bit = 0; bit < 32; ++bit) {
+            plainBiased = (plainBiased << 1) | plain_bit_at(5 + bit);
+        }
+        harness.check(static_cast<std::int64_t>(plainBiased) - 2147483648LL
+                          == (std::numeric_limits<std::int32_t>::min)(),
+                      "reply_plain_pair_carries_default");
     }
 
     // THE THREE-FRAME TRANSACTION (the fork's atomic shape): the family-0 in-place refresh

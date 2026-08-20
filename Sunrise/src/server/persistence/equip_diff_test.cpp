@@ -224,6 +224,19 @@ int run_equip_diff_test(void* module) noexcept {
         report("ev=equip_diff stage=encode_pre result=ok bytes=%zu", pre.size());
     }
 
+    // The pick's pre-equip storage row (the CLICKED row, D4): the displaced item must land
+    // there, not at the storage tail.
+    std::size_t pickRowBefore = character0.storageItemCount;
+    for (std::size_t index = 0; index < character0.storageItemCount; ++index) {
+        if (character0.storageItems[index].instanceSoid == pickSoid) {
+            pickRowBefore = index;
+            break;
+        }
+    }
+    report("ev=equip_diff stage=clicked_row pre=row=%zu storage_items=%zu",
+           pickRowBefore,
+           character0.storageItemCount);
+
     // The mutation: the same call the queuez outcome staging runs.
     std::uint64_t displaced = 0;
     if (!state::equip_subclass_item(pickSoid, displaced)) {
@@ -232,6 +245,27 @@ int run_equip_diff_test(void* module) noexcept {
         return 1;
     }
     report("ev=equip_diff stage=mutate result=ok displaced=0x%llX", displaced);
+
+    // THE CLICKED-ROW PLACEMENT PROOF (D4): after a swap the displaced subclass sits at the
+    // row the pick occupied; after a first equip the storage compacts over it.
+    {
+        const state::AccountState postMutate = state::account_snapshot();
+        const state::CharacterState& postCharacter = postMutate.characters[0];
+        if (displaced != 0) {
+            const bool inBounds = pickRowBefore < postCharacter.storageItemCount;
+            report("ev=equip_diff stage=clicked_row post=row=%zu occupant=0x%llX count=%zu "
+                   "placed=%s",
+                   pickRowBefore,
+                   inBounds ? postCharacter.storageItems[pickRowBefore].instanceSoid : 0,
+                   postCharacter.storageItemCount,
+                   inBounds && postCharacter.storageItems[pickRowBefore].instanceSoid == displaced
+                       ? "ok"
+                       : "fail");
+        } else {
+            report("ev=equip_diff stage=clicked_row post=first_equip count=%zu placed=ok",
+                   postCharacter.storageItemCount);
+        }
+    }
 
     // POST: the re-encode from the mutated runtime State (the server's push path).
     std::array<std::byte, character::layout::kObjectSize> post{};
