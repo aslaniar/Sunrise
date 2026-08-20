@@ -498,7 +498,7 @@ __declspec(noinline) void __fastcall bap_apply_observer(void* rcx) noexcept {
 
 /** Runs the original family-4 kind lookup, then logs the family (EDX), the definition
  *  hash (R8D), the matched row (-1..5, the return), and the caller. PURE OBSERVER: the
- *  original return value passes through untouched. THE COOL PATH — one call per frame
+ *  original return value passes through untouched. THE COOL PATH - one call per frame
  *  object, a pure compute lookup; the caller names the walker/walker-A arms. */
 __declspec(noinline) int __fastcall kind_observer(void* rcx,
                                                   std::uint32_t edx,
