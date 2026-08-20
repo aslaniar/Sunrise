@@ -11,7 +11,12 @@ namespace sunrise::server::bap::encrypted::queuez {
 
 /**
  * Stages any queuez frames and peer after-image that one service outcome asks for.
- * A frame that cannot be built is logged and skipped, never turned into a refused reply.
+ * A frame that cannot be built is logged and skipped, never turned into a refused reply —
+ * except the subclass equip: its authoritative Family-4 frame is the transaction's
+ * after-image, so a push that cannot be built reverts the mutation and REFUSES (returns
+ * false; the encrypted runtime then answers the plain status pair). The upstream's
+ * contract: "The State transaction must not commit when the Client cannot receive its
+ * after-image" (queuez_outcome_staging.cpp).
  * @param scratch Transform buffers owned by the lock.
  * @param before Queuez state the current BAP peer can see.
  * @param outcome Body outcome carrying at most one queuez action.

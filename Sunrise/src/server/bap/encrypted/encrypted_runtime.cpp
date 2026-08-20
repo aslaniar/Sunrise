@@ -4,6 +4,7 @@
 
 #include "../../../core/logging/log.h"
 #include "../../../middleware/secure_channel/runtime.h"
+#include "../../../middleware/web_service/web_service_envelope.h"
 #include "../../../state/runtime/runtime.h"
 #include "../internal.h"
 #include "activity_transaction/activity_transaction_notifications.h"
@@ -143,6 +144,51 @@ bool consume(Session& session,
         if (!handled) {
             diagnostics::report_failure(frame.messageId, "stage");
         }
+    }
+    // THE 403 REFUSAL ARM (the 13.8 fix, the upstream's return-false contract): a subclass
+    // equip whose authoritative push could not be built had its mutation reverted inside the
+    // staging. The PROMISED reply must not ship — the Client would arm its optimistic
+    // transaction against a revision that never arrives (the transaction-completion leak the
+    // 3-swap stall is). The plain status pair still advances the Client's pending ring (the
+    // 505 contract), and its default value promises no revision, so the Client completes
+    // against the old store. No State commit, no queuez publish; the send nonce recomputes
+    // from the un-advanced reply nonce (any partial push advances die with the discarded
+    // frames).
+    if (!handled && outcome.hasSubclassEquip && sendsReply) {
+        middleware::web_service::Message refusalMessage{};
+        if (middleware::web_service::parse_request(frame.body, refusalMessage)
+            && middleware::web_service::encode_response(
+                refusalMessage,
+                middleware::web_service::ResponseShape::statusPair,
+                middleware::web_service::StatusResponse{},
+                scratch.responseBody,
+                responseBodySize)
+            && reply::encode(scratch,
+                             route,
+                             frame.taskId,
+                             bapState.sessionKey,
+                             session.sendNonce,
+                             std::span(scratch.responseBody).first(responseBodySize),
+                             framedSize)
+            && framedSize <= response.size()) {
+            nextSendNonce = session.sendNonce;
+            middleware::secure_channel::advance_nonce(nextSendNonce);
+            std::copy_n(scratch.framed.begin(), framedSize, response.begin());
+            written = framedSize;
+            session.sendNonce = nextSendNonce;
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             "ev=ws403 stage=refusal result=plain_pair reason=push_failure");
+            clear_prefix(scratch.plaintext, plaintextSize);
+            clear_prefix(scratch.responseBody, responseBodySize);
+            clear_prefix(scratch.framed, framedSize);
+            SecureZeroMemory(&outcome, sizeof outcome);
+            SecureZeroMemory(&publication, sizeof publication);
+            SecureZeroMemory(&queuezPublication, sizeof queuezPublication);
+            return true;
+        }
+        // The refusal envelope itself could not be rebuilt; fall through and drop the
+        // response like the upstream's silent refusal.
     }
     if (handled && outcome.hasActivityTransaction) {
         const auto& activityPlan = outcome.activityPlan;

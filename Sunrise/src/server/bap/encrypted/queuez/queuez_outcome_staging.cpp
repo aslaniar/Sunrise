@@ -73,59 +73,63 @@ bool stage_service_outcome(Scratch& scratch,
             after = bannerAfter;
         }
     } else if (outcome.hasSubclassEquip) {
-        // Persist-before-publish: the mutation lands in memory and the two rows commit before
-        // the character-upsert frame goes out, so a crash mid-flow converges at the next boot.
-        // A persist failure reverts the memory swap (the F4 handling), so no observer sees a
-        // state the database refused.
+        // THE UPSTREAM D5 DELIVERY ORDER (the 13.8 fix): stage every after-image frame
+        // FIRST, persist LAST, and refuse the whole transaction on any failure — upstream
+        // queuez_outcome_staging.cpp: "The State transaction must not commit when the
+        // Client cannot receive its after-image" -> return false (the encrypted runtime
+        // then answers the plain status pair). The fork's frame builders encode from the
+        // mutated account (the staging/persist split — recorded in the lane deliverable's
+        // OPEN items), so the mutation precedes the frame encodes, and every failure arm
+        // reverts it. A crash mid-flow can lose at most an unpersisted in-memory swap.
         std::uint64_t displacedSoid = 0;
         if (!state::equip_subclass_item(outcome.subclassEquip.itemSoid, displacedSoid)) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::warn,
                              "ev=queuez stage=subclass_equip result=fail step=mutate");
-            return true;
+            return false;
         }
-        if (!sunrise::server::persistence::persist_subclass_equip(
-                outcome.subclassEquip.itemSoid, displacedSoid)) {
+        const auto revert_swap = [&displacedSoid](const char* step) noexcept {
             std::uint64_t reverted = 0;
             (void)state::equip_subclass_item(displacedSoid, reverted);
-            core::log::write(core::log::Channel::server,
-                             core::log::Level::warn,
-                             "ev=queuez stage=subclass_equip result=fail step=persist");
-            return true;
-        }
-        // L5 stage 6: the equipment fingerprint moved with the persisted swap. Re-stamp the
-        // cache header now (atomic temp+rename) so the next boot's identity gate matches the
-        // post-mutation account without a manual repair step.
-        const std::uint64_t postHash =
-            state::runtime::equipment::configured_hash(state::account_snapshot());
-        if (!state::build_data::cache::restamp_equipment_hash(postHash)) {
-            core::log::write(core::log::Channel::server,
-                             core::log::Level::warn,
-                             "ev=cache stage=restamp result=fail");
-        }
+            std::array<char, 96> line{};
+            const int lineWritten = std::snprintf(
+                line.data(),
+                line.size(),
+                "ev=queuez stage=subclass_equip result=fail step=%s action=reverted",
+                step);
+            if (lineWritten > 0) {
+                core::log::write(core::log::Channel::server,
+                                 core::log::Level::warn,
+                                 {line.data(), static_cast<std::size_t>(lineWritten)});
+            }
+        };
         if (!push::append_subclass_equip_notification(
                 scratch, outcome.subclassEquip, key, nonce, response, written)) {
-            core::log::write(core::log::Channel::server,
-                             core::log::Level::warn,
-                             "ev=queuez stage=subclass_equip result=fail step=push");
-            return true;
+            revert_swap("push");
+            return false;
         }
         middleware::secure_channel::advance_nonce(nonce);
         after = outcome.subclassEquip.after;
         // The banner record re-encodes from the mutated account (the subclass list changed),
         // so the family-zero pair follows the family-four increment as a same-key refresh.
+        // A pair that cannot be built refuses the transaction — the upstream's paired
+        // Family-4/Family-0 delivery: "The State transaction and both peer ladders remain
+        // unpublished when either member of the paired Family-4/Family-0 delivery cannot
+        // fit" -> return false.
         const SessionState& bannerBefore = after;
         SessionState bannerAfter{};
-        if (push::append_banner_refresh_notification(scratch,
-                                                     bannerBefore,
-                                                     outcome.subclassEquip.characterSoid,
-                                                     key,
-                                                     nonce,
-                                                     response,
-                                                     written,
-                                                     bannerAfter)) {
-            after = bannerAfter;
+        if (!push::append_banner_refresh_notification(scratch,
+                                                      bannerBefore,
+                                                      outcome.subclassEquip.characterSoid,
+                                                      key,
+                                                      nonce,
+                                                      response,
+                                                      written,
+                                                      bannerAfter)) {
+            revert_swap("banner");
+            return false;
         }
+        after = bannerAfter;
         // The fork's third publication: the family-three roster-side appearance copy (the
         // selector's icons are a roster-side read) follows the family-zero refresh at one
         // exact +1 family-three revision.
@@ -139,12 +143,27 @@ bool stage_service_outcome(Scratch& scratch,
                                                       response,
                                                       written,
                                                       rosterAfter)) {
-            core::log::write(core::log::Channel::server,
-                             core::log::Level::warn,
-                             "ev=queuez stage=subclass_equip result=fail step=roster");
-            return true;
+            revert_swap("roster");
+            return false;
         }
         after = rosterAfter;
+        // Persist LAST: only once every frame fit does the DB commit, so a promised
+        // revision can never be persisted without its authoritative after-image.
+        if (!sunrise::server::persistence::persist_subclass_equip(
+                outcome.subclassEquip.itemSoid, displacedSoid)) {
+            revert_swap("persist");
+            return false;
+        }
+        // L5 stage 6: the equipment fingerprint moved with the persisted swap. Re-stamp the
+        // cache header now (atomic temp+rename) so the next boot's identity gate matches the
+        // post-mutation account without a manual repair step.
+        const std::uint64_t postHash =
+            state::runtime::equipment::configured_hash(state::account_snapshot());
+        if (!state::build_data::cache::restamp_equipment_hash(postHash)) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             "ev=cache stage=restamp result=fail");
+        }
         // THE DELAYED ABILITY REFRESH ARM (the upstream 05111eb semantics — "Arm the delayed
         // ability refresh on subclass equipment swaps too"): the equipped subclass changed, so
         // the appearance/roster refreshes above may have encoded against picks that do not
