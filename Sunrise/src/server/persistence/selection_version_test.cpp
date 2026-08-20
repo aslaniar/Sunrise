@@ -147,13 +147,16 @@ void gate_instance_lanes(
         std::snprintf(line.data(),
                       line.size(),
                       "ev=acquired_gate stage=array result=%s path=%s covered=%zu "
-                      "acquired_active=%zu list=%u entries=%u",
+                      "acquired_active=%zu list=%u entries=%u resolved=%u instance=%u states=%u",
                       !anyReady && covered == acquiredOrActive ? "ok" : "fail",
                       path,
                       covered,
                       acquiredOrActive,
                       hasList ? static_cast<unsigned>(socketList.definitionIndex) : 0U,
-                      hasList ? static_cast<unsigned>(socketList.entryCount) : 0U);
+                      hasList ? static_cast<unsigned>(socketList.entryCount) : 0U,
+                      static_cast<unsigned>(resolved.socketEntryContentsResolved),
+                      static_cast<unsigned>(resolved.socketEntryListIndex),
+                      static_cast<unsigned>(resolved.socketEntryCount));
     if (lineWritten > 0) {
         report("%s", line.data());
     }
@@ -723,9 +726,10 @@ int run_selection_version_test(void* module) noexcept {
     // buffer forces the authoritative frame append to fail; the staging must revert the swap
     // and REFUSE (return false) — the upstream's "The State transaction must not commit when
     // the Client cannot receive its after-image" — with nothing persisted (the persist now
-    // runs only after every frame fits). The earlier sections mutated memory only, so the
-    // DB still holds the boot state; the reload below resets the runtime to it and pickSoid
-    // is the DB's storage subclass.
+    // runs only after every frame fits). The runtime at this point carries the earlier
+    // sections' memory-only equip (slot = pickSoid, subclassSoid in storage); the DB still
+    // holds the boot state, captured below via load_account (which does NOT reset the
+    // runtime).
     {
         state::AccountState dbBefore{};
         state::unlocks::Table dbBeforeUnlocks{};
@@ -734,13 +738,10 @@ int run_selection_version_test(void* module) noexcept {
                       "refusal_db_capture_loads");
         const std::uint64_t dbSlotBefore = equipped_subclass_soid(dbBefore);
         harness.check(dbSlotBefore != 0, "refusal_db_slot_occupied");
-        bool reselected = false;
-        harness.check(state::set_selected_character(equip.characterSoid, reselected),
-                      "refusal_reselects_character");
         const std::uint64_t beforeSoid = equipped_subclass_soid(state::account_snapshot());
-        harness.check(beforeSoid == dbSlotBefore, "refusal_memory_matches_db");
+        harness.check(beforeSoid == pickSoid, "refusal_memory_slot_is_the_equip");
         queuez::SubclassEquip refuseEquip{};
-        harness.check(queuez::stage_subclass_equip(equip.after, pickSoid, refuseEquip),
+        harness.check(queuez::stage_subclass_equip(equip.after, subclassSoid, refuseEquip),
                       "refusal_stages_at_plus_one");
         harness.check(refuseEquip.after.family4Version == equip.after.family4Version + 1,
                       "refusal_version_exactly_plus_one");
@@ -783,11 +784,8 @@ int run_selection_version_test(void* module) noexcept {
     // equipment-hash restamp land in the THROWAWAY harness directory only; repeat runs use
     // the scratch_restamp.py re-stamp, the live stack's DB/cache are untouched).
     {
-        bool reselected = false;
-        harness.check(state::set_selected_character(equip.characterSoid, reselected),
-                      "success_reselects_character");
         queuez::SubclassEquip okEquip{};
-        harness.check(queuez::stage_subclass_equip(equip.after, pickSoid, okEquip),
+        harness.check(queuez::stage_subclass_equip(equip.after, subclassSoid, okEquip),
                       "success_stages_at_plus_one");
         bap::encrypted::ServiceOutcome outcome{};
         outcome.hasSubclassEquip = true;
@@ -812,13 +810,13 @@ int run_selection_version_test(void* module) noexcept {
                       "success_publishes_plus_one");
         harness.check(publication.armsAbilityRefresh, "success_arms_ability_refresh");
         harness.check(written > 0, "success_appends_frames");
-        harness.check(equipped_subclass_soid(state::account_snapshot()) == pickSoid,
+        harness.check(equipped_subclass_soid(state::account_snapshot()) == subclassSoid,
                       "success_mutates_slot");
         state::AccountState reloaded{};
         state::unlocks::Table reloadedUnlocks{};
         state::Family5State reloadedFamily5{};
         harness.check(persistence::load_account(reloaded, reloadedUnlocks, reloadedFamily5)
-                          && equipped_subclass_soid(reloaded) == pickSoid,
+                          && equipped_subclass_soid(reloaded) == subclassSoid,
                       "success_persists_after_frames");
     }
 
