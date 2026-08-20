@@ -600,7 +600,10 @@ bool seed_from_settings() noexcept {
     if (!exec("BEGIN;")) {
         return false;
     }
-    const state::AccountState& account = core::settings::get().initialAccount;
+    // The published State is the seed's source of truth: it carries the runtime-stamped
+    // ascending inventory serials (the settings block itself has none), so the fresh database
+    // holds the same generations the first boot publishes.
+    const state::AccountState account = state::account_snapshot();
     const state::unlocks::Table& unlocks = core::settings::get().initialUnlocks;
     bool seeded =
         seed_meta_and_account() && seed_profile_items() && seed_family5() && seed_entitlements()
