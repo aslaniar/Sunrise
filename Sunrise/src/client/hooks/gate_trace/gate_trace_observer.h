@@ -4,7 +4,7 @@
  * changed, so the hooks are safe on every path. The pass-2 lesson holds: no observer
  * dereferences an assumed register shape; only decompile-verified entry ABIs are read.
  *
- * The thirteen deployed observers (install count=13 — the ws_wire 0xE01960 observer was
+ * The fourteen deployed observers (install count=14 — the ws_wire 0xE01960 observer was
  * STRIPPED 2026-08-19 after boot-K re-triggered the tower stall: a per-frame wire-reader
  * detour is a HOT PATH — never hook it with a logging observer. The bap_apply stays: the
  * cool path, ~51 calls/session):
@@ -35,18 +35,23 @@
  *     out buffer in R8 — raw, no post-read).
  * 13. FUN_1416F1320 (+0x16F1320): the BAP response-event apply — the channel census's
  *     other arm: a frame arriving here commits silently (the equip's no-refresh path).
+ * 14. FUN_140E002D0 (+0xE002D0): the family-4 kind lookup (the kind-classification lane's
+ *     §4 spec — `int(void* store, u32 family, u32 defHash)` → EAX = the row 0..5 or -1).
+ *     THE COOL PATH: one call per frame object, pure compute, no store writes — NOT the
+ *     per-frame hot path (FUN_140E01960 is the trap; never hook it). Logs
+ *     `ev=gate_trace stage=kind family=%u def=0x%08X kind=%d caller=+0x%llX`.
  *
- * All thirteen attach in BOTH modes (in-process and external), like the ability_gate family.
+ * All fourteen attach in BOTH modes (in-process and external), like the ability_gate family.
  * The expr_vm hook (FUN_140540320) = OPTIONAL and NOT attached by default.
  */
 #pragma once
 
 namespace sunrise::client::hooks::gate_trace {
 
-/** Attaches the thirteen observers in either server mode. */
+/** Attaches the fourteen observers in either server mode. */
 bool install() noexcept;
 
-/** Detaches all thirteen observers and drops their trampolines. */
+/** Detaches all fourteen observers and drops their trampolines. */
 bool uninstall() noexcept;
 
 /** @return True while any observer is attached. */

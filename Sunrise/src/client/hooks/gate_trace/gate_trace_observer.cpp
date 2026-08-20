@@ -54,6 +54,9 @@ constexpr std::uintptr_t kUiRefreshRva = 0xE80FC0;
 /** Image RVA of FUN_1416F1320, the BAP message-queue response-event apply — the
  *  silent store-commit path (no walker, no notify). The channel census's other arm. */
 constexpr std::uintptr_t kBapApplyRva = 0x16F1320;
+/** Image RVA of FUN_140E002D0, the per-family kind lookup (the kind-classification
+ *  lane's §4 spec — the COOL path: one call per frame object, pure compute). */
+constexpr std::uintptr_t kKindRva = 0xE002D0;
 /** One log line's capacity. */
 constexpr std::size_t kLineCapacity = 256;
 
@@ -92,6 +95,10 @@ using UiRefresh = void(__fastcall*)(void*, void*, void*) noexcept;
 /** Decompile-verified ABI: `void FUN_1416f1320(longlong p1)` — the BAP response-event
  *  apply (1 register arg, logged raw). */
 using BapApply = void(__fastcall*)(void*) noexcept;
+/** Decompile-verified ABI: `int FUN_140e002d0(void* store, u32 family, u32 defHash)` —
+ *  the per-family kind lookup; RCX = the store, EDX = family, R8D = the object's
+ *  definition hash; returns EAX = the matched row 0..5, or -1. */
+using KindLookup = int(__fastcall*)(void*, std::uint32_t, std::uint32_t) noexcept;
 
 hooking::detour::Handle g_charHandle{};
 hooking::detour::Handle g_rollbackHandle{};
@@ -106,6 +113,7 @@ hooking::detour::Handle g_stampConsumeHandle{};
 hooking::detour::Handle g_stampGateHandle{};
 hooking::detour::Handle g_uiRefreshHandle{};
 hooking::detour::Handle g_bapApplyHandle{};
+hooking::detour::Handle g_kindHandle{};
 std::atomic<CharTest> g_originalChar{nullptr};
 std::atomic<RollbackApply> g_originalRollback{nullptr};
 std::atomic<AcquireCheck> g_originalAcquire{nullptr};
@@ -119,6 +127,7 @@ std::atomic<StampConsume> g_originalStampConsume{nullptr};
 std::atomic<StampGate> g_originalStampGate{nullptr};
 std::atomic<UiRefresh> g_originalUiRefresh{nullptr};
 std::atomic<BapApply> g_originalBapApply{nullptr};
+std::atomic<KindLookup> g_originalKind{nullptr};
 
 /** @return The module base, for the caller-RVA line. */
 std::uintptr_t module_base() noexcept {
@@ -487,6 +496,35 @@ __declspec(noinline) void __fastcall bap_apply_observer(void* rcx) noexcept {
     }
 }
 
+/** Runs the original family-4 kind lookup, then logs the family (EDX), the definition
+ *  hash (R8D), the matched row (-1..5, the return), and the caller. PURE OBSERVER: the
+ *  original return value passes through untouched. THE COOL PATH — one call per frame
+ *  object, a pure compute lookup; the caller names the walker/walker-A arms. */
+__declspec(noinline) int __fastcall kind_observer(void* rcx,
+                                                  std::uint32_t edx,
+                                                  std::uint32_t r8d) noexcept {
+    const KindLookup original = g_originalKind.load(std::memory_order_acquire);
+    const int kind = original != nullptr ? original(rcx, edx, r8d) : -1;
+    const std::uintptr_t caller = reinterpret_cast<std::uintptr_t>(caller_address());
+    const std::uintptr_t base = module_base();
+    const std::uintptr_t callerRva = caller >= base ? caller - base : 0;
+    std::array<char, kLineCapacity> line{};
+    const int written = std::snprintf(
+        line.data(),
+        line.size(),
+        "ev=gate_trace stage=kind family=%u def=0x%08X kind=%d caller=+0x%llX",
+        static_cast<unsigned>(edx),
+        static_cast<unsigned>(r8d),
+        kind,
+        static_cast<unsigned long long>(callerRva));
+    if (written > 0) {
+        core::log::write(core::log::Channel::client,
+                         core::log::Level::info,
+                         {line.data(), static_cast<std::size_t>(written)});
+    }
+    return kind;
+}
+
 /** @param reason Key naming the step that failed. @return False, for a direct return. */
 [[nodiscard]] bool fail_install(const char* reason) noexcept {
     std::array<char, 96> line{};
@@ -504,14 +542,15 @@ __declspec(noinline) void __fastcall bap_apply_observer(void* rcx) noexcept {
 
 } // namespace
 
-/** Attaches the thirteen observers in either server mode. */
+/** Attaches the fourteen observers in either server mode. */
 bool install() noexcept {
     if (g_charHandle.attached && g_rollbackHandle.attached && g_acquireHandle.attached
         && g_pollHandle.attached && g_sessionHandle.attached
         && g_sessionWrapHandle.attached && g_bitPrimHandle.attached
         && g_resolveHandle.attached && g_exprEvalHandle.attached
         && g_stampConsumeHandle.attached && g_stampGateHandle.attached
-        && g_uiRefreshHandle.attached && g_bapApplyHandle.attached) {
+        && g_uiRefreshHandle.attached && g_bapApplyHandle.attached
+        && g_kindHandle.attached) {
         return true;
     }
     std::byte* const base = reinterpret_cast<std::byte*>(GetModuleHandleW(nullptr));
@@ -533,7 +572,8 @@ bool install() noexcept {
         || !diagnostics::contains(range, baseValue + kStampConsumeRva)
         || !diagnostics::contains(range, baseValue + kStampGateRva)
         || !diagnostics::contains(range, baseValue + kUiRefreshRva)
-        || !diagnostics::contains(range, baseValue + kBapApplyRva)) {
+        || !diagnostics::contains(range, baseValue + kBapApplyRva)
+        || !diagnostics::contains(range, baseValue + kKindRva)) {
         return fail_install("target");
     }
     const hooking::detour::Spec charSpec{base + kCharTestRva,
@@ -563,12 +603,14 @@ bool install() noexcept {
                                               reinterpret_cast<void*>(&ui_refresh_observer)};
     const hooking::detour::Spec bapApplySpec{base + kBapApplyRva,
                                              reinterpret_cast<void*>(&bap_apply_observer)};
-    const std::array<hooking::detour::Spec, 13> specs{
+    const hooking::detour::Spec kindSpec{base + kKindRva,
+                                         reinterpret_cast<void*>(&kind_observer)};
+    const std::array<hooking::detour::Spec, 14> specs{
         charSpec,   rollbackSpec, acquireSpec,     pollSpec,
         sessionSpec, sessionWrapSpec, bitPrimSpec, resolveSpec,
         exprEvalSpec, stampConsumeSpec, stampGateSpec, uiRefreshSpec,
-        bapApplySpec};
-    std::array<hooking::detour::Handle, 13> handles{};
+        bapApplySpec, kindSpec};
+    std::array<hooking::detour::Handle, 14> handles{};
     if (!hooking::detour::install(specs, handles)) {
         return fail_install("attach");
     }
@@ -585,6 +627,7 @@ bool install() noexcept {
     g_stampGateHandle = handles[10];
     g_uiRefreshHandle = handles[11];
     g_bapApplyHandle = handles[12];
+    g_kindHandle = handles[13];
     g_originalChar.store(reinterpret_cast<CharTest>(g_charHandle.original),
                          std::memory_order_release);
     g_originalRollback.store(reinterpret_cast<RollbackApply>(g_rollbackHandle.original),
@@ -612,6 +655,8 @@ bool install() noexcept {
                               std::memory_order_release);
     g_originalBapApply.store(reinterpret_cast<BapApply>(g_bapApplyHandle.original),
                              std::memory_order_release);
+    g_originalKind.store(reinterpret_cast<KindLookup>(g_kindHandle.original),
+                         std::memory_order_release);
     std::array<char, kLineCapacity> line{};
     const int written = std::snprintf(
         line.data(), line.size(), "ev=gate_trace stage=install result=ok count=%u",
@@ -624,7 +669,7 @@ bool install() noexcept {
     return true;
 }
 
-/** Detaches all thirteen observers and drops their trampolines. */
+/** Detaches all fourteen observers and drops their trampolines. */
 bool uninstall() noexcept {
     (void)hooking::detour::uninstall(g_charHandle);
     (void)hooking::detour::uninstall(g_rollbackHandle);
@@ -639,6 +684,7 @@ bool uninstall() noexcept {
     (void)hooking::detour::uninstall(g_stampGateHandle);
     (void)hooking::detour::uninstall(g_uiRefreshHandle);
     (void)hooking::detour::uninstall(g_bapApplyHandle);
+    (void)hooking::detour::uninstall(g_kindHandle);
     g_charHandle = {};
     g_rollbackHandle = {};
     g_acquireHandle = {};
@@ -652,6 +698,7 @@ bool uninstall() noexcept {
     g_stampGateHandle = {};
     g_uiRefreshHandle = {};
     g_bapApplyHandle = {};
+    g_kindHandle = {};
     g_originalChar.store(nullptr, std::memory_order_release);
     g_originalRollback.store(nullptr, std::memory_order_release);
     g_originalAcquire.store(nullptr, std::memory_order_release);
@@ -665,6 +712,7 @@ bool uninstall() noexcept {
     g_originalStampGate.store(nullptr, std::memory_order_release);
     g_originalUiRefresh.store(nullptr, std::memory_order_release);
     g_originalBapApply.store(nullptr, std::memory_order_release);
+    g_originalKind.store(nullptr, std::memory_order_release);
     return true;
 }
 
@@ -675,7 +723,8 @@ bool is_installed() noexcept {
            || g_sessionWrapHandle.attached || g_bitPrimHandle.attached
            || g_resolveHandle.attached || g_exprEvalHandle.attached
            || g_stampConsumeHandle.attached || g_stampGateHandle.attached
-           || g_uiRefreshHandle.attached || g_bapApplyHandle.attached;
+           || g_uiRefreshHandle.attached || g_bapApplyHandle.attached
+           || g_kindHandle.attached;
 }
 
 } // namespace sunrise::client::hooks::gate_trace
