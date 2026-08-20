@@ -13,7 +13,7 @@ namespace sunrise::server::bap::encrypted::push {
  * @param nonce Push-direction nonce after the correlated svc-11 response.
  * @param response Caller-owned output containing the existing response prefix.
  * @param written Existing byte count, updated after the complete push is appended.
- * @return True when the item-republish frame fits.
+ * @return True when the character-upsert frame fits.
  */
 bool append_subclass_equip_notification(Scratch& scratch,
                                         const queuez::SubclassEquip& equip,

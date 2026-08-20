@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
 #include "../build_data/runtime.h"
 #include "runtime.h"
@@ -156,16 +157,34 @@ bool equip_subclass_item(std::uint64_t itemSoid, std::uint64_t& displacedSoid) n
         return false;
     }
     --character.storageItemCount;
+    // THE SERIAL HAND-OFF (the upstream's 6164a3b rule, adapted to the swap shape): the mover
+    // takes the freshest generation, and the displaced item keeps the mover's PRIOR serial —
+    // the Client orders a bucket's grid by serial, so a fresh greatest serial would rebuild the
+    // displaced item in the first grid cell instead of the clicked cell. A swap with a
+    // displaced item consumes exactly two counter values; a first equip consumes one.
+    constexpr std::uint32_t kMaximumInventorySerial =
+        static_cast<std::uint32_t>((std::numeric_limits<std::int32_t>::max)());
+    const std::int32_t pickedPriorSerial = picked.mutationSerial;
     const std::optional<account::inventory::Item>& previous =
         character.equipment.slots[static_cast<std::size_t>(
             account::inventory::EquipmentSlot::subclass)];
+    const std::uint32_t consumed = previous.has_value() ? 2U : 1U;
+    if (character.nextInventorySerial > kMaximumInventorySerial
+        || consumed > kMaximumInventorySerial - character.nextInventorySerial) {
+        ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
+        return false;
+    }
+    picked.mutationSerial = static_cast<std::int32_t>(character.nextInventorySerial++);
     if (previous.has_value()) {
         if (character.storageItemCount >= character.storageItems.size()) {
             ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
             return false;
         }
         displacedSoid = previous->instanceSoid;
-        character.storageItems[character.storageItemCount++] = *previous;
+        account::inventory::Item displaced = *previous;
+        displaced.mutationSerial = pickedPriorSerial;
+        character.storageItems[character.storageItemCount++] = displaced;
+        ++character.nextInventorySerial;
     }
     character.equipment.slots[static_cast<std::size_t>(
         account::inventory::EquipmentSlot::subclass)] = picked;

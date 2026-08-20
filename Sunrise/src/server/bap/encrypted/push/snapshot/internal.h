@@ -118,14 +118,14 @@ inline constexpr std::size_t kSingleObjectCount = 1;
                                           Prepared& prepared) noexcept;
 
 /**
- * Builds the Family-4 increment for the opcode-403 subclass equip — the SAME item-only
- * upsert shape as the opcode-801/2100 flows (the fix-A experiment: the two-object
- * character-plus-item frame was accepted but never refreshed the panel live; the
- * item-only frames are the boot-proven display-updating delivery, so the equip now
- * reuses the shared builder byte-for-byte).
+ * Builds the Family-4 increment for the opcode-403 subclass equip — the CHARACTER upsert
+ * (the fix-A revert). The character object is the only record that carries both the equipped
+ * state and the inventory-row mutation serials, so the equip republishes it as one object
+ * keyed (characterDefinitionId, characterSoid), flags 0, at the staged +1 version. The
+ * item-only republish stays the opcode-801/2100 shape (unchanged).
  * @param scratch Object and compression storage owned by the lock.
  * @param equip Checked after-image and the resident character keys.
- * @param prepared Gets the single item-upsert descriptor.
+ * @param prepared Gets the single character-upsert descriptor.
  * @return True when State, mappings, layouts and the installed compression all fit.
  */
 [[nodiscard]] bool prepare_subclass_equip(Scratch& scratch,
