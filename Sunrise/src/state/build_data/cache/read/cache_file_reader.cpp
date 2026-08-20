@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstring>
 
+#include "../../../../core/logging/log.h"
 #include "../internal.h"
 #include "cache_payload_reader.h"
 
@@ -146,6 +147,28 @@ LoadStatus load(const wchar_t* path,
         header.configuredEquipmentHash,
     };
     if (!(cachedBuild == expectedBuild)) {
+        // The boot-cycle gate: name BOTH identities on a mismatch so a deploy can
+        // stamp the exact expected value instead of guessing (the eqHash = the
+        // configured hash of the loaded account — the runtime snapshot and the
+        // persisted rows can legitimately differ).
+        std::array<char, 192> line{};
+        const int written = std::snprintf(
+            line.data(),
+            line.size(),
+            "ev=build_data stage=identity result=mismatch "
+            "cached_ts=0x%08X cached_size=0x%X cached_eq=0x%016llX "
+            "expected_ts=0x%08X expected_size=0x%X expected_eq=0x%016llX",
+            cachedBuild.imageTimestamp,
+            cachedBuild.imageSize,
+            static_cast<unsigned long long>(cachedBuild.configuredEquipmentHash),
+            expectedBuild.imageTimestamp,
+            expectedBuild.imageSize,
+            static_cast<unsigned long long>(expectedBuild.configuredEquipmentHash));
+        if (written > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             {line.data(), static_cast<std::size_t>(written)});
+        }
         return close_with(file, LoadStatus::stale);
     }
 
