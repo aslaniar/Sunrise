@@ -140,23 +140,21 @@ bool equip_subclass_item(std::uint64_t itemSoid, std::uint64_t& displacedSoid) n
         return false;
     }
     CharacterState& character = candidate.characters[characterIndex];
-    // Remove the picked item from storage, then swap it into the subclass semantic slot.
-    account::inventory::Item picked{};
-    bool found = false;
+    // Find the picked item's storage row and keep its position: the displaced item takes
+    // THAT row (the upstream's std::swap shape — the CLICKED row, D4), not the storage
+    // tail.
+    std::size_t pickedRow = character.storageItemCount;
     for (std::size_t index = 0; index < character.storageItemCount; ++index) {
-        if (!found && character.storageItems[index].instanceSoid == itemSoid) {
-            picked = character.storageItems[index];
-            found = true;
-        }
-        if (found && index + 1 < character.storageItemCount) {
-            character.storageItems[index] = character.storageItems[index + 1];
+        if (character.storageItems[index].instanceSoid == itemSoid) {
+            pickedRow = index;
+            break;
         }
     }
-    if (!found) {
+    if (pickedRow >= character.storageItemCount) {
         ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
         return false;
     }
-    --character.storageItemCount;
+    const account::inventory::Item picked = character.storageItems[pickedRow];
     // THE SERIAL HAND-OFF (the upstream's 6164a3b rule, adapted to the swap shape): the mover
     // takes the freshest generation, and the displaced item keeps the mover's PRIOR serial —
     // the Client orders a bucket's grid by serial, so a fresh greatest serial would rebuild the
@@ -174,29 +172,27 @@ bool equip_subclass_item(std::uint64_t itemSoid, std::uint64_t& displacedSoid) n
         ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
         return false;
     }
-    picked.mutationSerial = static_cast<std::int32_t>(character.nextInventorySerial++);
+    account::inventory::Item mover = picked;
+    mover.mutationSerial = static_cast<std::int32_t>(character.nextInventorySerial++);
     if (previous.has_value()) {
-        if (character.storageItemCount >= character.storageItems.size()) {
-            ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
-            return false;
-        }
+        // The displaced item lands in the row the player clicked (the upstream's swap shape:
+        // std::swap(*equipped, inventory[clickedRow])), keeping the mover's prior serial so
+        // the grid cell it rebuilds into is the clicked one.
         displacedSoid = previous->instanceSoid;
         account::inventory::Item displaced = *previous;
         displaced.mutationSerial = pickedPriorSerial;
-        character.storageItems[character.storageItemCount++] = displaced;
+        character.storageItems[pickedRow] = displaced;
         ++character.nextInventorySerial;
+    } else {
+        // A first equip compacts the storage array over the picked row.
+        for (std::size_t index = pickedRow; index + 1 < character.storageItemCount; ++index) {
+            character.storageItems[index] = character.storageItems[index + 1];
+        }
+        --character.storageItemCount;
+        character.storageItems[character.storageItemCount] = {};
     }
     character.equipment.slots[static_cast<std::size_t>(
-        account::inventory::EquipmentSlot::subclass)] = picked;
-    // A fresh subclass starts on its own default ability picks: the previous subclass's
-    // entry indices do not name the new list's entries, and the banner encode must always
-    // find a catalog row. Retail models this per subclass; our character-level model
-    // resets on the equip instead.
-    character.movementAbilityEntry = kDefaultMovementAbilityEntry;
-    character.grenadeAbilityEntry = kDefaultGrenadeAbilityEntry;
-    character.superAbilityEntry = kDefaultSuperAbilityEntry;
-    character.meleeAbilityEntry = kDefaultMeleeAbilityEntry;
-    character.classAbilityEntry = kDefaultClassAbilityEntry;
+        account::inventory::EquipmentSlot::subclass)] = mover;
     if (!account::valid(candidate)) {
         ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
         return false;
