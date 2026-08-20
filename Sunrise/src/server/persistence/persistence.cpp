@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <span>
 #include <string_view>
 
@@ -188,8 +189,8 @@ bool seed_character(std::size_t index, const state::CharacterState& character) n
         "INSERT INTO characters (account_id, character_index, soid, char_class, race, gender, "
         "level, accepted, preview_available, appearance_value, last_orbited_destination, "
         "content_bypass, movement_ability_entry, grenade_ability_entry, super_ability_entry, "
-        "melee_ability_entry, class_ability_entry) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
+        "melee_ability_entry, class_ability_entry, next_inventory_serial) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
     sqlite3_stmt* statement = nullptr;
     if (sqlite3_prepare_v2(g_database, kCharacterSql, -1, &statement, nullptr) != SQLITE_OK) {
         fail("seed_character_prepare", error_text());
@@ -220,6 +221,11 @@ bool seed_character(std::size_t index, const state::CharacterState& character) n
                    && sqlite3_bind_int(statement, 15, character.superAbilityEntry) == SQLITE_OK
                    && sqlite3_bind_int(statement, 16, character.meleeAbilityEntry) == SQLITE_OK
                    && sqlite3_bind_int(statement, 17, character.classAbilityEntry) == SQLITE_OK
+                   && sqlite3_bind_int64(
+                          statement,
+                          18,
+                          static_cast<sqlite3_int64>(character.nextInventorySerial))
+                          == SQLITE_OK
                    && step_done(statement);
     sqlite3_finalize(statement);
     if (!ok) {
@@ -229,12 +235,14 @@ bool seed_character(std::size_t index, const state::CharacterState& character) n
 
     static constexpr char kItemSql[] =
         "INSERT INTO items (account_id, character_index, definition_hash, instance_soid, "
-        "quantity, bucket_id, equipment_slot, instance_level, in_equipment, socket_policy) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?);";
+        "quantity, bucket_id, equipment_slot, instance_level, in_equipment, socket_policy, "
+        "mutation_serial, flags) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?);";
     static constexpr char kStorageItemSql[] =
         "INSERT INTO items (account_id, character_index, definition_hash, instance_soid, "
-        "quantity, bucket_id, equipment_slot, instance_level, in_equipment, socket_policy) "
-        "VALUES (?, ?, ?, ?, ?, ?, NULL, ?, 0, ?);";
+        "quantity, bucket_id, equipment_slot, instance_level, in_equipment, socket_policy, "
+        "mutation_serial, flags) "
+        "VALUES (?, ?, ?, ?, ?, ?, NULL, ?, 0, ?, ?, ?);";
     static constexpr char kPlugSql[] =
         "INSERT INTO item_plugs (item_id, lane, plug_definition_hash) VALUES (?, ?, ?);";
     sqlite3_stmt* itemStatement = nullptr;
@@ -284,6 +292,9 @@ bool seed_character(std::size_t index, const state::CharacterState& character) n
                                         == state::account::inventory::SocketPolicy::authored
                                     ? 1
                                     : 0)
+                   == SQLITE_OK
+            && sqlite3_bind_int(itemStatement, 10, item->mutationSerial) == SQLITE_OK
+            && sqlite3_bind_int64(itemStatement, 11, static_cast<sqlite3_int64>(item->flags))
                    == SQLITE_OK
             && step_done(itemStatement);
         sqlite3_reset(itemStatement);
@@ -350,6 +361,9 @@ bool seed_character(std::size_t index, const state::CharacterState& character) n
                                         == state::account::inventory::SocketPolicy::authored
                                     ? 1
                                     : 0)
+                   == SQLITE_OK
+            && sqlite3_bind_int(storageStatement, 9, item.mutationSerial) == SQLITE_OK
+            && sqlite3_bind_int64(storageStatement, 10, static_cast<sqlite3_int64>(item.flags))
                    == SQLITE_OK
             && step_done(storageStatement);
         sqlite3_reset(storageStatement);
@@ -701,8 +715,8 @@ bool load_equipment(std::string_view accountId,
                     state::CharacterState& character) noexcept {
     static constexpr char kItemSql[] =
         "SELECT item_id, equipment_slot, instance_soid, definition_hash, instance_level, "
-        "quantity, socket_policy FROM items WHERE account_id = ? AND character_index = ? "
-        "AND in_equipment = 1 ORDER BY equipment_slot;";
+        "quantity, socket_policy, mutation_serial, flags FROM items WHERE account_id = ? "
+        "AND character_index = ? AND in_equipment = 1 ORDER BY equipment_slot;";
     static constexpr char kPlugSql[] =
         "SELECT lane, plug_definition_hash FROM item_plugs WHERE item_id = ? ORDER BY lane;";
     sqlite3_stmt* itemStatement = nullptr;
@@ -754,6 +768,8 @@ bool load_equipment(std::string_view accountId,
         item.sockets.policy = sqlite3_column_int(itemStatement, 6) != 0
                                   ? state::account::inventory::SocketPolicy::authored
                                   : state::account::inventory::SocketPolicy::nativeDefaults;
+        item.mutationSerial = sqlite3_column_int(itemStatement, 7);
+        item.flags = static_cast<std::uint32_t>(sqlite3_column_int64(itemStatement, 8));
         item.sockets.plugCount = 0;
         if (sqlite3_bind_int64(plugStatement, 1, itemId) != SQLITE_OK) {
             fail("load_plugs_bind", error_text());
@@ -815,8 +831,8 @@ bool load_storage(std::string_view accountId,
                   state::CharacterState& character) noexcept {
     static constexpr char kItemSql[] =
         "SELECT item_id, instance_soid, definition_hash, instance_level, quantity, "
-        "socket_policy FROM items WHERE account_id = ? AND character_index = ? "
-        "AND in_equipment = 0 ORDER BY item_id;";
+        "socket_policy, mutation_serial, flags FROM items WHERE account_id = ? "
+        "AND character_index = ? AND in_equipment = 0 ORDER BY item_id;";
     static constexpr char kPlugSql[] =
         "SELECT lane, plug_definition_hash FROM item_plugs WHERE item_id = ? ORDER BY lane;";
     sqlite3_stmt* itemStatement = nullptr;
@@ -868,6 +884,8 @@ bool load_storage(std::string_view accountId,
         item.sockets.policy = sqlite3_column_int(itemStatement, 5) != 0
                                   ? state::account::inventory::SocketPolicy::authored
                                   : state::account::inventory::SocketPolicy::nativeDefaults;
+        item.mutationSerial = sqlite3_column_int(itemStatement, 6);
+        item.flags = static_cast<std::uint32_t>(sqlite3_column_int64(itemStatement, 7));
         item.sockets.plugCount = 0;
         if (sqlite3_bind_int64(plugStatement, 1, itemId) != SQLITE_OK) {
             fail("load_storage_plugs_bind", error_text());
@@ -956,6 +974,206 @@ bool update_flag_range(std::string_view scope,
     return true;
 }
 
+/** @return True when one named column exists in one named table. */
+[[nodiscard]] bool column_exists(const char* table, const char* column) noexcept {
+    static constexpr char kSql[] = "SELECT 1 FROM pragma_table_info(?) WHERE name = ?;";
+    sqlite3_stmt* statement = nullptr;
+    if (sqlite3_prepare_v2(g_database, kSql, -1, &statement, nullptr) != SQLITE_OK) {
+        fail("column_exists_prepare", error_text());
+        return false;
+    }
+    const bool ok = bind_text(statement, 1, table) && bind_text(statement, 2, column);
+    if (!ok) {
+        sqlite3_finalize(statement);
+        return false;
+    }
+    const int code = sqlite3_step(statement);
+    sqlite3_finalize(statement);
+    if (code != SQLITE_ROW && code != SQLITE_DONE) {
+        fail("column_exists_step", error_text());
+        return false;
+    }
+    return code == SQLITE_ROW;
+}
+
+/**
+ * Adds the serial-space columns a pre-port database may lack. Safe defaults keep every
+ * legacy row valid; the per-character ascending seed below fills the real values.
+ * @return True when every required column exists afterwards.
+ */
+[[nodiscard]] bool migrate_serial_columns() noexcept {
+    struct Column {
+        const char* table;
+        const char* name;
+        const char* type;
+    };
+    static constexpr Column kColumns[] = {
+        {"items", "mutation_serial", "INTEGER NOT NULL DEFAULT 0"},
+        {"items", "flags", "INTEGER NOT NULL DEFAULT 0"},
+        {"characters", "next_inventory_serial", "INTEGER NOT NULL DEFAULT 0"},
+    };
+    for (const Column& column : kColumns) {
+        if (column_exists(column.table, column.name)) {
+            continue;
+        }
+        std::array<char, 128> sql{};
+        const int written = std::snprintf(sql.data(),
+                                          sql.size(),
+                                          "ALTER TABLE %s ADD COLUMN %s %s;",
+                                          column.table,
+                                          column.name,
+                                          column.type);
+        if (written <= 0 || static_cast<std::size_t>(written) >= sql.size() || !exec(sql.data())) {
+            fail("migrate_column", error_text());
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * Seeds the ascending-by-row serials for one character whose serial space is still all zero
+ * (a pre-port database's rows — the lane's migration design decision). Equipment rows order
+ * by equipment_slot (the semantic order the runtime stamp uses), storage rows by item_id (the
+ * authored insertion order); the character counter lands one past the highest serial.
+ * Idempotent: any nonzero counter or serial leaves the character untouched.
+ */
+[[nodiscard]] bool migrate_character_serials(std::string_view accountId,
+                                             int characterIndex) noexcept {
+    static constexpr char kCounterSql[] =
+        "SELECT next_inventory_serial FROM characters WHERE account_id = ? "
+        "AND character_index = ?;";
+    static constexpr char kUsedSql[] =
+        "SELECT 1 FROM items WHERE account_id = ? AND character_index = ? "
+        "AND mutation_serial != 0 LIMIT 1;";
+    static constexpr char kRowsSql[] =
+        "SELECT item_id FROM items WHERE account_id = ? AND character_index = ? "
+        "ORDER BY in_equipment DESC, equipment_slot ASC, item_id ASC;";
+    sqlite3_stmt* statement = nullptr;
+    bool ok = sqlite3_prepare_v2(g_database, kCounterSql, -1, &statement, nullptr) == SQLITE_OK
+              && bind_text(statement, 1, accountId)
+              && sqlite3_bind_int(statement, 2, characterIndex) == SQLITE_OK;
+    if (ok) {
+        const int code = sqlite3_step(statement);
+        if (code != SQLITE_ROW && code != SQLITE_DONE) {
+            fail("migrate_character_counter", error_text());
+            sqlite3_finalize(statement);
+            return false;
+        }
+        // No row, or a nonzero counter: either nothing exists or the space is already live.
+        ok = code == SQLITE_ROW && sqlite3_column_int(statement, 0) == 0;
+    }
+    sqlite3_finalize(statement);
+    if (!ok) {
+        return true;
+    }
+    statement = nullptr;
+    ok = sqlite3_prepare_v2(g_database, kUsedSql, -1, &statement, nullptr) == SQLITE_OK
+         && bind_text(statement, 1, accountId)
+         && sqlite3_bind_int(statement, 2, characterIndex) == SQLITE_OK;
+    if (ok) {
+        const int code = sqlite3_step(statement);
+        if (code != SQLITE_ROW && code != SQLITE_DONE) {
+            fail("migrate_character_used", error_text());
+            sqlite3_finalize(statement);
+            return false;
+        }
+        if (code == SQLITE_ROW) {
+            // Any nonzero item serial means this character's rows are already stamped.
+            sqlite3_finalize(statement);
+            return true;
+        }
+    }
+    sqlite3_finalize(statement);
+    if (!ok) {
+        return false;
+    }
+    statement = nullptr;
+    ok = sqlite3_prepare_v2(g_database, kRowsSql, -1, &statement, nullptr) == SQLITE_OK
+         && bind_text(statement, 1, accountId)
+         && sqlite3_bind_int(statement, 2, characterIndex) == SQLITE_OK;
+    if (!ok) {
+        fail("migrate_character_rows_prepare", error_text());
+        sqlite3_finalize(statement);
+        return false;
+    }
+    std::int32_t serial = 0;
+    static constexpr char kStampSql[] =
+        "UPDATE items SET mutation_serial = ? WHERE item_id = ?;";
+    sqlite3_stmt* stamp = nullptr;
+    ok = sqlite3_prepare_v2(g_database, kStampSql, -1, &stamp, nullptr) == SQLITE_OK;
+    while (ok) {
+        const int code = sqlite3_step(statement);
+        if (code == SQLITE_DONE) {
+            break;
+        }
+        if (code != SQLITE_ROW) {
+            fail("migrate_character_rows_step", error_text());
+            ok = false;
+            break;
+        }
+        if (serial == (std::numeric_limits<std::int32_t>::max)()) {
+            fail("migrate_character_serial_overflow", "serial space exhausted");
+            ok = false;
+            break;
+        }
+        const sqlite3_int64 itemId = sqlite3_column_int64(statement, 0);
+        ok = sqlite3_bind_int(stamp, 1, serial) == SQLITE_OK
+             && sqlite3_bind_int64(stamp, 2, itemId) == SQLITE_OK && step_done(stamp);
+        sqlite3_reset(stamp);
+        ++serial;
+    }
+    sqlite3_finalize(statement);
+    sqlite3_finalize(stamp);
+    if (!ok) {
+        return false;
+    }
+    static constexpr char kCounterStampSql[] =
+        "UPDATE characters SET next_inventory_serial = ? WHERE account_id = ? "
+        "AND character_index = ?;";
+    statement = nullptr;
+    ok = sqlite3_prepare_v2(g_database, kCounterStampSql, -1, &statement, nullptr) == SQLITE_OK
+         && sqlite3_bind_int(statement, 1, serial) == SQLITE_OK
+         && bind_text(statement, 2, accountId)
+         && sqlite3_bind_int(statement, 3, characterIndex) == SQLITE_OK && step_done(statement);
+    sqlite3_finalize(statement);
+    if (!ok) {
+        fail("migrate_character_counter_stamp", error_text());
+    }
+    return ok;
+}
+
+/** Seeds the ascending serials for every character row still carrying a zero serial space. */
+[[nodiscard]] bool migrate_character_serial_spaces() noexcept {
+    static constexpr char kSql[] = "SELECT account_id, character_index FROM characters;";
+    sqlite3_stmt* statement = nullptr;
+    if (sqlite3_prepare_v2(g_database, kSql, -1, &statement, nullptr) != SQLITE_OK) {
+        fail("migrate_character_spaces_prepare", error_text());
+        return false;
+    }
+    bool ok = true;
+    while (ok) {
+        const int code = sqlite3_step(statement);
+        if (code == SQLITE_DONE) {
+            break;
+        }
+        if (code != SQLITE_ROW) {
+            fail("migrate_character_spaces_step", error_text());
+            ok = false;
+            break;
+        }
+        const auto* accountText = sqlite3_column_text(statement, 0);
+        const int characterIndex = sqlite3_column_int(statement, 1);
+        ok = accountText != nullptr
+             && migrate_character_serials(
+                 {reinterpret_cast<const char*>(accountText),
+                  static_cast<std::size_t>(sqlite3_column_bytes(statement, 0))},
+                 characterIndex);
+    }
+    sqlite3_finalize(statement);
+    return ok;
+}
+
 /** Opens and migrates the state database, seeding it from settings when empty. */
 bool initialize(void* module) noexcept {
     AcquireSRWLockExclusive(&g_lock);
@@ -1009,6 +1227,7 @@ bool initialize(void* module) noexcept {
         "  super_ability_entry     INTEGER NOT NULL DEFAULT 10,"
         "  melee_ability_entry     INTEGER NOT NULL DEFAULT 11,"
         "  class_ability_entry     INTEGER NOT NULL DEFAULT 2,"
+        "  next_inventory_serial INTEGER NOT NULL DEFAULT 0,"
         "  PRIMARY KEY (account_id, character_index)"
         ");"
         "CREATE TABLE IF NOT EXISTS items ("
@@ -1116,6 +1335,14 @@ bool initialize(void* module) noexcept {
         ReleaseSRWLockExclusive(&g_lock);
         return false;
     }
+    // The serial-port migration: add any serial-space columns the deployed schema predates,
+    // then seed the ascending-by-row serials for every character whose rows are still zero.
+    if (!migrate_serial_columns() || !migrate_character_serial_spaces()) {
+        fail("migrate", error_text());
+        close_locked();
+        ReleaseSRWLockExclusive(&g_lock);
+        return false;
+    }
     if (!account_rows_exist() && !seed_from_settings()) {
         fail("seed", error_text());
         (void)sqlite3_exec(g_database, "ROLLBACK;", nullptr, nullptr, nullptr);
@@ -1182,7 +1409,8 @@ bool load_account(state::AccountState& account,
     static constexpr char kCharacterSql[] =
         "SELECT soid, char_class, race, gender, level, accepted, preview_available, "
         "appearance_value, last_orbited_destination, content_bypass, movement_ability_entry, "
-        "grenade_ability_entry, super_ability_entry, melee_ability_entry, class_ability_entry "
+        "grenade_ability_entry, super_ability_entry, melee_ability_entry, class_ability_entry, "
+        "next_inventory_serial "
         "FROM characters WHERE account_id = ? ORDER BY character_index;";
     statement = nullptr;
     ok = sqlite3_prepare_v2(g_database, kCharacterSql, -1, &statement, nullptr) == SQLITE_OK
@@ -1230,6 +1458,8 @@ bool load_account(state::AccountState& account,
         character.superAbilityEntry = static_cast<std::uint8_t>(sqlite3_column_int(statement, 12));
         character.meleeAbilityEntry = static_cast<std::uint8_t>(sqlite3_column_int(statement, 13));
         character.classAbilityEntry = static_cast<std::uint8_t>(sqlite3_column_int(statement, 14));
+        character.nextInventorySerial =
+            static_cast<std::uint32_t>(sqlite3_column_int64(statement, 15));
         ++account.characterCount;
     }
     sqlite3_finalize(statement);
@@ -1466,9 +1696,46 @@ bool write_back() noexcept {
     return ok;
 }
 
-/** Persists one subclass equip in a single two-row transaction. */
+/** Persists one subclass equip in a single transaction: the two-row swap plus the serials. */
 bool persist_subclass_equip(std::uint64_t newlyEquippedSoid,
                             std::uint64_t displacedSoid) noexcept {
+    // The serials land with the mutation, so they are read from the published State before the
+    // transaction (the same pattern as persist_ability_change). The mover sits in the subclass
+    // slot and the displaced item in storage, both carrying their post-swap generations.
+    const state::AccountState account = state::account_snapshot();
+    std::size_t characterIndex = account.characterCount;
+    for (std::size_t index = 0; index < account.characterCount; ++index) {
+        if (account.characters[index].selected) {
+            characterIndex = index;
+            break;
+        }
+    }
+    if (characterIndex >= account.characterCount) {
+        return false;
+    }
+    const state::CharacterState& character = account.characters[characterIndex];
+    const auto& subclassSlot =
+        character.equipment.slots[static_cast<std::size_t>(
+            state::account::inventory::EquipmentSlot::subclass)];
+    if (!subclassSlot.has_value() || subclassSlot->instanceSoid != newlyEquippedSoid) {
+        return false;
+    }
+    const std::int32_t newlyEquippedSerial = subclassSlot->mutationSerial;
+    std::int32_t displacedSerial = 0;
+    bool displacedPresent = false;
+    if (displacedSoid != 0) {
+        for (std::size_t index = 0; index < character.storageItemCount; ++index) {
+            if (character.storageItems[index].instanceSoid == displacedSoid) {
+                displacedSerial = character.storageItems[index].mutationSerial;
+                displacedPresent = true;
+                break;
+            }
+        }
+        if (!displacedPresent) {
+            return false;
+        }
+    }
+
     AcquireSRWLockExclusive(&g_lock);
     if (g_database == nullptr || newlyEquippedSoid == 0) {
         ReleaseSRWLockExclusive(&g_lock);
@@ -1487,6 +1754,11 @@ bool persist_subclass_equip(std::uint64_t newlyEquippedSoid,
     static constexpr char kEquipSql[] =
         "UPDATE items SET in_equipment = 1, equipment_slot = 11 WHERE account_id = ? "
         "AND instance_soid = ?;";
+    static constexpr char kSerialSql[] =
+        "UPDATE items SET mutation_serial = ? WHERE account_id = ? AND instance_soid = ?;";
+    static constexpr char kCounterSql[] =
+        "UPDATE characters SET next_inventory_serial = ? WHERE account_id = ? "
+        "AND character_index = ?;";
     bool ok = exec("BEGIN;");
     sqlite3_stmt* statement = nullptr;
     if (ok && displacedSoid != 0) {
@@ -1504,6 +1776,47 @@ bool persist_subclass_equip(std::uint64_t newlyEquippedSoid,
         if (ok) {
             ok = bind_text(statement, 1, seed_account_id())
                  && bind_text(statement, 2, {newSoidText.data(), std::strlen(newSoidText.data())})
+                 && step_done(statement);
+            sqlite3_finalize(statement);
+        }
+    }
+    if (ok) {
+        statement = nullptr;
+        ok = sqlite3_prepare_v2(g_database, kSerialSql, -1, &statement, nullptr) == SQLITE_OK;
+        if (ok) {
+            ok = sqlite3_bind_int(statement, 1, newlyEquippedSerial) == SQLITE_OK
+                 && bind_text(statement, 2, seed_account_id())
+                 && bind_text(statement,
+                              3,
+                              {newSoidText.data(), std::strlen(newSoidText.data())})
+                 && step_done(statement);
+            sqlite3_finalize(statement);
+        }
+    }
+    if (ok && displacedSoid != 0) {
+        statement = nullptr;
+        ok = sqlite3_prepare_v2(g_database, kSerialSql, -1, &statement, nullptr) == SQLITE_OK;
+        if (ok) {
+            ok = sqlite3_bind_int(statement, 1, displacedSerial) == SQLITE_OK
+                 && bind_text(statement, 2, seed_account_id())
+                 && bind_text(statement,
+                              3,
+                              {oldSoidText.data(), std::strlen(oldSoidText.data())})
+                 && step_done(statement);
+            sqlite3_finalize(statement);
+        }
+    }
+    if (ok) {
+        statement = nullptr;
+        ok = sqlite3_prepare_v2(g_database, kCounterSql, -1, &statement, nullptr) == SQLITE_OK;
+        if (ok) {
+            ok = sqlite3_bind_int64(statement,
+                                    1,
+                                    static_cast<sqlite3_int64>(
+                                        character.nextInventorySerial))
+                         == SQLITE_OK
+                 && bind_text(statement, 2, seed_account_id())
+                 && sqlite3_bind_int(statement, 3, static_cast<int>(characterIndex)) == SQLITE_OK
                  && step_done(statement);
             sqlite3_finalize(statement);
         }
