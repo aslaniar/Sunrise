@@ -58,6 +58,13 @@ inline constexpr std::uint8_t kDefaultMeleeAbilityEntry = 11;
 /** Default class-ability entry. Which bucket it publishes into follows the character class. */
 inline constexpr std::uint8_t kDefaultClassAbilityEntry = 2;
 
+/**
+ * Widest node bundle one summary pick can publish together.
+ * Some groups (an Attunement pick, for example) hold several consecutive entries that all
+ * activate, and contribute their hashes, as one unit rather than a single alternative per group.
+ */
+inline constexpr std::size_t kMaxAttunementBundleSize = 4;
+
 /** Authored state for one playable character slot. */
 struct CharacterState {
     std::uint64_t soid{};
@@ -75,6 +82,12 @@ struct CharacterState {
     std::uint32_t lastOrbitedDestination{};
     /** Server policy that arms content checks only with the matching family-5 flag. */
     bool contentBypass{};
+    /**
+     * Runtime-only socket entries the player has selected at least once. Selected entries still
+     * publish active; this mask keeps a later inactive entry acquired instead of new. Unverified:
+     * defaulted all-set, assuming the Client only allows clicking an already-acquired node.
+     */
+    std::uint64_t acquiredSubclassAbilityMask{~std::uint64_t{0}};
     /**
      * Socket-entry-list entry naming the movement ability this character has selected.
      * One subclass group holds several movement entries, and the selected one decides which

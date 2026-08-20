@@ -40,12 +40,17 @@ void subclass_selection(const state::CharacterState& character, SubclassSelectio
  * Only a list that carries a super lane belongs to a subclass, so every other item keeps its
  * absent and ready states and publishes no selector.
  * @param definition Installed socket-entry-list mapping.
+ * @param acquiredSubclassAbilityMask Per-entry bit mask of entries the player has selected at
+ *        least once (the character's runtime field, all-set by default). A readyMask entry whose
+ *        bit is set resolves to acquired (0x11) instead of ready (0x10) — the upstream contract:
+ *        a fully unlocked tree ships acquired/active, never the purple ready state.
  * @param character Authored character carrying its class and every ability choice.
  * @param output Receives the state of every fixed lane.
  * @param selectors Receives the selector lane of every semantic bucket.
  */
 void resolve_socket_states(
     const state::build_data::socket_entry_lists::Definition& definition,
+    std::uint64_t acquiredSubclassAbilityMask,
     const state::CharacterState& character,
     std::array<instance::SocketEntryState, instance::layout::kSocketEntryStateCapacity>& output,
     std::array<instance::SocketSelector, kSelectorBucketCount>& selectors) noexcept;

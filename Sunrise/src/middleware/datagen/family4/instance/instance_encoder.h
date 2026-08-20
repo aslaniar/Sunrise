@@ -16,6 +16,13 @@ enum class SocketEntryState : std::uint8_t {
     absent = 0,
     /** The entry exists but has not received a runtime selection. */
     ready = 16,
+    /**
+     * The entry was selected at least once but is currently inactive — the upstream's
+     * middle tier between ready and active. The Client renders ready (0x10) purple
+     * ("ready to unlock") and acquired (0x11) colorless, so a fully unlocked subclass
+     * tree ships acquired, never ready.
+     */
+    acquired = 17,
     /** The character has selected this entry, or it is the super lane. */
     active = 18,
 };
