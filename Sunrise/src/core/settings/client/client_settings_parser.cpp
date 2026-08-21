@@ -17,6 +17,7 @@ bool Parser::client_settings(client::Settings& output) noexcept {
     bool hasGraphicsProbe = false;
     bool hasGraphicsProbeWarp = false;
     bool hasRendererHudAlways = false;
+    bool hasRendererEnabled = false;
     bool hasHoldSpawn = false;
     bool hasSpawnHoldMs = false;
     if (consume('}')) {
@@ -72,6 +73,11 @@ bool Parser::client_settings(client::Settings& output) noexcept {
                 return false;
             }
             hasRendererHudAlways = true;
+        } else if (key == "renderer_enabled") {
+            if (hasRendererEnabled || !boolean(candidate.rendererEnabled)) {
+                return false;
+            }
+            hasRendererEnabled = true;
         } else if (key == "hold_spawn") {
             if (hasHoldSpawn || !boolean(candidate.holdSpawn)) {
                 return false;

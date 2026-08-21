@@ -9,6 +9,7 @@
 #include "../../cursor/runtime.h"
 #include "../../polled_input/runtime.h"
 #include "../input/input.h"
+#include "../../../../core/settings/settings.h"
 #include "graphics_renderer_report.h"
 #include "state.h"
 
@@ -291,6 +292,10 @@ bool active() noexcept {
 /** Picks one usable swap chain and draws the UI frame on it. */
 void present(IDXGISwapChain* swapChain) noexcept {
     AcquireSRWLockExclusive(&g_rendererLock);
+    if (!core::settings::get().client.rendererEnabled) {
+        ReleaseSRWLockExclusive(&g_rendererLock);
+        return;
+    }
     if (g_resources.swapChain != nullptr && g_resources.swapChain != swapChain
         && g_resources.activeSurfaceChanges == 0
         && selection::matches_output_window(swapChain, g_resources.window)) {

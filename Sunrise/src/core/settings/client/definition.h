@@ -57,6 +57,13 @@ struct Settings {
      */
     bool rendererHudAlways{true};
     /**
+     * Initializes the overlay renderer at all (ImGui backends, render target,
+     * window input). Off, the swapchain trio installs but no renderer state
+     * is ever created - the discriminator for init-time resource churn racing
+     * the game's first world-frame pipelines.
+     */
+    bool rendererEnabled{true};
+    /**
      * Pins the participation record to the replicated snapshot at `comp + 496`.
      * Off, the record is the local one at `comp + 1256`, whose spawn-gate byte no wire field
      * reaches.
