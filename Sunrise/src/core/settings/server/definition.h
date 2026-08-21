@@ -31,7 +31,7 @@ struct Settings {
     /** HTTPS listener port. 443 is forced by the Client's scheme-preserving URL rewrite. */
     std::uint16_t httpsPort{kDefaultHttpsPort};
     /** 16 content-id bytes as uppercase or lowercase hex text. Published into State at boot. */
-    std::array<char, kBootstrapTokenCapacity> bootstrapToken{"324D466958746F37416941554E34516A"};
+    std::array<char, kBootstrapTokenCapacity> bootstrapToken{"00000000000000000000000000000000"};
     /** Optional served ContentConfig id. Empty serves the State fingerprint id. */
     std::array<char, kConfigGuidCapacity> configGuid{};
     /** Optional installed-packages directory. Empty resolves `<exe>\packages`. */
