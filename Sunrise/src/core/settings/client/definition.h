@@ -36,6 +36,13 @@ struct Settings {
      */
     bool regionPrivate{false};
     /**
+     * Runs the graphics target-discovery probe at attach (a real D3D11 device +
+     * swapchain created purely to read the swapchain vtable). The probe's costs
+     * are throwaway on a native driver but NOT on a translation layer (DXMT on
+     * macOS shares process-wide Metal state with the game); skip it there.
+     */
+    bool graphicsProbe{true};
+    /**
      * Pins the participation record to the replicated snapshot at `comp + 496`.
      * Off, the record is the local one at `comp + 1256`, whose spawn-gate byte no wire field
      * reaches.

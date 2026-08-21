@@ -4,6 +4,7 @@
 #include <string_view>
 
 #include "../../../../core/logging/log.h"
+#include "../../../../core/settings/settings.h"
 #include "../graphics_hook_replacements.h"
 
 namespace sunrise::client::hooks::graphics {
@@ -184,6 +185,12 @@ namespace discovery {
 /** Finds the system DXGI targets and keeps no temporary swap chain. */
 bool resolve(Targets& output) noexcept {
     output = {};
+    if (!core::settings::get().client.graphicsProbe) {
+        core::log::write(core::log::Channel::client,
+                         core::log::Level::info,
+                         "ev=graphics stage=probe result=skipped reason=switch");
+        return false;
+    }
     HMODULE dxgiModule = LoadLibraryExW(L"dxgi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     HMODULE d3d11Module = LoadLibraryExW(L"d3d11.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (dxgiModule == nullptr || d3d11Module == nullptr) {
