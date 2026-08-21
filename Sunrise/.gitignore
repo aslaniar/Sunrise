@@ -1,0 +1,23 @@
+# Build outputs (per-machine, never committed)
+build*/
+x64/
+Debug/
+Release/
+.vs/
+*.user
+CMakeCache.txt
+CMakeFiles/
+
+# Runtime artifacts (machine-local)
+*.log
+*.db
+*.db-wal
+*.db-shm
+*.exe
+*.dll
+*.pdb
+*.obj
+*.ilk
+*.pch
+cache/
+logs/
