@@ -35,7 +35,7 @@ bool initialize() noexcept {
         // the port is already owned" above assumed - observed instead: it silently succeeds,
         // and the Client's own loopback connect steals the local listener instead of reaching
         // the external server. The switch gates the bind itself rather than relying on that.
-        const bool hostLocally = !external_server::enabled();
+        const bool hostLocally = !client::hooks::external_server::enabled();
         if (hostLocally && !transport::initialize()) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::warn,
@@ -75,7 +75,7 @@ void shutdown() noexcept {
     bap::shutdown();
 #else
     ui::runtime::shutdown();
-    if (!external_server::enabled()) {
+    if (!client::hooks::external_server::enabled()) {
         gameplay::shutdown();
         transport::shutdown();
     }
