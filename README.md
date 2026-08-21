@@ -121,6 +121,14 @@ Sunrise is not:
 Everyone needs to provide their own copy of the game, no piracy is happening. The mod does not
 connect to any servers, it runs completely locally. We do not offer any servers or services.
 
+## Server deployment
+
+This mod runs its own private server. The server and the client must share one
+`bootstrap_token` value (it seeds the Sign-On envelope wrap keys): set the
+same token in both sides' `settings.json`, under `server.bootstrap_token`.
+The compiled default is a placeholder (`0000...`) on purpose - pick your own
+with e.g. `python -c "import secrets; print(secrets.token_hex(16))"`.
+
 ## Legal Disclaimer
 
 This project is not for profit. It does not affect live servers or newer versions of the game where
