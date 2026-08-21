@@ -8,9 +8,11 @@
 #include <cstdio>
 #include <limits>
 #include <span>
+#include <string_view>
 
 #include "../../core/logging/log.h"
 #include "../../core/settings/settings.h"
+#include "../../middleware/crypto/hmac.h"
 #include "../activity/defaults/activity_defaults_validation.h"
 #include "../build_data/runtime.h"
 #include "equipment/configured_equipment_identity.h"
@@ -26,6 +28,8 @@ SRWLOCK g_stateLock{SRWLOCK_INIT};
 
 } // namespace runtime::storage
 
+namespace hmac = middleware::crypto::hmac;
+
 namespace {
 
 /** Network-order IPv4 loopback returned by the in-process SignOn route. */
@@ -35,6 +39,92 @@ constexpr std::uint32_t kDefaultTokenLifetimeSeconds = 3600;
 /** Family 5 uses the largest signed 64-bit value as its process-global object key. */
 constexpr std::uint64_t kGlobalFamily5Soid =
     static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::max)());
+/** The configured bootstrap token is 32 hex characters wrapping 16 raw bytes. */
+constexpr std::size_t kBootstrapTokenBytes = 16;
+
+/**
+ * Converts one ASCII hex digit to its 4-bit value.
+ * @param digit Input character.
+ * @param value Receives the decoded nibble.
+ * @return True for a valid hex digit.
+ */
+[[nodiscard]] bool hex_nibble(char digit, unsigned int& value) noexcept {
+    if (digit >= '0' && digit <= '9') {
+        value = static_cast<unsigned int>(digit - '0');
+        return true;
+    }
+    if (digit >= 'A' && digit <= 'F') {
+        value = static_cast<unsigned int>(digit - 'A') + 10;
+        return true;
+    }
+    if (digit >= 'a' && digit <= 'f') {
+        value = static_cast<unsigned int>(digit - 'a') + 10;
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Decodes the configured 32-hex-character bootstrap token into 16 raw bytes.
+ * @param output Receives the decoded token.
+ * @return True when the configured text is exactly 32 valid hex characters.
+ */
+[[nodiscard]] bool decode_bootstrap_token(std::array<std::byte, kBootstrapTokenBytes>& output) noexcept {
+    const std::string_view text(core::settings::get().server.bootstrapToken.data());
+    if (text.size() != output.size() * 2) {
+        return false;
+    }
+    for (std::size_t index = 0; index < output.size(); ++index) {
+        unsigned int high = 0;
+        unsigned int low = 0;
+        if (!hex_nibble(text[index * 2], high) || !hex_nibble(text[index * 2 + 1], low)) {
+            return false;
+        }
+        output[index] = static_cast<std::byte>((high << 4) | low);
+    }
+    return true;
+}
+
+/**
+ * Derives the SignOn envelope-wrap keys from the configured bootstrap token, so every process
+ * that shares the setting derives the identical pair. The Standalone server and the Client's
+ * own in-process SignOn responder are separate processes with no live handshake of their own -
+ * these two keys are what lets either one's server-hello envelope decrypt correctly for the
+ * other. The nonce and session key the envelope wraps stay independently random per boot (the
+ * Client learns them by decrypting it); only the wrap keys themselves need to match.
+ * @param signOn Receives the derived encryptionKey and authenticationKey.
+ * @return True when the token is configured as valid hex and both derivations succeed.
+ */
+[[nodiscard]] bool derive_envelope_wrap_keys(SignOnState& signOn) noexcept {
+    std::array<std::byte, kBootstrapTokenBytes> token{};
+    if (!decode_bootstrap_token(token)) {
+        return false;
+    }
+    constexpr std::string_view kEncryptionLabel = "sunrise-signon-encryption-key";
+    constexpr std::string_view kAuthenticationLabel = "sunrise-signon-authentication-key";
+    const auto encryptionLabel =
+        std::as_bytes(std::span<const char>(kEncryptionLabel.data(), kEncryptionLabel.size()));
+    const auto authenticationLabel =
+        std::as_bytes(std::span<const char>(kAuthenticationLabel.data(), kAuthenticationLabel.size()));
+    hmac::Digest encryptionDigest{};
+    hmac::Digest authenticationDigest{};
+    const bool derived =
+        hmac::authenticate(
+            hmac::Algorithm::sha256, token, encryptionLabel, {}, encryptionDigest)
+        && hmac::authenticate(
+            hmac::Algorithm::sha256, token, authenticationLabel, {}, authenticationDigest);
+    SecureZeroMemory(token.data(), token.size());
+    if (!derived) {
+        return false;
+    }
+    std::copy_n(
+        encryptionDigest.bytes.begin(), signOn.encryptionKey.size(), signOn.encryptionKey.begin());
+    std::copy_n(authenticationDigest.bytes.begin(),
+               signOn.authenticationKey.size(),
+               signOn.authenticationKey.begin());
+    return true;
+}
+
 /**
  * Fills fixed secret storage with Windows system randomness.
  * @tparam Size Required secret byte count.
@@ -138,8 +228,7 @@ bool initialize(void* module,
         }
     }
     State initialized{};
-    if (!randomize(initialized.signOn.encryptionKey)
-        || !randomize(initialized.signOn.authenticationKey)
+    if (!derive_envelope_wrap_keys(initialized.signOn)
         || !randomize(initialized.signOn.sessionToken) || !randomize(initialized.bap.nonce)
         || !randomize(initialized.bap.sessionKey) || !randomize(initialized.bap.envelopeIv)) {
         SecureZeroMemory(&initialized, sizeof initialized);

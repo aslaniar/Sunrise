@@ -201,16 +201,14 @@ void clear_game_targets() noexcept {
     // so every server push the client decodes is named. Internal no-op while externalServer
     // is disabled.
     (void)hooks::handle_message::install();
-    // The inventory gate observers: log-only detours on the acquiredFlags byte test, the
-    // opcode-2100 ability emitter, and the 702 sync-header serializer, capturing the
-    // caller RVAs that name the un-analyzed CUI gate chain and the definition-hash slots
-    // for the mode-pair diff. They attach in BOTH modes (in-process and external).
-    (void)hooks::ability_gate::install();
-    // The round-2 gate-trace observers: log-only detours on the character-bank byte test,
-    // the family-4 kind-0 diff-apply (the rollback executor), and the acquire-flag writer
-    // — the flag-map campaign's runtime foundation (the per-scope census + the swap's
-    // gate-check footprint). Attach in BOTH modes, like the ability_gate family.
-    (void)hooks::gate_trace::install();
+    // The inventory gate observers (ability_gate) and the round-2 gate-trace observers
+    // (gate_trace): log-only research instrumentation for the flag-map/veteran-hunt
+    // investigation, no gameplay effect. Left uninstalled by default (2026-08-21) - they
+    // fire on hot per-tick engine paths and logged 20k+ lines a boot, which was the
+    // dominant cost in several multi-second launch stalls once file_sink was on. Re-enable
+    // (uncomment both installs) only when actually resuming that investigation.
+    // (void)hooks::ability_gate::install();
+    // (void)hooks::gate_trace::install();
     // The R1 schema-hash close: log-only observer on the schema-decode entry, so the
     // client's own player-baseline decode prints the real schemaTagHash (the
     // world_population_schema_hash knob value). Internal no-op while externalServer is

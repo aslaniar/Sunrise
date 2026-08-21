@@ -7,6 +7,7 @@
 #include "../http/server_http.h"
 #include "../transport/bap_listener.h"
 #if !defined(SUNRISE_STANDALONE_SERVER)
+#include "../../client/hooks/external_server/route.h"
 #include "../ui/runtime/server_ui_module_runtime.h"
 #endif
 
@@ -29,14 +30,19 @@ bool initialize() noexcept {
         return false;
     }
     if (client::network::register_bap_consumer(&bap::consume)) {
-        // HTTP and UI remain useful when the local BAP port is already owned.
-        if (!transport::initialize()) {
+        // External mode: the standalone server already owns BAP/gameplay on these ports.
+        // A second local bind does not reliably fail the way "HTTP and UI remain useful when
+        // the port is already owned" above assumed - observed instead: it silently succeeds,
+        // and the Client's own loopback connect steals the local listener instead of reaching
+        // the external server. The switch gates the bind itself rather than relying on that.
+        const bool hostLocally = !client::hooks::external_server::enabled();
+        if (hostLocally && !transport::initialize()) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::warn,
                              "ev=transport stage=listen result=fail");
         }
         // The gameplay endpoint must bind before any descriptor advertises it.
-        if (!gameplay::initialize()) {
+        if (hostLocally && !gameplay::initialize()) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::warn,
                              "ev=gameplay stage=init result=fail");
@@ -44,8 +50,10 @@ bool initialize() noexcept {
         if (ui::runtime::initialize()) {
             return true;
         }
-        gameplay::shutdown();
-        transport::shutdown();
+        if (hostLocally) {
+            gameplay::shutdown();
+            transport::shutdown();
+        }
         client::network::unregister_bap_consumer(&bap::consume);
     }
     // BAP registration failure rolls back the earlier HTTP registration.
@@ -67,8 +75,10 @@ void shutdown() noexcept {
     bap::shutdown();
 #else
     ui::runtime::shutdown();
-    gameplay::shutdown();
-    transport::shutdown();
+    if (!client::hooks::external_server::enabled()) {
+        gameplay::shutdown();
+        transport::shutdown();
+    }
     client::network::unregister_bap_consumer(&bap::consume);
     client::network::unregister_http_consumer(&http::consume);
     bap::shutdown();

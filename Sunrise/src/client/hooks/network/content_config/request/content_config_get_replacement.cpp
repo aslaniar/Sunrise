@@ -29,8 +29,6 @@ constexpr LONG kHttpUnavailable = 503;
 constexpr std::int64_t kMissingResult = -1;
 /** 1 means the async request was taken and finished locally. */
 constexpr std::int64_t kCompletedResult = 1;
-/** One extra byte to read, which proves the URL ends right after the route. */
-constexpr std::size_t kUrlInspectionCapacity = kLocalUrl.size() + 1;
 
 /** The exact result prefix the allocated-buffer GET completion reader uses. */
 struct HttpRequestResult final {
@@ -78,13 +76,21 @@ void complete_request(HttpRequestResult& result, LONG status, std::size_t size) 
     InterlockedExchange(&result.pending, 0);
 }
 
-/** @param url Candidate request URL. @return True only for the exact local route. */
-[[nodiscard]] bool is_local_url(const char* url) noexcept {
+/**
+ * Hybrid route check: the config-manifest request in external mode arrives as the
+ * configured external config URL itself (the getter answers it), not the local scheme.
+ * @param url Candidate request URL. @return True for the local scheme or the configured external form.
+ */
+[[nodiscard]] bool is_manifest_url(const char* url) noexcept {
     if (url == nullptr) {
         return false;
     }
-    const std::size_t length = strnlen_s(url, kUrlInspectionCapacity);
-    return length == kLocalUrl.size() && std::string_view(url, length) == kLocalUrl;
+    const std::string_view value(url, strnlen_s(url, 128));
+    if (value == kLocalUrl) {
+        return true;
+    }
+    const std::string_view configured(core::settings::get().client.externalServer.configUrl.data());
+    return !configured.empty() && value == configured;
 }
 
 /**
@@ -156,8 +162,9 @@ std::int64_t enqueue_get_impl(const coordinator::CallLease& lease,
                               std::uint64_t transaction,
                               char flagA,
                               char useTls) noexcept {
-    if (core::settings::get().client.externalServer.enabled) {
-        // The URL comes from the config getter, which answers the external route in this mode.
+    if (core::settings::get().client.externalServer.enabled && !is_manifest_url(url)) {
+        // Non-manifest routes stay external (SignOn and the content GETs) - the expected
+        // TLS residue of phase 2. The manifest route itself is answered in-process below.
         const auto call = reinterpret_cast<EnqueueGet>(lease.original);
         if (call == nullptr) {
             core::log::write(core::log::Channel::client,
@@ -179,7 +186,11 @@ std::int64_t enqueue_get_impl(const coordinator::CallLease& lease,
 
     auto& result = *static_cast<HttpRequestResult*>(resultValue);
     begin_request(result);
-    if (!lease.accepting || !is_local_url(url) || responseCapacity < 0
+    // is_manifest_url, not is_local_url: this gate has to accept the same two forms the
+    // routing check above does. The narrower is_local_url only ever matched the embedded-mode
+    // marker, so the external configUrl form fell through to the empty-success arm below on
+    // every hybrid-mode fetch (observed: route=unmapped instead of the real manifest).
+    if (!lease.accepting || !is_manifest_url(url) || responseCapacity < 0
         || (responseCapacity != 0 && responseBody == nullptr)) {
         // An unmapped route finishes here with an empty success. It never goes outbound.
         log_unmapped(url);
