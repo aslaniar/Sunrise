@@ -43,6 +43,13 @@ struct Settings {
      */
     bool graphicsProbe{true};
     /**
+     * Runs the target-discovery probe on the WARP (software) driver instead of the
+     * hardware adapter. Same attach timing, no hardware/translation-layer state
+     * touched - the discriminator for DXMT-churn crashes, and a safe permanent
+     * fallback where the swapchain trio is unused (no overlay rendering wanted).
+     */
+    bool graphicsProbeWarp{false};
+    /**
      * Pins the participation record to the replicated snapshot at `comp + 496`.
      * Off, the record is the local one at `comp + 1256`, whose spawn-gate byte no wire field
      * reaches.

@@ -82,6 +82,11 @@ constexpr std::array<Attempt, 3> kAttempts{
     Attempt{D3D_DRIVER_TYPE_WARP, true, "warp"},
 };
 
+/** WARP-only attempt set: same attach timing, no hardware/translation state touched. */
+constexpr std::array<Attempt, 1> kWarpAttempts{
+    Attempt{D3D_DRIVER_TYPE_WARP, true, "warp"},
+};
+
 /** @param level Level the probe device reached. @param name Attempt that created it. */
 void report_probe(std::string_view name, D3D_FEATURE_LEVEL level) noexcept {
     std::array<char, 96> line{};
@@ -136,7 +141,9 @@ void report_probe(std::string_view name, D3D_FEATURE_LEVEL level) noexcept {
     description.Windowed = TRUE;
     description.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
 
-    for (const Attempt& attempt : kAttempts) {
+    for (const Attempt& attempt : (core::settings::get().client.graphicsProbeWarp
+                                       ? std::span<const Attempt>{kWarpAttempts}
+                                       : std::span<const Attempt>{kAttempts})) {
         D3D_FEATURE_LEVEL level{};
         const HRESULT result =
             create(nullptr,

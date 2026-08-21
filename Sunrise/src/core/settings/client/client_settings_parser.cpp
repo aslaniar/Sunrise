@@ -15,6 +15,7 @@ bool Parser::client_settings(client::Settings& output) noexcept {
     bool hasRegionPrivate = false;
     bool hasPinReplicatedRecord = false;
     bool hasGraphicsProbe = false;
+    bool hasGraphicsProbeWarp = false;
     bool hasHoldSpawn = false;
     bool hasSpawnHoldMs = false;
     if (consume('}')) {
@@ -60,6 +61,11 @@ bool Parser::client_settings(client::Settings& output) noexcept {
                 return false;
             }
             hasGraphicsProbe = true;
+        } else if (key == "graphics_probe_warp") {
+            if (hasGraphicsProbeWarp || !boolean(candidate.graphicsProbeWarp)) {
+                return false;
+            }
+            hasGraphicsProbeWarp = true;
         } else if (key == "hold_spawn") {
             if (hasHoldSpawn || !boolean(candidate.holdSpawn)) {
                 return false;
