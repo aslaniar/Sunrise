@@ -16,6 +16,7 @@ bool Parser::client_settings(client::Settings& output) noexcept {
     bool hasPinReplicatedRecord = false;
     bool hasGraphicsProbe = false;
     bool hasGraphicsProbeWarp = false;
+    bool hasRendererHudAlways = false;
     bool hasHoldSpawn = false;
     bool hasSpawnHoldMs = false;
     if (consume('}')) {
@@ -66,6 +67,11 @@ bool Parser::client_settings(client::Settings& output) noexcept {
                 return false;
             }
             hasGraphicsProbeWarp = true;
+        } else if (key == "renderer_hud_always") {
+            if (hasRendererHudAlways || !boolean(candidate.rendererHudAlways)) {
+                return false;
+            }
+            hasRendererHudAlways = true;
         } else if (key == "hold_spawn") {
             if (hasHoldSpawn || !boolean(candidate.holdSpawn)) {
                 return false;

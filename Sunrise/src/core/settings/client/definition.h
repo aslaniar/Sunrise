@@ -50,6 +50,13 @@ struct Settings {
      */
     bool graphicsProbeWarp{false};
     /**
+     * Draws the always-on HUD overlays (logo, status lines) even while the Core
+     * surface is closed. Off, the surfaces draw only while the menu is open or
+     * a busy/notice overlay is active - the discriminator for renderer-frame
+     * interference with the game's per-frame world draws.
+     */
+    bool rendererHudAlways{true};
+    /**
      * Pins the participation record to the replicated snapshot at `comp + 496`.
      * Off, the record is the local one at `comp + 1256`, whose spawn-gate byte no wire field
      * reaches.

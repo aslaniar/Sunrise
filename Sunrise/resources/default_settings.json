@@ -37,7 +37,8 @@
     "hold_spawn": true,
     "spawn_hold_ms": 30000,
     "graphics_probe": true,
-    "graphics_probe_warp": false
+    "graphics_probe_warp": false,
+    "renderer_hud_always": true
   },
   "server": {
     "bap_port": 30974,
