@@ -213,10 +213,15 @@ bool resolve(Targets& output) noexcept {
     void* present = methods[kPresentMethodIndex];
     void* resizeBuffers = methods[kResizeBuffersMethodIndex];
     void* setFullscreenState = methods[kSetFullscreenStateMethodIndex];
-    // Distinct entries prove the slots were read from a real vtable, not from a shared thunk.
-    const bool valid = executable_image_target(present, dxgiModule)
-                       && executable_image_target(resizeBuffers, dxgiModule)
-                       && executable_image_target(setFullscreenState, dxgiModule)
+    // A method slot belongs either to the system DXGI module or, under a translation layer
+    // like DXMT on macOS, to the loaded d3d11 module it was created from. Accept both: the
+    // distinctness check below still proves the slots came from a real vtable.
+    const bool valid = (executable_image_target(present, dxgiModule)
+                        || executable_image_target(present, d3d11Module))
+                       && (executable_image_target(resizeBuffers, dxgiModule)
+                           || executable_image_target(resizeBuffers, d3d11Module))
+                       && (executable_image_target(setFullscreenState, dxgiModule)
+                           || executable_image_target(setFullscreenState, d3d11Module))
                        && present != resizeBuffers && present != setFullscreenState
                        && resizeBuffers != setFullscreenState;
     release_probe(probe);
