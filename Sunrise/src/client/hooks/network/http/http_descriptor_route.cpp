@@ -6,14 +6,10 @@
 #include <string_view>
 
 #include "../../../../core/logging/log.h"
-#include "../../external_server/route.h"
 #include "internal.h"
 
 namespace sunrise::client::hooks::network::http {
 namespace {
-
-/** Exact ABI of the executor this replacement stands in for. */
-using ExecuteRequest = std::int64_t(__fastcall*)(void*, std::byte*) noexcept;
 
 /** Operation 2 selects the direct-buffer POST path. */
 constexpr std::uint32_t kPostOperation = 2;
@@ -87,33 +83,6 @@ template <std::size_t Capacity>
 }
 
 /**
- * Points the descriptor URL at the external server, and logs both forms.
- * @param url Writable inline URL field owned by the worker.
- */
-void redirect_url(std::array<char, kUrlCapacity>& url) noexcept {
-    std::array<char, kUrlCapacity> rewritten{};
-    const std::string_view original = bounded_string(url);
-    const std::size_t size = external_server::rewrite_host(original, rewritten);
-    std::array<char, 2 * kUrlCapacity> line{};
-    const int written = std::snprintf(line.data(),
-                                      line.size(),
-                                      "ev=http stage=external from=%.*s to=%.*s result=%s",
-                                      static_cast<int>(original.size()),
-                                      original.data(),
-                                      static_cast<int>(size),
-                                      rewritten.data(),
-                                      size != 0 ? "ok" : "unchanged");
-    if (written > 0) {
-        core::log::write(core::log::Channel::client,
-                         core::log::Level::debug,
-                         {line.data(), static_cast<std::size_t>(written)});
-    }
-    if (size != 0) {
-        url = rewritten;
-    }
-}
-
-/**
  * Finishes an unmapped route here with an empty success.
  * @param wrapper Game-owned HTTP wrapper.
  * @return The value that makes the worker skip the external HTTP operation.
@@ -131,20 +100,12 @@ void redirect_url(std::array<char, kUrlCapacity>& url) noexcept {
 std::int64_t route_descriptor(const coordinator::CallLease& lease,
                               void* wrapperValue,
                               std::byte* descriptorValue) noexcept {
-    if (external_server::enabled()) {
-        const auto call = reinterpret_cast<ExecuteRequest>(lease.original);
-        if (call == nullptr) {
-            core::log::write(core::log::Channel::client,
-                             core::log::Level::warn,
-                             "ev=http stage=external result=fail reason=original");
-            return kSkipNativeOperation;
-        }
-        if (descriptorValue != nullptr) {
-            auto& request = *reinterpret_cast<HttpRequestDescriptor*>(descriptorValue);
-            redirect_url(request.url);
-        }
-        return call(wrapperValue, descriptorValue);
-    }
+    // Hybrid mode: this executor never opens a TLS socket, in external mode or not. SignOn
+    // (and every other route reaching this generic descriptor path) is answered by the same
+    // in-process consumer embedded mode uses (http::consume, registered unconditionally by
+    // server::initialize()); a route it does not recognize (the SignOn-sourced content GETs)
+    // finishes as an unmapped 200-empty below so the Client proceeds on local packages. BAP
+    // is the only traffic that still leaves this process, over its own transport.
     if (wrapperValue == nullptr) {
         core::log::write(core::log::Channel::client,
                          core::log::Level::warn,
