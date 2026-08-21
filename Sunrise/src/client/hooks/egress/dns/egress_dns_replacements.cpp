@@ -27,7 +27,7 @@ constexpr DWORD kConflictingOptions = DNS_QUERY_BYPASS_CACHE | DNS_QUERY_NO_LOCA
  * @param extra Caller resolver state; a server list when present.
  * @return Options that can be answered locally.
  */
-[[nodiscard]] DWORD local_options(DWORD options, PVOID extra) noexcept {
+[[nodiscard]] DWORD local_options(DWORD options, const void* extra) noexcept {
     const DWORD cleared = options & ~kConflictingOptions;
     return extra != nullptr ? cleared : cleared | kLocalOnlyOptions;
 }
@@ -80,7 +80,7 @@ void clear_query_outputs(PDNS_RECORD* results, PVOID* reserved) noexcept {
 DNS_STATUS WINAPI query_a(PCSTR name,
                           WORD type,
                           DWORD options,
-                          PVOID extra,
+                          PIP4_ARRAY extra,
                           PDNS_RECORD* results,
                           PVOID* reserved) noexcept {
     const void* const caller = _ReturnAddress();
@@ -103,7 +103,7 @@ DNS_STATUS WINAPI query_a(PCSTR name,
 DNS_STATUS WINAPI query_w(PCWSTR name,
                           WORD type,
                           DWORD options,
-                          PVOID extra,
+                          PIP4_ARRAY extra,
                           PDNS_RECORD* results,
                           PVOID* reserved) noexcept {
     const void* const caller = _ReturnAddress();
@@ -126,7 +126,7 @@ DNS_STATUS WINAPI query_w(PCWSTR name,
 DNS_STATUS WINAPI query_utf8(PCSTR name,
                              WORD type,
                              DWORD options,
-                             PVOID extra,
+                             PIP4_ARRAY extra,
                              PDNS_RECORD* results,
                              PVOID* reserved) noexcept {
     const void* const caller = _ReturnAddress();

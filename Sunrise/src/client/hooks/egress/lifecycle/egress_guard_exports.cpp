@@ -46,6 +46,22 @@ __declspec(noinline) int WSAAPI absent_address_info_ex_a() noexcept {
     return kHostNotFound;
 }
 
+// GPTK wine 7.7 ws2_32 lacks WSAConnectByNameA/W (Proton-era wine has them). The guard
+// requires every hook up to DnsQueryRaw, so without these the egress install fails and
+// SteamAPI_Init returns false. Inert refusals mirror the ConnectByList/GetAddrInfoExA case.
+__declspec(noinline) int WSAAPI absent_connect_by_name_a() noexcept {
+    volatile int occupied = 0;
+    occupied += 1;
+    return kSocketError;
+}
+
+/** @return The refusal the real export would answer with. See absent_connect_by_name_a. */
+__declspec(noinline) int WSAAPI absent_connect_by_name_w() noexcept {
+    volatile int occupied = 0;
+    occupied += 1;
+    return kSocketError;
+}
+
 } // namespace
 
 /** Finds the whole Windows SDK egress surface for one atomic Detours batch. */
@@ -111,6 +127,10 @@ bool resolve_specs(std::span<hooking::detour::Spec, kHookCount> specs,
                 target = reinterpret_cast<void*>(&absent_connect_by_list);
             } else if (exportName == "GetAddrInfoExA") {
                 target = reinterpret_cast<void*>(&absent_address_info_ex_a);
+            } else if (exportName == "WSAConnectByNameA") {
+                target = reinterpret_cast<void*>(&absent_connect_by_name_a);
+            } else if (exportName == "WSAConnectByNameW") {
+                target = reinterpret_cast<void*>(&absent_connect_by_name_w);
             }
         }
 

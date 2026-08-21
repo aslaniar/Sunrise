@@ -6,5 +6,5 @@
 #include <WS2tcpip.h>
 #include <Windows.h>
 #include <MSWSock.h>
-#include <WinDNS.h>
+#include <windns_compat.h>
 // clang-format on

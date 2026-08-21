@@ -86,7 +86,7 @@ private:
 [[nodiscard]] bool bundled_sheet(const void*& bytes, DWORD& size) noexcept {
     const HMODULE module = owning_module();
     const HRSRC resource = module != nullptr
-                               ? FindResourceW(module, MAKEINTRESOURCEW(IDR_LOGO_SHEET), RT_RCDATA)
+                               ? FindResourceW(module, MAKEINTRESOURCEW(IDR_LOGO_SHEET), MAKEINTRESOURCEW(10))
                                : nullptr;
     if (resource == nullptr) {
         return false;
@@ -109,6 +109,8 @@ private:
  * @return True when the bitmap is decoded.
  */
 [[nodiscard]] bool decode_sheet(IWICImagingFactory* factory, IWICBitmap*& output) noexcept {
+    // MinGW's wincodec.h omits the SDK's WICInProcPointer typedef.
+    using WICInProcPointer = BYTE*;
     const void* bytes = nullptr;
     DWORD size = 0;
     if (!bundled_sheet(bytes, size)) {

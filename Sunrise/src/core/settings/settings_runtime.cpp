@@ -70,7 +70,7 @@ void report_version(std::uint32_t fileVersion) noexcept {
 [[nodiscard]] bool bundled_document(void* module, std::string_view& output) noexcept {
     const HMODULE loadedModule = static_cast<HMODULE>(module);
     const HRSRC resource =
-        FindResourceW(loadedModule, MAKEINTRESOURCEW(IDR_DEFAULT_SETTINGS), RT_RCDATA);
+        FindResourceW(loadedModule, MAKEINTRESOURCEW(IDR_DEFAULT_SETTINGS), MAKEINTRESOURCEW(10));
     if (resource == nullptr) {
         return false;
     }

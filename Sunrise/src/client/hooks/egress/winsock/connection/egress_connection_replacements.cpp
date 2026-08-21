@@ -52,8 +52,8 @@ int WSAAPI connect_socket_ex(SOCKET socket,
 
 /** Redirects every nonempty ANSI node to the IPv4 redirect literal. */
 BOOL PASCAL connect_by_name_a(SOCKET socket,
-                              LPCSTR nodeName,
-                              LPCSTR serviceName,
+                              LPSTR nodeName,
+                              LPSTR serviceName,
                               LPDWORD localAddressLength,
                               LPSOCKADDR localAddress,
                               LPDWORD remoteAddressLength,
@@ -68,7 +68,7 @@ BOOL PASCAL connect_by_name_a(SOCKET socket,
         return FALSE;
     }
     return call(socket,
-                resolver::redirect_host_a(),
+                const_cast<PSTR>(resolver::redirect_host_a()),
                 serviceName,
                 localAddressLength,
                 localAddress,
