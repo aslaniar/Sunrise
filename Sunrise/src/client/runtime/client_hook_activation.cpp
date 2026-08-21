@@ -1,6 +1,7 @@
 #include <Windows.h>
 
 #include <array>
+#include <cstdint>
 #include <cstdio>
 #include <span>
 #include <string_view>
@@ -19,9 +20,13 @@
 #include "../hooks/cursor/runtime.h"
 #include "../hooks/package_validator/package_validator_iv.h"
 #include "../hooks/graphics/graphics_hook_lifecycle.h"
+#include "../hooks/ability_gate/ability_gate_observer.h"
+#include "../hooks/gate_trace/gate_trace_observer.h"
 #include "../hooks/handle_message/handle_message_observer.h"
 #include "../hooks/schema_capture/schema_capture_observer.h"
 #include "../hooks/network/runtime.h"
+#include "../hooks/package_trust/package_trust_bypass.h"
+#include "../hooks/noclip/runtime.h"
 #include "../hooks/polled_input/runtime.h"
 #include "../hooks/queuez/queuez_hook_lifecycle.h"
 #include "../hooks/retail_log/retail_log_lifecycle.h"
@@ -104,6 +109,31 @@ void report_resolve_failure() noexcept {
         core::log::Channel::client, core::log::Level::error, std::string_view(line.data(), length));
 }
 
+/**
+ * Reports how long main activation took, for the debug channel only.
+ * Timing is diagnostic, so it never appears at the levels a normal run uses.
+ * @param event Event and phase text the duration is appended to.
+ * @param startedTick Tick count taken when activation began.
+ * @param result Outcome text for the log line.
+ */
+void report_elapsed(const char* event, std::uint64_t startedTick, const char* result) noexcept {
+    const std::uint64_t elapsed = GetTickCount64() - startedTick;
+    std::array<char, 96> line{};
+    const int written = std::snprintf(line.data(),
+                                      line.size(),
+                                      "%s ms=%llu result=%s",
+                                      event,
+                                      static_cast<unsigned long long>(elapsed),
+                                      result);
+    if (written <= 0) {
+        return;
+    }
+    const auto length = static_cast<std::size_t>(written) < line.size()
+                            ? static_cast<std::size_t>(written)
+                            : line.size() - 1;
+    core::log::write(core::log::Channel::client, core::log::Level::debug, {line.data(), length});
+}
+
 /** Clears both main-image target groups while no game hook owns their entries. */
 void clear_game_targets() noexcept {
     targets::game::content::clear();
@@ -128,9 +158,16 @@ void clear_game_targets() noexcept {
         report_resolve_failure();
         return false;
     }
+    // Steam initialization installs package trust before base-package registration. Keep this
+    // idempotent check beside the other main-image hooks so activation also verifies ownership.
+    if (!hooks::package_trust::install()) {
+        clear_game_targets();
+        return false;
+    }
     // The SignOn config blob carries this token. It must reach State before any hook owns the
     // resolved targets: extraction cannot recover from a missing bootstrap token.
     if (!content::bootstrap::publish_token()) {
+        (void)hooks::package_trust::uninstall();
         clear_game_targets();
         return false;
     }
@@ -139,6 +176,7 @@ void clear_game_targets() noexcept {
                          core::log::Level::error,
                          "ev=activate stage=game_network result=fail");
         if (!hooks::network::has_game_ownership()) {
+            (void)hooks::package_trust::uninstall();
             clear_game_targets();
         }
         return false;
@@ -163,6 +201,14 @@ void clear_game_targets() noexcept {
     // so every server push the client decodes is named. Internal no-op while externalServer
     // is disabled.
     (void)hooks::handle_message::install();
+    // The inventory gate observers (ability_gate) and the round-2 gate-trace observers
+    // (gate_trace): log-only research instrumentation for the flag-map/veteran-hunt
+    // investigation, no gameplay effect. Left uninstalled by default (2026-08-21) - they
+    // fire on hot per-tick engine paths and logged 20k+ lines a boot, which was the
+    // dominant cost in several multi-second launch stalls once file_sink was on. Re-enable
+    // (uncomment both installs) only when actually resuming that investigation.
+    // (void)hooks::ability_gate::install();
+    // (void)hooks::gate_trace::install();
     // The R1 schema-hash close: log-only observer on the schema-decode entry, so the
     // client's own player-baseline decode prints the real schemaTagHash (the
     // world_population_schema_hash knob value). Internal no-op while externalServer is
@@ -173,6 +219,8 @@ void clear_game_targets() noexcept {
     // The teleport hooks attach whether or not the feature is on, so the interface can enable it
     // without a restart. Both replacements return immediately while nothing is requested.
     (void)hooks::teleport::install();
+    // Noclip owns its Havok-step target, so a patch-specific miss cannot disable teleport.
+    (void)hooks::noclip::install();
     (void)hooks::queuez::install();
     // The bitmap reference guard puts the none sentinel in place of a reference outside tag
     // space. Without it the widget's stored-reference reader faults.
@@ -198,10 +246,19 @@ bool activate_main_once() noexcept {
         ReleaseSRWLockExclusive(&runtime::g_lock);
         return active;
     }
+    // The image sweep dominates this call, so the pair of debug markers around it is what a
+    // boot-time measurement reads. Both are diagnostic and stay off at the usual levels.
+    core::log::write(
+        core::log::Channel::client, core::log::Level::debug, "ev=activate stage=main phase=begin");
     // The sweep stalls whichever thread calls it, so the overlay says what is happening. It
     // only reaches the screen once the presentation hooks are installed.
     core::ui::busy::begin(core::ui::busy::Task::initialization);
+    // Started after the overlay is up, because begin blocks for up to half a second waiting on
+    // presents. That wait belongs to the overlay, not to the work being measured.
+    const std::uint64_t startedTick = GetTickCount64();
     const bool active = runtime::activate_required_main_locked();
+    runtime::report_elapsed(
+        "ev=activate stage=main phase=complete", startedTick, active ? "ok" : "fail");
     core::ui::busy::end(core::ui::busy::Task::initialization);
     if (!active) {
         // A failed sweep latches too: repeating it stalls the frame loop for nothing.
