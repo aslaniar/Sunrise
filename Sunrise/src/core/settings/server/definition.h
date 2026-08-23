@@ -49,6 +49,13 @@ struct Settings {
     /** Optional decoded-content directory for the S1-3 oracle swap. Empty resolves `<exe>\content`. */
     std::array<wchar_t, kPathCapacity> contentDir{};
     /**
+     * Optional path to the CLIENT's own log file, so the dashboard can show it.
+     * The client channel is written by the mod DLL in the game process, which keeps a
+     * separate ring this process cannot reach; reading the file is the only way to
+     * surface those lines here. Empty disables the /clientlog route.
+     */
+    std::array<wchar_t, kPathCapacity> clientLogPath{};
+    /**
      * S2-0 probe switch: after the join burst, emit ONE static vendor baseline (the
      * type-7 sobject_message carrier with Commander Zavala at his Tower spot) plus a
      * patch-epoch bump. Default OFF: the schemaTagHash row is still an open R1 item

@@ -733,6 +733,240 @@ void handle_repush(SOCKET client) noexcept {
             {body, static_cast<std::size_t>(written)});
 }
 
+/** Bytes of the client log's tail read for one request. */
+constexpr std::size_t kClientLogTailBytes = 262144;
+/** Rows returned when the caller names no count. */
+constexpr std::uint32_t kClientLogDefault = 400;
+/** Upper bound on rows one request may return. */
+constexpr std::uint32_t kClientLogMaximum = 2000;
+
+/** @return True when needle occurs in haystack, compared without case. */
+bool contains_nocase(std::string_view haystack, std::string_view needle) noexcept {
+    if (needle.empty()) {
+        return true;
+    }
+    if (needle.size() > haystack.size()) {
+        return false;
+    }
+    const auto lower = [](char c) noexcept {
+        return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+    };
+    for (std::size_t start = 0; start + needle.size() <= haystack.size(); ++start) {
+        std::size_t index = 0;
+        while (index < needle.size()
+               && lower(haystack[start + index]) == lower(needle[index])) {
+            ++index;
+        }
+        if (index == needle.size()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * GET /clientlog - the CLIENT process's own log tail.
+ * The client channel is written by the mod DLL inside the game process, which keeps a
+ * separate in-memory ring this process cannot reach. Reading its log FILE is the only
+ * way to surface those lines on the dashboard, so this route exists beside /events
+ * rather than inside it: different source, no shared sequence space.
+ */
+void handle_client_log(SOCKET client, std::string_view query) noexcept {
+    const auto& configured = core::settings::get().server.clientLogPath;
+    if (configured[0] == L'\0') {
+        respond(client, "200 OK", "application/json",
+                "{\"ok\":false,\"reason\":\"server.client_log_path is not set\","
+                "\"rows\":[],\"emitted\":0}");
+        return;
+    }
+    const std::uint32_t limit = query_number(query, "limit", kClientLogDefault);
+    const std::uint32_t pageLimit = (std::min)(limit, kClientLogMaximum);
+
+    const std::string_view channelName = query_value(query, "channel");
+    const std::string_view levelName = query_value(query, "level");
+    std::size_t wantChannel = std::size(kChannelNames);
+    std::size_t wantLevel = std::size(kLevelNames);
+    if (!channelName.empty() && channelName != "all") {
+        wantChannel = channel_index(channelName);
+        if (wantChannel == std::size(kChannelNames)) {
+            respond(client, "400 Bad Request", "application/json",
+                    "{\"ok\":false,\"reason\":\"unknown channel\"}");
+            return;
+        }
+    }
+    if (!levelName.empty() && levelName != "all") {
+        wantLevel = level_index(levelName);
+        if (wantLevel == std::size(kLevelNames)) {
+            respond(client, "400 Bad Request", "application/json",
+                    "{\"ok\":false,\"reason\":\"unknown level\"}");
+            return;
+        }
+    }
+    std::array<char, core::log::view::kTextFilterCapacity> textQuery{};
+    const std::size_t textLength = decode_query_text(query_value(query, "text"), textQuery);
+    const std::string_view wantText{textQuery.data(), textLength};
+
+    // FILE_SHARE_WRITE matters: the game process holds this file open and is actively
+    // appending to it. Without it the open fails while the client is running - exactly
+    // when the dashboard is most useful.
+    const HANDLE file = CreateFileW(configured.data(),
+                                    GENERIC_READ,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                    nullptr,
+                                    OPEN_EXISTING,
+                                    FILE_ATTRIBUTE_NORMAL,
+                                    nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        respond(client, "200 OK", "application/json",
+                "{\"ok\":false,\"reason\":\"client log not readable\",\"rows\":[],"
+                "\"emitted\":0}");
+        return;
+    }
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(file, &size)) {
+        (void)CloseHandle(file);
+        respond(client, "200 OK", "application/json",
+                "{\"ok\":false,\"reason\":\"client log size unavailable\",\"rows\":[],"
+                "\"emitted\":0}");
+        return;
+    }
+    const auto total = static_cast<unsigned long long>(size.QuadPart);
+    const auto tailBytes = static_cast<unsigned long long>(kClientLogTailBytes);
+    const unsigned long long start = total > tailBytes ? total - tailBytes : 0;
+    LARGE_INTEGER move{};
+    move.QuadPart = static_cast<LONGLONG>(start);
+    (void)SetFilePointerEx(file, move, nullptr, FILE_BEGIN);
+    static thread_local char tail[kClientLogTailBytes];
+    DWORD read = 0;
+    const BOOL readOk = ReadFile(file, tail, static_cast<DWORD>(sizeof tail), &read, nullptr);
+    (void)CloseHandle(file);
+    if (!readOk) {
+        respond(client, "200 OK", "application/json",
+                "{\"ok\":false,\"reason\":\"client log read failed\",\"rows\":[],"
+                "\"emitted\":0}");
+        return;
+    }
+    std::string_view body{tail, read};
+    if (start != 0) {
+        // The seek landed mid-line; drop the partial head so no row is malformed.
+        const std::size_t newline = body.find('\n');
+        body = newline == std::string_view::npos ? std::string_view{}
+                                                 : body.substr(newline + 1);
+    }
+
+    // Collect the matching lines, keeping only the newest pageLimit of them.
+    static thread_local std::string_view matched[kClientLogMaximum];
+    std::size_t matchCount = 0;
+    std::size_t oldest = 0;
+    std::size_t scanned = 0;
+    while (!body.empty()) {
+        const std::size_t newline = body.find('\n');
+        std::string_view line =
+            newline == std::string_view::npos ? body : body.substr(0, newline);
+        body = newline == std::string_view::npos ? std::string_view{}
+                                                 : body.substr(newline + 1);
+        while (!line.empty() && (line.back() == '\r' || line.back() == '\0')) {
+            line.remove_suffix(1);
+        }
+        if (line.empty()) {
+            continue;
+        }
+        ++scanned;
+        const std::size_t space = line.find(' ');
+        const std::string_view channelText =
+            space == std::string_view::npos ? line : line.substr(0, space);
+        const std::size_t channelIndex = channel_index(channelText);
+        if (wantChannel != std::size(kChannelNames) && channelIndex != wantChannel) {
+            continue;
+        }
+        std::size_t levelIndex = std::size(kLevelNames);
+        const std::size_t levelAt = line.find("level=");
+        if (levelAt != std::string_view::npos) {
+            std::string_view rest = line.substr(levelAt + 6);
+            const std::size_t end = rest.find(' ');
+            levelIndex = level_index(end == std::string_view::npos ? rest : rest.substr(0, end));
+        }
+        if (wantLevel != std::size(kLevelNames) && levelIndex != wantLevel) {
+            continue;
+        }
+        if (!contains_nocase(line, wantText)) {
+            continue;
+        }
+        matched[(oldest + matchCount) % kClientLogMaximum] = line;
+        if (matchCount < pageLimit) {
+            ++matchCount;
+        } else {
+            oldest = (oldest + 1) % kClientLogMaximum;
+        }
+    }
+
+    char out[kEventsResponseCapacity]{};
+    std::size_t used = 0;
+    const auto advance = [&used](int written) noexcept {
+        if (written <= 0) {
+            return;
+        }
+        used += static_cast<std::size_t>(written);
+        if (used >= kEventsResponseCapacity) {
+            used = kEventsResponseCapacity - 1;
+        }
+    };
+    advance(std::snprintf(out, sizeof out,
+                          "{\"ok\":true,\"source\":\"client_log\",\"bytes\":%llu,"
+                          "\"scanned\":%zu,\"rows\":[",
+                          total, scanned));
+    std::size_t emitted = 0;
+    bool truncated = false;
+    for (std::size_t index = 0; index < matchCount; ++index) {
+        const std::string_view line = matched[(oldest + index) % kClientLogMaximum];
+        char escaped[kEventsRowEscapedCapacity]{};
+        (void)escape_json_text(escaped, sizeof escaped, line);
+        const std::size_t space = line.find(' ');
+        const std::string_view channelText =
+            space == std::string_view::npos ? line : line.substr(0, space);
+        const std::size_t channelIndex = channel_index(channelText);
+        const std::string_view channelOut = channelIndex == std::size(kChannelNames)
+                                                ? std::string_view{"client"}
+                                                : kChannelNames[channelIndex];
+        std::size_t levelIndex = std::size(kLevelNames);
+        const std::size_t levelAt = line.find("level=");
+        if (levelAt != std::string_view::npos) {
+            std::string_view rest = line.substr(levelAt + 6);
+            const std::size_t end = rest.find(' ');
+            levelIndex = level_index(end == std::string_view::npos ? rest : rest.substr(0, end));
+        }
+        const std::string_view levelOut =
+            levelIndex == std::size(kLevelNames) ? std::string_view{"info"}
+                                                 : kLevelNames[levelIndex];
+        if (used + kEventsTailReserve >= kEventsResponseCapacity) {
+            truncated = true;
+            break;
+        }
+        const std::size_t before = used;
+        advance(std::snprintf(out + used,
+                              kEventsResponseCapacity - kEventsTailReserve - used,
+                              "%s{\"seq\":%zu,\"channel\":\"%.*s\",\"level\":\"%.*s\","
+                              "\"text\":\"%s\"}",
+                              emitted == 0 ? "" : ",",
+                              index,
+                              static_cast<int>(channelOut.size()), channelOut.data(),
+                              static_cast<int>(levelOut.size()), levelOut.data(),
+                              escaped));
+        if (used + kEventsTailReserve >= kEventsResponseCapacity) {
+            used = before;
+            truncated = true;
+            break;
+        }
+        ++emitted;
+    }
+    advance(std::snprintf(out + used,
+                          used < kEventsResponseCapacity ? kEventsResponseCapacity - used : 0,
+                          "],\"emitted\":%zu,\"matched\":%zu,\"truncated\":%s}",
+                          emitted, matchCount, truncated ? "true" : "false"));
+    respond(client, "200 OK", "application/json", {out, used});
+}
+
+
 /** Serves one accepted connection end to end. */
 void serve_connection(SOCKET client) noexcept {
     char buffer[kRequestCapacity]{};
@@ -774,6 +1008,8 @@ void serve_connection(SOCKET client) noexcept {
         handle_flags(client, request.query);
     } else if (request.verb == "GET" && request.path == "/journal") {
         handle_journal(client);
+    } else if (request.verb == "GET" && request.path == "/clientlog") {
+        handle_client_log(client, request.query);
     } else if (request.verb == "GET" && request.path == "/events") {
         handle_events(client, request.query);
         // LANE D INSERTION POINT: the GET /health route (and its handler)

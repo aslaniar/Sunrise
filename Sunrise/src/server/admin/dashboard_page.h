@@ -79,11 +79,16 @@ inline constexpr std::string_view kDashboardPage = R"SUNRISE_DASH(<!DOCTYPE html
   <section style="grid-column: 1 / -1;">
     <h2>Event feed</h2>
     <p class="muted" style="margin: 0 0 8px 0;">
-      This is the <b>server</b> process's log ring. The <code>client</code> channel is
-      written by the mod DLL inside the game process, which keeps its own separate ring -
-      those lines live in <code>Game/bin/x64/Sunrise/logs/sunrise.log</code> and cannot
-      appear here.
+      Two different sources. <b>server ring</b> is this process's in-memory log.
+      <b>client log</b> is the mod DLL's own file, tailed from disk - the DLL runs inside
+      the game process and keeps a ring this server cannot reach, so its lines can only
+      come from the file. Channel, level and text filters apply to both.
     </p>
+    <div class="chips">
+      <span class="muted">source</span>
+      <button class="chip active" id="src-server" onclick="setSource('server', this)">server ring</button>
+      <button class="chip" id="src-client" onclick="setSource('client', this)">client log</button>
+    </div>
     <div class="chips">
       <span class="muted">channel</span>
       <button class="chip active" id="ch-all" onclick="setChip('channel', 'all', this)">all</button>
@@ -114,7 +119,7 @@ inline constexpr std::string_view kDashboardPage = R"SUNRISE_DASH(<!DOCTYPE html
 </main>
 <script>
 'use strict';
-var state = { cursor: 0, channel: 'all', level: 'all' };
+var state = { cursor: 0, channel: 'all', level: 'all', source: 'server' };
 var FLAG_SCOPES = ['account', 'profile', 'character', 'character_object'];
 
 function $(id) { return document.getElementById(id); }
@@ -184,13 +189,50 @@ function refreshFlags() {
   }
 }
 
-function eventsUrl(cursor) {
-  var url = '/events?since=' + cursor + '&limit=300';
+function filterSuffix() {
+  var url = '';
   if (state.channel !== 'all') { url += '&channel=' + encodeURIComponent(state.channel); }
   if (state.level !== 'all') { url += '&level=' + encodeURIComponent(state.level); }
   var text = $('eventText').value.trim();
   if (text) { url += '&text=' + encodeURIComponent(text); }
   return url;
+}
+
+function eventsUrl(cursor) {
+  return '/events?since=' + cursor + '&limit=300' + filterSuffix();
+}
+
+// The client log is a FILE tail, not a ring with a cursor: every poll re-reads the
+// newest window and replaces the table wholesale.
+function clientLogUrl() {
+  return '/clientlog?limit=2000' + filterSuffix();
+}
+
+function fetchClientLog() {
+  return fetchJson(clientLogUrl()).then(function (data) {
+    appendRows(data, true);
+    $('eventsStatus').className = data.ok === false ? 'err' : 'ok';
+    $('eventsStatus').textContent = data.ok === false ? 'ERR' : 'ok';
+    $('eventsMeta').textContent = data.ok === false
+      ? (data.reason || 'client log unavailable')
+      : ('client log - ' + data.emitted + ' of ' + data.matched + ' matched, scanned ' +
+         data.scanned + ' lines of ' + data.bytes + ' B' +
+         (data.truncated ? ' (page truncated)' : '')) + ' | ' + stamp();
+    return data;
+  }).catch(function (err) {
+    $('eventsStatus').className = 'err';
+    $('eventsStatus').textContent = 'ERR ' + err.message;
+  });
+}
+
+function setSource(value, el) {
+  state.source = value;
+  var chips = el.parentNode.children;
+  for (var i = 0; i < chips.length; i++) {
+    if (chips[i].className.indexOf('chip') === 0) { chips[i].classList.remove('active'); }
+  }
+  el.classList.add('active');
+  initialSync();
 }
 
 function nearBottom() {
@@ -276,6 +318,10 @@ function pageUntilCaughtUp(first, depth) {
 function initialSync() {
   $('eventsStatus').className = 'ok';
   $('eventsStatus').textContent = 'syncing';
+  if (state.source === 'client') {
+    $('eventsBody').textContent = '';
+    return fetchClientLog();
+  }
   fetchJson('/events?since=0&limit=0').then(function (e) {
     // Start from the OLDEST retained row, not a fixed window back from the
     // newest. The boot's own core/state lines sit in the first ~30 events, so a
@@ -325,7 +371,9 @@ function buildFlagCards() {
 
 buildFlagCards();
 initialSync();
-setInterval(function () { fetchEvents(false); }, 1000);
+setInterval(function () {
+  if (state.source === 'client') { fetchClientLog(); } else { fetchEvents(false); }
+}, 1000);
 setInterval(refreshSessions, 2000);
 setInterval(refreshFlags, 5000);
 refreshSessions();

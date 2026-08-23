@@ -87,6 +87,7 @@ bool Parser::server_settings(server::Settings& output) noexcept {
     bool hasBindAddress = false;
     bool hasBootstrapToken = false;
     bool hasConfigGuid = false;
+    bool hasClientLogPath = false;
     bool hasPackagesDir = false;
     bool hasBuildDataPath = false;
     bool hasContentDir = false;
@@ -153,6 +154,18 @@ bool Parser::server_settings(server::Settings& output) noexcept {
                 return false;
             }
             hasConfigGuid = true;
+        } else if (key == "client_log_path") {
+            std::string_view value;
+            if (hasClientLogPath || !string(value)
+                || value.size() >= server::kPathCapacity) {
+                return false;
+            }
+            if (value.empty()) {
+                output.clientLogPath = {};
+            } else if (!decode_wide_text(value, output.clientLogPath)) {
+                return false;
+            }
+            hasClientLogPath = true;
         } else if (key == "packages_dir") {
             std::string_view value;
             if (hasPackagesDir || !string(value)
