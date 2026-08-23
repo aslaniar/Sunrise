@@ -186,18 +186,12 @@ values must match exactly.
 All listeners currently bind to loopback. Remote clients are future work; today a second
 machine cannot connect even with ports opened.
 
-## 8. Multiplayer honesty
+## 8. Multiplayer status
 
-Today the supported mode is **one player per rig against the server**: destinations load
-solo, and everything you equip, carry, or swap persists across restarts.
+Right now the server hosts **one account**: destinations load solo, and everything
+you equip or swap persists across restarts.
 
-What about friends connecting? Not yet:
-
-- The server serves ONE shared account. Two simultaneous clients would control the same
-  guardian and collide on identity - this is a structural limit, not a tuning knob.
-- Supporting simultaneous players requires guest-account work (per-player state views,
-  per-account identity ranges), shared activity bubbles, and cross-player visibility.
-  That is the roadmap's next chapter - see [ARCHITECTURE-ROADMAP.md](ARCHITECTURE-ROADMAP.md).
-
-If you want to follow or help with that work, the roadmap doc describes each stage and
-what would prove it works.
+Having a friend connect at the same time isn't supported yet - a second client
+would land on the same guardian. That work is underway (per-player accounts,
+shared spaces, seeing each other); [ARCHITECTURE-ROADMAP.md](ARCHITECTURE-ROADMAP.md)
+tracks where it stands and what's left.
