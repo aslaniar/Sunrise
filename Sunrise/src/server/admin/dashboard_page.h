@@ -79,7 +79,12 @@ inline constexpr std::string_view kDashboardPage = R"SUNRISE_DASH(<!DOCTYPE html
   <section style="grid-column: 1 / -1;">
     <h2>Event feed</h2>
     <p class="muted" style="margin: 0 0 8px 0;">
-      Two different sources. <b>server ring</b> is this process's in-memory log.
+      Three views. <b>merged timeline</b> interleaves both sides on ONE clock, using the
+      wire anchor: a server activity push and the client tape row that applies it are the
+      same event seen from both ends, so they mark a true shared instant. Same-named
+      events on the two sides are NOT the same moment - the client's core lines come from
+      the DLL in the game process, the server's from a process that booted earlier.
+      <b>server ring</b> is this process's in-memory log.
       <b>client log</b> is the mod DLL's own file, tailed from disk - the DLL runs inside
       the game process and keeps a ring this server cannot reach, so its lines can only
       come from the file. Channel, level and text filters apply to both.
@@ -88,6 +93,7 @@ inline constexpr std::string_view kDashboardPage = R"SUNRISE_DASH(<!DOCTYPE html
       <span class="muted">source</span>
       <button class="chip active" id="src-server" onclick="setSource('server', this)">server ring</button>
       <button class="chip" id="src-client" onclick="setSource('client', this)">client log</button>
+      <button class="chip" id="src-merged" onclick="setSource('merged', this)">merged timeline</button>
     </div>
     <div class="chips">
       <span class="muted">channel</span>
@@ -225,11 +231,96 @@ function fetchClientLog() {
   });
 }
 
+// --- the wire anchor -------------------------------------------------------
+// A server "ev=activity stage=push ... type=N" and the client "tape=1 svc=9 ...
+// type=N" that applies it are one wire event seen from both ends. Pair them
+// newest-first (the two windows rarely start together), require every pair to
+// agree on type, and take the median delta. Reported spread is p10..p90: a few
+// early pairs sit far off the cluster and the full range overstates the error.
+function parseT(text) {
+  var m = /(^|[^A-Za-z0-9_])t=(\d+)/.exec(text);
+  return m ? parseInt(m[2], 10) : null;
+}
+function parseType(text) {
+  var m = /(^|[^A-Za-z0-9_])type=(\d+)/.exec(text);
+  return m ? parseInt(m[2], 10) : null;
+}
+
+function solveOffset(serverRows, clientRows) {
+  var srv = [], cli = [];
+  serverRows.forEach(function (r) {
+    if (r.text.indexOf('ev=activity') >= 0 && r.text.indexOf('stage=push') >= 0) {
+      var t = parseT(r.text), ty = parseType(r.text);
+      if (t !== null && ty !== null) { srv.push({ t: t, ty: ty }); }
+    }
+  });
+  clientRows.forEach(function (r) {
+    if (r.text.indexOf('tape=1') >= 0 && r.text.indexOf('svc=9') >= 0) {
+      var ty = parseType(r.text);
+      if (r.t >= 0 && ty !== null) { cli.push({ t: r.t, ty: ty }); }
+    }
+  });
+  if (!srv.length || !cli.length) { return null; }
+  var span = Math.min(srv.length, cli.length), best = null;
+  for (var k = 0; k < Math.min(16, span); k++) {
+    var deltas = [], ok = true;
+    for (var i = 0; i < span - k; i++) {
+      var a = srv[srv.length - 1 - i], b = cli[cli.length - 1 - i - k];
+      if (!b || a.ty !== b.ty) { ok = false; break; }
+      deltas.push(a.t - b.t);
+    }
+    if (!ok || deltas.length < 3) { continue; }
+    deltas.sort(function (x, y) { return x - y; });
+    var robust = deltas[Math.floor(deltas.length * 0.9)] - deltas[Math.floor(deltas.length * 0.1)];
+    var cand = { robust: robust, k: k, pairs: deltas.length,
+                 median: deltas[Math.floor(deltas.length / 2)],
+                 spread: deltas[deltas.length - 1] - deltas[0] };
+    if (!best || cand.robust < best.robust) { best = cand; }
+  }
+  return best;
+}
+
+function fetchMerged() {
+  return Promise.all([
+    fetchJson('/events?since=0&limit=2000' + filterSuffix()),
+    fetchJson(clientLogUrl())
+  ]).then(function (both) {
+    var srvRows = both[0].rows || [], cliRows = both[1].rows || [];
+    var fit = solveOffset(both[0].rows || [], both[1].rows || []);
+    var merged = [];
+    srvRows.forEach(function (r) {
+      var t = parseT(r.text);
+      merged.push({ t: t === null ? 0 : t, side: 'S', channel: r.channel,
+                    level: r.level, text: r.text });
+    });
+    if (fit) {
+      cliRows.forEach(function (r) {
+        merged.push({ t: r.t >= 0 ? r.t + fit.median : 0, side: 'C',
+                      channel: r.channel, level: r.level, text: r.text });
+      });
+    }
+    merged.sort(function (a, b) { return a.t - b.t; });
+    appendRows({ rows: merged }, true);
+    $('eventsStatus').className = fit ? 'ok' : 'err';
+    $('eventsStatus').textContent = fit ? 'ok' : 'no anchor';
+    $('eventsMeta').textContent = fit
+      ? ('merged on wire anchor: offset ' + fit.median + 'ms, ' + fit.pairs +
+         ' pairs, spread ' + fit.robust + 'ms (p10-p90) | ' + stamp())
+      : ('no wire anchor in view - server pushes and client tape rows must both be ' +
+         'present; showing server side only | ' + stamp());
+    return merged;
+  }).catch(function (err) {
+    $('eventsStatus').className = 'err';
+    $('eventsStatus').textContent = 'ERR ' + err.message;
+  });
+}
+
 function setSource(value, el) {
   state.source = value;
   // The two sources do not share an ordinate: server rows carry the ring's monotonic
   // sequence, client rows carry the client process's own t=. Name the column honestly.
-  $('ordCol').textContent = value === 'client' ? 't (client)' : 'seq';
+  $('ordCol').textContent = value === 'client' ? 't (client)'
+                          : value === 'merged' ? 't (unified)' : 'seq';
   var chips = el.parentNode.children;
   for (var i = 0; i < chips.length; i++) {
     if (chips[i].className.indexOf('chip') === 0) { chips[i].classList.remove('active'); }
@@ -261,9 +352,10 @@ function appendRows(data, clear) {
     // t= instead. They are different spaces and must not be read as comparable.
     seq.textContent = row.seq !== undefined ? ('' + row.seq)
                     : (row.t >= 0 ? row.t + 'ms' : '-');
+    if (row.side === 'C') { seq.style.opacity = '0.75'; }
     seq.className = 'num';
     var ch = document.createElement('td');
-    ch.textContent = row.channel;
+    ch.textContent = row.side ? (row.side + '\u00B7' + row.channel) : row.channel;
     var lv = document.createElement('td');
     lv.textContent = row.level;
     lv.className = 'lv-' + row.level;
@@ -338,6 +430,10 @@ function initialSync() {
     $('eventsBody').textContent = '';
     return fetchClientLog();
   }
+  if (state.source === 'merged') {
+    $('eventsBody').textContent = '';
+    return fetchMerged();
+  }
   fetchJson('/events?since=0&limit=0').then(function (e) {
     // Start from the OLDEST retained row, not a fixed window back from the
     // newest. The boot's own core/state lines sit in the first ~30 events, so a
@@ -388,7 +484,9 @@ function buildFlagCards() {
 buildFlagCards();
 initialSync();
 setInterval(function () {
-  if (state.source === 'client') { fetchClientLog(); } else { fetchEvents(false); }
+  if (state.source === 'client') { fetchClientLog(); }
+  else if (state.source === 'merged') { fetchMerged(); }
+  else { fetchEvents(false); }
 }, 1000);
 setInterval(refreshSessions, 2000);
 setInterval(refreshFlags, 5000);
