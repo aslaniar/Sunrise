@@ -8,10 +8,6 @@
 namespace sunrise::middleware::datagen::character_record {
 namespace {
 
-/** The reserved block only the family-three record carries, between identity and appearance. */
-constexpr std::size_t kFamily3ReservedSize = 56;
-/** The trailing bytes after the summary block in the family-three record. */
-constexpr std::size_t kFamily3TailSize = 16;
 /** The trailing bytes after the summary block in the family-zero record. */
 constexpr std::size_t kFamily0TailSize = 24;
 /** Offsets inside the family-three tail that carry the character-select preview flags. */

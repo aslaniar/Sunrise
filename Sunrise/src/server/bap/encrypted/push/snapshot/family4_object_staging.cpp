@@ -1,5 +1,6 @@
 #include <array>
 #include <cstdio>
+#include <cstring>
 
 #include "../../../../../core/logging/log.h"
 #include "../../../../../middleware/datagen/family4/instance/instance_encoder.h"
@@ -61,6 +62,45 @@ bool append_items(Scratch& scratch,
         const std::size_t objectIndex = baseIndex + itemCursor;
         if (!family4_datagen::instance::encode(instance, encoded)) {
             return false;
+        }
+        // DIAGNOSTIC (FINDINGS 14.20, strip when the weapons/model front closes): one line per
+        // pushed instance, decoded from the encoded bytes so the wire shape itself is recorded.
+        {
+            family4_datagen::instance::layout::Object probe{};
+            std::memcpy(&probe, encoded.data(), sizeof probe);
+            std::array<char, 384> line{};
+            const int written = std::snprintf(
+                line.data(),
+                line.size(),
+                "ev=f4dump kind=item slot=%u def=0x%04X soid=%llX lvl=%d "
+                "masks=%08X/%08X/%08X/%08X/%08X plugs=%u,%u,%u,%u list=%u st=%u%u%u%u%u%u%u%u",
+                static_cast<unsigned>(instances.items[itemIndex].equipmentSlot),
+                static_cast<unsigned>(probe.baseDefinitionIndex),
+                static_cast<unsigned long long>(probe.instanceSoid),
+                probe.level.level,
+                probe.ordinarySockets.activeMask,
+                probe.ordinarySockets.definitionUnlockMask,
+                probe.ordinarySockets.blockedMask,
+                probe.ordinarySockets.expressionUnlockMask,
+                probe.ordinarySockets.gateMask,
+                probe.ordinarySockets.sockets[0].plugDefinitionIndex,
+                probe.ordinarySockets.sockets[1].plugDefinitionIndex,
+                probe.ordinarySockets.sockets[2].plugDefinitionIndex,
+                probe.ordinarySockets.sockets[3].plugDefinitionIndex,
+                probe.roll.socketEntryListIndex,
+                probe.roll.socketEntryStates[0],
+                probe.roll.socketEntryStates[1],
+                probe.roll.socketEntryStates[2],
+                probe.roll.socketEntryStates[3],
+                probe.roll.socketEntryStates[4],
+                probe.roll.socketEntryStates[5],
+                probe.roll.socketEntryStates[6],
+                probe.roll.socketEntryStates[7]);
+            if (written > 0) {
+                core::log::write(core::log::Channel::server,
+                                 core::log::Level::info,
+                                 {line.data(), static_cast<std::size_t>(written)});
+            }
         }
         if (!append_object(scratch,
                            encoded,

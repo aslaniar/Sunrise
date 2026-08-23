@@ -22,6 +22,7 @@
 #include "../hooks/graphics/graphics_hook_lifecycle.h"
 #include "../hooks/ability_gate/ability_gate_observer.h"
 #include "../hooks/gate_trace/gate_trace_observer.h"
+#include "../hooks/item_gate/item_gate_observer.h"
 #include "../hooks/handle_message/handle_message_observer.h"
 #include "../hooks/schema_capture/schema_capture_observer.h"
 #include "../hooks/network/runtime.h"
@@ -209,6 +210,9 @@ void clear_game_targets() noexcept {
     // (uncomment both installs) only when actually resuming that investigation.
     // (void)hooks::ability_gate::install();
     // (void)hooks::gate_trace::install();
+    // The weapon/armor validation-chain observers (item_gate, FINDINGS 14.23): log-only,
+    // cool path (per item-instance event, not per tick). The two-bugs front's instrument.
+    (void)hooks::item_gate::install();
     // The R1 schema-hash close: log-only observer on the schema-decode entry, so the
     // client's own player-baseline decode prints the real schemaTagHash (the
     // world_population_schema_hash knob value). Internal no-op while externalServer is

@@ -11,6 +11,13 @@ namespace sunrise::middleware::datagen::character_record {
 
 /** The family-three character record carries an extra reserved block before the appearance. */
 inline constexpr std::size_t kFamily3RecordSize = 3'904;
+/** Reserved bytes between the family-three identity prefix and its appearance block. */
+inline constexpr std::size_t kFamily3ReservedSize = 56;
+/** Reserved bytes after the family-three summary block (the preview-flag offsets live here). */
+inline constexpr std::size_t kFamily3TailSize = 16;
+/** The appearance block starts here in every family-three record. */
+inline constexpr std::size_t kFamily3AppearanceOffset
+    = layout::kIdentitySize + kFamily3ReservedSize;
 /** The family-zero banner record carries the same identity and appearance without that block. */
 inline constexpr std::size_t kFamily0RecordSize = 3'856;
 /** The family-zero banner anchor names the account and the character the banner shows. */

@@ -16,3 +16,6 @@
 
 # Build capture noise
 /build_out*.txt
+
+# macOS finder metadata
+.DS_Store

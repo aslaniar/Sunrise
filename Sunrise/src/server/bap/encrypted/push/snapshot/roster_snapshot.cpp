@@ -1,6 +1,9 @@
 #include <algorithm>
+#include <cstdio>
+#include <cstring>
 #include <span>
 
+#include "../../../../../core/logging/log.h"
 #include "../../../../../middleware/datagen/character_record/character_record_encoder.h"
 #include "../../../../../middleware/datagen/definitions.h"
 #include "../../../../../middleware/datagen/family3/family3_roster.h"
@@ -48,6 +51,50 @@ namespace character_record = middleware::datagen::character_record;
         if (!character_record::encode_family3(
                 account.characters[index], instances, light, record)) {
             return false;
+        }
+        // DIAGNOSTIC (FINDINGS 14.20, strip when the weapons/model front closes): the encoded
+        // family-3 render rows, the preview model's per-slot art source. The appearance block
+        // offset comes from the encoder's own constants; one line per occupied slot.
+        {
+            namespace record_layout = character_record::layout;
+            static_assert(character_record::kFamily3AppearanceOffset
+                              + sizeof(record_layout::Appearance)
+                              + sizeof(record_layout::Summary)
+                              + character_record::kFamily3TailSize
+                          == character_record::kFamily3RecordSize);
+            record_layout::Appearance appearance{};
+            std::memcpy(&appearance,
+                        record.data() + character_record::kFamily3AppearanceOffset,
+                        sizeof appearance);
+            for (std::size_t slot = 0; slot < appearance.render.size(); ++slot) {
+                const record_layout::RenderEntry& entry = appearance.render[slot];
+                if (entry.instanceSoid == 0) {
+                    continue;
+                }
+                std::array<char, 256> line{};
+                const int written = std::snprintf(
+                    line.data(),
+                    line.size(),
+                    "ev=f4dump kind=render slot=%zu def=0x%04X soid=%llX art=%u,%u,%u "
+                    "mats=%d:%u,%d:%u,%d:%u",
+                    slot,
+                    static_cast<unsigned>(entry.definitionIndex),
+                    static_cast<unsigned long long>(entry.instanceSoid),
+                    static_cast<unsigned>(entry.art[0]),
+                    static_cast<unsigned>(entry.art[1]),
+                    static_cast<unsigned>(entry.art[2]),
+                    entry.materialPairs[0].key,
+                    static_cast<unsigned>(entry.materialPairs[0].value),
+                    entry.materialPairs[1].key,
+                    static_cast<unsigned>(entry.materialPairs[1].value),
+                    entry.materialPairs[2].key,
+                    static_cast<unsigned>(entry.materialPairs[2].value));
+                if (written > 0) {
+                    core::log::write(core::log::Channel::server,
+                                     core::log::Level::info,
+                                     {line.data(), static_cast<std::size_t>(written)});
+                }
+            }
         }
         std::size_t compressedSize = 0;
         if (!compress_object(scratch,
