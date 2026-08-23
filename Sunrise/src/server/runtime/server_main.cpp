@@ -335,9 +335,9 @@ int main(int argc, char** argv) {
     } else if (!sunrise::state::entitlements::publish(
                    sunrise::core::settings::get().server.entitlements)) {
         stage = "entitlements";
-    } else if (!sunrise::state::initialize(module,
-                                           sunrise::core::settings::get().initialAccount,
-                                           sunrise::core::settings::get().initialActivityDefaults)) {
+    } else if (!sunrise::state::initialize_provisioned(
+                   module,
+                   sunrise::core::settings::get().initialActivityDefaults)) {
         stage = "state";
     } else if (!sunrise::server::persistence::initialize(module)) {
         stage = "persistence";
@@ -359,48 +359,61 @@ int main(int argc, char** argv) {
         sunrise::core::settings::shutdown();
         return 1;
     }
-    // S1-2: when the state database holds a seeded account, the persisted rows are the boot's
-    // account source; the settings account block becomes policy fallback for a fresh database.
-    // Unlocks and entitlements ride along, so a DB edit changes the next boot's frames.
-    sunrise::state::AccountState bootAccount = sunrise::core::settings::get().initialAccount;
+    // S1-2/P2: each provisioned slot reloads its own persisted account when the database holds
+    // one; the settings blocks remain the fresh-database fallback. Unlocks and entitlements
+    // stay process-global policy for now (owner call D3 scope): they publish once from slot 0.
     sunrise::state::unlocks::Table bootUnlocks = sunrise::core::settings::get().initialUnlocks;
     sunrise::state::entitlements::Table bootEntitlements =
         sunrise::core::settings::get().server.entitlements;
-    // S1-5: the family-5 override lists ride the same persistence path as the unlocks.
-    // When the database holds an account, its family5_overrides rows replace the settings
-    // lists after the second State pass (which re-publishes settings defaults).
-    sunrise::state::Family5State bootFamily5 = sunrise::core::settings::get().initialFamily5;
     bool family5FromDatabase = false;
-    if (sunrise::server::persistence::ready()) {
+    bool globalPolicyFromDatabase = false;
+    const std::size_t provisionedCount =
+        sunrise::core::settings::get().provisionedAccountCount;
+    for (std::size_t key = 0; key < provisionedCount && !stage; ++key) {
+        if (!sunrise::server::persistence::ready()) {
+            break;
+        }
+        const auto accountKey = static_cast<sunrise::core::settings::AccountKey>(key);
         sunrise::state::AccountState databaseAccount{};
         sunrise::state::unlocks::Table databaseUnlocks{};
         sunrise::state::Family5State databaseFamily5{};
-        if (sunrise::server::persistence::load_account(
-                databaseAccount, databaseUnlocks, databaseFamily5)
-            && databaseAccount.primarySoid != 0) {
-            bootAccount = databaseAccount;
+        if (!sunrise::server::persistence::load_account(
+                databaseAccount, databaseUnlocks, databaseFamily5, accountKey)
+            || databaseAccount.primarySoid == 0) {
+            continue;
+        }
+        // The first State pass above loaded build data and seeded the database; publish each
+        // persisted account into its own slot as the source of truth. Slot 0 also refreshes
+        // the shared cache identity exactly like the historical second pass did.
+        if (key == 0) {
             bootUnlocks = databaseUnlocks;
-            bootFamily5 = databaseFamily5;
+            globalPolicyFromDatabase = true;
             family5FromDatabase = true;
+            sunrise::state::entitlements::Table databaseEntitlements{};
+            if (sunrise::server::persistence::load_entitlements(databaseEntitlements, accountKey)) {
+                bootEntitlements = databaseEntitlements;
+            }
         }
-        sunrise::state::entitlements::Table databaseEntitlements{};
-        if (sunrise::server::persistence::load_entitlements(databaseEntitlements)) {
-            bootEntitlements = databaseEntitlements;
-        }
-    }
-    if (bootAccount.primarySoid != 0) {
-        // The first State pass above loaded build data and seeded the database; publish the
-        // persisted account once and re-initialize State with it as the source of truth.
-        sunrise::state::unlocks::publish(bootUnlocks);
-        if (!sunrise::state::entitlements::publish(bootEntitlements)
-            || !sunrise::state::initialize(module,
-                                           bootAccount,
-                                           sunrise::core::settings::get().initialActivityDefaults)
-            || (family5FromDatabase && !sunrise::state::publish_family5(bootFamily5))) {
+        if (!sunrise::state::reload_account_from_database(
+                module,
+                databaseAccount,
+                sunrise::core::settings::get().initialActivityDefaults,
+                accountKey)
+            || (family5FromDatabase
+                && !sunrise::state::publish_family5(databaseFamily5, accountKey))) {
             stage = "persistence_account";
         }
-    } else {
+    }
+    if (!stage) {
         sunrise::state::unlocks::publish(bootUnlocks);
+        if (!globalPolicyFromDatabase
+            || !sunrise::state::entitlements::publish(bootEntitlements)) {
+            // A fresh database keeps the authored entitlement policy; a failed DB read of an
+            // existing policy is fatal, matching the historical single-account behavior.
+            if (globalPolicyFromDatabase) {
+                stage = "persistence_account";
+            }
+        }
     }
     // S1-3 Option-B: the five decoded content domains replace the cache-driven runtime rows
     // after the last cache::load (every State pass above runs one). A missing content file or

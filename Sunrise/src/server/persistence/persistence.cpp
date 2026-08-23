@@ -1,5 +1,7 @@
 #include "persistence.h"
 
+#include "../../core/settings/provisioning.h"
+
 #include <Windows.h>
 
 #include <cstdio>
@@ -148,10 +150,21 @@ void format_hash(std::uint32_t value, std::array<char, 16>& output) noexcept {
     return bind_text(statement, index, text);
 }
 
-/** @return The authored account id the seed writes every row under. */
+/**
+ * P2: every public persistence entry names its account slot before touching rows, so all
+ * seed/load/write binds under it land on one provisioned account. Persistence flows are
+ * serialized by design (one database connection, one lock); this context is that flow's key.
+ */
+core::settings::AccountKey g_activeAccount = core::settings::kLegacyAccount;
+
+/** @return The authored account id the active slot writes every row under. */
 [[nodiscard]] std::string_view seed_account_id() noexcept {
     static std::array<char, 24> storage{};
-    format_soid(core::settings::get().initialAccount.primarySoid, storage);
+    const auto& settings = core::settings::get();
+    const std::size_t index =
+        g_activeAccount < settings.provisionedAccountCount ? g_activeAccount
+                                                           : core::settings::kLegacyAccount;
+    format_soid(settings.accounts[index].account.primarySoid, storage);
     return {storage.data(), std::strlen(storage.data())};
 }
 
@@ -1378,7 +1391,9 @@ bool ready() noexcept {
 /** Reads the persisted account back into native State. */
 bool load_account(state::AccountState& account,
                   state::unlocks::Table& unlocks,
-                  state::Family5State& family5) noexcept {
+                  state::Family5State& family5,
+                  const core::settings::AccountKey key) noexcept {
+    g_activeAccount = key;
     AcquireSRWLockExclusive(&g_lock);
     if (g_database == nullptr) {
         ReleaseSRWLockExclusive(&g_lock);
@@ -1388,9 +1403,15 @@ bool load_account(state::AccountState& account,
     unlocks = {};
     family5 = {};
 
-    static constexpr char kAccountSql[] = "SELECT account_id FROM accounts LIMIT 1;";
+    // P2: the active slot's own row, never "the first row" - settings and database can hold
+    // several provisioned accounts and each load names exactly one.
+    std::array<char, 128> accountSql{};
+    const std::string_view activeId = seed_account_id();
+    (void)std::snprintf(accountSql.data(), accountSql.size(),
+                        "SELECT account_id FROM accounts WHERE account_id = '%s';",
+                        activeId.data());
     sqlite3_stmt* statement = nullptr;
-    bool ok = sqlite3_prepare_v2(g_database, kAccountSql, -1, &statement, nullptr) == SQLITE_OK
+    bool ok = sqlite3_prepare_v2(g_database, accountSql.data(), -1, &statement, nullptr) == SQLITE_OK
               && sqlite3_step(statement) == SQLITE_ROW;
     if (ok) {
         const auto* text = sqlite3_column_text(statement, 0);
@@ -1577,7 +1598,9 @@ bool load_account(state::AccountState& account,
 }
 
 /** Reads the persisted entitlement policy back into native State. */
-bool load_entitlements(state::entitlements::Table& output) noexcept {
+bool load_entitlements(state::entitlements::Table& output,
+                       const core::settings::AccountKey key) noexcept {
+    g_activeAccount = key;
     AcquireSRWLockExclusive(&g_lock);
     output = {};
     if (g_database == nullptr) {
@@ -1634,7 +1657,8 @@ bool load_entitlements(state::entitlements::Table& output) noexcept {
 }
 
 /** Writes the current published State back into the state database (spec §4 Stage 5). */
-bool write_back() noexcept {
+bool write_back(const core::settings::AccountKey key) noexcept {
+    g_activeAccount = key;
     AcquireSRWLockExclusive(&g_lock);
     if (g_database == nullptr) {
         ReleaseSRWLockExclusive(&g_lock);
@@ -1644,9 +1668,9 @@ bool write_back() noexcept {
     // profile items), the unlock banks, the family-5 override lists, and the entitlement
     // policy. Vendors/vendor_sale_items are a content mirror (ETL-owned) and instance_state /
     // progression are derived at encode time, so none of those tables are rewritten here.
-    const state::AccountState account = state::account_snapshot();
+    const state::AccountState account = state::account_snapshot(key);
     const state::unlocks::Table& unlocks = state::unlocks::get();
-    const state::Family5State family5 = state::investment_snapshot().family5;
+    const state::Family5State family5 = state::investment_snapshot(key).family5;
     const state::entitlements::Table& entitlements = state::entitlements::get();
     if (account.primarySoid == 0 || !state::account::valid(account)) {
         fail("write_back", "invalid account state");
@@ -1666,9 +1690,24 @@ bool write_back() noexcept {
                         "DELETE FROM items WHERE account_id = '%s';", accountId.data());
     (void)std::snprintf(deleteCharactersSql.data(), deleteCharactersSql.size(),
                         "DELETE FROM characters WHERE account_id = '%s';", accountId.data());
+    // P2: the four formerly global wipes are account-scoped too - one publish must never
+    // erase another provisioned account's flags, objectives, family-5 rows, or entitlements.
+    std::array<char, 192> deleteFlagsSql{};
+    std::array<char, 224> deleteObjectivesSql{};
+    std::array<char, 192> deleteFamily5Sql{};
+    std::array<char, 208> deleteEntitlementsSql{};
+    (void)std::snprintf(deleteFlagsSql.data(), deleteFlagsSql.size(),
+                        "DELETE FROM flags WHERE account_id = '%s';", accountId.data());
+    (void)std::snprintf(deleteObjectivesSql.data(), deleteObjectivesSql.size(),
+                        "DELETE FROM objectives WHERE account_id = '%s';", accountId.data());
+    (void)std::snprintf(deleteFamily5Sql.data(), deleteFamily5Sql.size(),
+                        "DELETE FROM family5_overrides WHERE account_id = '%s';",
+                        accountId.data());
+    (void)std::snprintf(deleteEntitlementsSql.data(), deleteEntitlementsSql.size(),
+                        "DELETE FROM entitlements WHERE account_id = '%s';", accountId.data());
     bool ok = exec("BEGIN;") && exec(deleteItemsSql.data()) && exec(deleteCharactersSql.data())
-              && exec("DELETE FROM flags;") && exec("DELETE FROM objectives;")
-              && exec("DELETE FROM family5_overrides;") && exec("DELETE FROM entitlements;")
+              && exec(deleteFlagsSql.data()) && exec(deleteObjectivesSql.data())
+              && exec(deleteFamily5Sql.data()) && exec(deleteEntitlementsSql.data())
               && seed_profile_items_from(account)
               && seed_family5_from(family5) && seed_entitlements_from(entitlements)
               && seed_flags("account", unlocks.accountFlags)

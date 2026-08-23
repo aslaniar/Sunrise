@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "../../core/settings/provisioning.h"
 #include "../../state/account/account_state.h"
 #include "../../state/entitlements/definition.h"
 #include "../../state/investment/investment.h"
@@ -38,14 +39,18 @@ void shutdown() noexcept;
  */
 [[nodiscard]] bool load_account(state::AccountState& account,
                                 state::unlocks::Table& unlocks,
-                                state::Family5State& family5) noexcept;
+                                state::Family5State& family5,
+                                core::settings::AccountKey key
+                                = core::settings::kLegacyAccount) noexcept;
 
 /**
  * Reads the persisted entitlement policy back into native State.
  * @param output Receives the ownership table.
  * @return True when the entitlement rows fit the native table.
  */
-[[nodiscard]] bool load_entitlements(state::entitlements::Table& output) noexcept;
+[[nodiscard]] bool load_entitlements(
+    state::entitlements::Table& output,
+    core::settings::AccountKey key = core::settings::kLegacyAccount) noexcept;
 
 /**
  * Writes the current published State back into the state database (spec §4 Stage 5).
@@ -55,7 +60,8 @@ void shutdown() noexcept;
  * are left untouched.
  * @return True when every row is replaced and committed.
  */
-[[nodiscard]] bool write_back() noexcept;
+[[nodiscard]] bool write_back(
+    core::settings::AccountKey key = core::settings::kLegacyAccount) noexcept;
 
 /**
  * Persists one subclass equip in a single transaction: the picked storage row becomes the
