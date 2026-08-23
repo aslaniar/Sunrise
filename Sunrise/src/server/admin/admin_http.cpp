@@ -354,9 +354,10 @@ std::span<const std::uint8_t> flag_bank(std::string_view scope) noexcept {
     return {};
 }
 
-/** Renders one session row into the body. */
+/** Renders one session row into the body. @param first False for rows after the first. */
 std::size_t append_session_row(char* body,
                                std::size_t used,
+                               bool first,
                                const bap::LadderRow& row) noexcept {
     return used
            + static_cast<std::size_t>(std::snprintf(
@@ -365,7 +366,7 @@ std::size_t append_session_row(char* body,
                "%s{\"id\":%u,\"authenticated\":%s,\"family4_active\":%s,"
                "\"family4_version\":%d,\"family0_version\":%d,\"root\":\"0x%llX\","
                "\"repush_armed\":%s}",
-               used == 0 ? "" : ",",
+               first ? "" : ",",
                row.id,
                row.authenticated ? "true" : "false",
                row.family4Active ? "true" : "false",
@@ -384,7 +385,7 @@ void handle_state(SOCKET client) noexcept {
     used += static_cast<std::size_t>(
         std::snprintf(body, sizeof body, "{\"sessions\":["));
     for (std::size_t index = 0; index < count; ++index) {
-        used = append_session_row(body, used, rows[index]);
+        used = append_session_row(body, used, index == 0, rows[index]);
     }
     used += static_cast<std::size_t>(
         std::snprintf(body + used, kResponseCapacity - used, "],\"count\":%zu}", count));
@@ -402,7 +403,7 @@ void handle_ladder(SOCKET client) noexcept {
     used += static_cast<std::size_t>(
         std::snprintf(body, sizeof body, "{\"sessions\":["));
     for (std::size_t index = 0; index < count; ++index) {
-        used = append_session_row(body, used, rows[index]);
+        used = append_session_row(body, used, index == 0, rows[index]);
         maxFamily4 = rows[index].family4Version > maxFamily4 ? rows[index].family4Version
                                                              : maxFamily4;
         maxFamily0 = rows[index].family0Version > maxFamily0 ? rows[index].family0Version
