@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <span>
 
+#include "../../core/settings/provisioning.h"
 #include "../../middleware/web_service/messages/opcode206.h"
 #include "../../state/runtime/runtime.h"
 
@@ -49,6 +50,8 @@ struct Outcome {
 [[nodiscard]] bool consume(std::span<const std::byte> request,
                            std::span<std::byte> response,
                            std::size_t& written,
-                           Outcome& outcome) noexcept;
+                           Outcome& outcome,
+                           core::settings::AccountKey accountKey
+                           = core::settings::kLegacyAccount) noexcept;
 
 } // namespace sunrise::server::web_service

@@ -51,7 +51,7 @@ bool consume(Session& session,
     }
 
     std::size_t plaintextSize = 0;
-    const auto& bapState = state::bap();
+    const auto& bapState = state::bap(session.accountKey);
     if (!middleware::secure_channel::open_frame(bapState.sessionKey,
                                                 session.receiveNonce,
                                                 outer.payload,
@@ -94,6 +94,7 @@ bool consume(Session& session,
     // Pure one-way services consume only the authenticated receive nonce.
     if (processesBody
         && !body::process(route,
+                          session.accountKey,
                           session.queuez,
                           session.activitySessionId,
                           session.matchmakingContext,

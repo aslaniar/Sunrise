@@ -30,6 +30,7 @@ namespace sunrise::server::bap::encrypted::body {
  * @return True when the chosen body codec succeeds.
  */
 bool process(const ServiceRoute& route,
+             core::settings::AccountKey accountKey,
              const queuez::SessionState& queuezState,
              std::uint64_t activitySessionId,
              state::matchmaking::ContextHandle matchmakingContext,
@@ -43,7 +44,7 @@ bool process(const ServiceRoute& route,
         written = 0;
         return true;
     case BodyCodec::accountTranslationResponse: {
-        const state::AccountState account = state::account_snapshot();
+        const state::AccountState account = state::account_snapshot(accountKey);
         return middleware::bap::account_translation::encode_response(
             requestBody, account.primarySoid, output, written);
     }
@@ -58,7 +59,7 @@ bool process(const ServiceRoute& route,
         return activity_message::process(
             activitySessionId, requestBody, outcome.activityPlan, outcome.hasActivityTransaction);
     case BodyCodec::activityHostResponse: {
-        const state::SignOnState& signOn = state::sign_on();
+        const state::SignOnState& signOn = state::sign_on(accountKey);
         return middleware::bap::activity_host::encode_response(
             requestBody, signOn.relayAddress, signOn.relayPort, output, written);
     }
@@ -111,7 +112,11 @@ bool process(const ServiceRoute& route,
             return true;
         }
         web_service::Outcome webOutcome;
-        if (!sunrise::server::web_service::consume(requestBody, output, written, webOutcome)) {
+        if (!sunrise::server::web_service::consume(requestBody,
+                                                   output,
+                                                   written,
+                                                   webOutcome,
+                                                   accountKey)) {
             return false;
         }
         outcome.hasSubscription = webOutcome.hasSubscription;

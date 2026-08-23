@@ -10,6 +10,7 @@
 #include "../../middleware/bap/frame.h"
 #include "../../state/activity/bubble_authority/definition.h"
 #include "../../state/build_data/scenarios/definition.h"
+#include "../../core/settings/provisioning.h"
 #include "../../state/runtime/state.h"
 #include "encrypted/queuez/definition.h"
 
@@ -121,6 +122,8 @@ struct Session {
     std::uint64_t abilityRefreshDueTick{};
     /** True while the appearance + roster refreshes owe their delayed re-send. */
     bool abilityRefreshArmed{};
+    /** Provisioned slot this peer authenticated against (stamped at svc-25). */
+    core::settings::AccountKey accountKey{core::settings::kLegacyAccount};
     /** Latest shared-account generation this peer has received. */
     std::uint64_t accountGeneration{};
     /** Newest shared-account generation owed as a full cross-peer refresh. */

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include "../../../../core/settings/provisioning.h"
 #include <cstddef>
 #include <cstdint>
 
@@ -58,6 +59,8 @@ struct SessionState {
     bool family0Active{};
     /** Set once the family-three full snapshot has been published to this peer. */
     bool family3Active{};
+    /** Provisioned slot this mirror serves; stamped at svc-25 alongside its session. */
+    core::settings::AccountKey accountKey{core::settings::kLegacyAccount};
 };
 
 /** Validated opcode-505 after-image and its resident account definition. */

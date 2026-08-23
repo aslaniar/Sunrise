@@ -93,22 +93,6 @@ void report_hello_shape(const Session& session, std::span<const std::byte> body)
 }
 
 /**
- * Compares the echoed session token against the one SignOn issued.
- * @param body Plaintext service body whose framing is already checked.
- * @param signOn Active SignOn token state.
- * @return True when every token byte matches.
- */
-[[nodiscard]] bool hello_token_matches(std::span<const std::byte> body,
-                                       const state::SignOnState& signOn) noexcept {
-    for (std::size_t index = 0; index < signOn.sessionToken.size(); ++index) {
-        if (body[kTokenOffset + index] != signOn.sessionToken[index]) {
-            return false;
-        }
-    }
-    return true;
-}
-
-/**
  * Copies process BAP keys into one authenticated connection session.
  * @param session Crypto state owned by the connection.
  * @param bap Process BAP key and nonce material.
@@ -148,6 +132,7 @@ void arm_encryption(Session& session, const state::BapState& bap) noexcept {
     // A codec that refuses answers with an empty body. The Client matches only the head of its
     // pending ring, so one unanswered request jams that ring for the rest of the run.
     if (!encrypted::body::process(route,
+                                  session.accountKey,
                                   session.queuez,
                                   session.activitySessionId,
                                   session.matchmakingContext,
@@ -217,19 +202,38 @@ bool consume(Session& session,
         return consume_service(session, scratch, frame, response, written);
     }
 
-    const auto& signOnState = state::sign_on();
-    const auto& bapState = state::bap();
-    // Every service 25 is answered without reading the body, and that reaches the Tower on both
-    // links. The reply is built from State alone, so the body is logged and never refused. The
-    // activity host's hello uses other framing, and refusing it stranded that link in
-    // `_authenticating` with no service named anywhere in the log.
-    if (session.authenticated) {
-        report_refusal(session, frame.messageId, "reauthenticated");
+    // P2 identity stamp: the echoed session token names the provisioned account (both sides
+    // derive it from the same bootstrap token). An unmatched echo keeps today's acceptance
+    // behavior, serving the legacy slot with a named warn instead of refusing.
+    const std::byte* echoedPtr = nullptr;
+    if (frame.body.size() >= kTokenOffset + state::kSessionTokenSize) {
+        echoedPtr = frame.body.data() + kTokenOffset;
     }
+    const state::AccountKey matched =
+        echoedPtr == nullptr
+            ? state::kUnprovisionedAccount
+            : state::match_session_token(
+                std::span<const std::byte, state::kSessionTokenSize>(
+                    echoedPtr, state::kSessionTokenSize));
+    const state::AccountKey served = matched == state::kUnprovisionedAccount
+                                         ? state::kLegacyAccount
+                                         : matched;
+    if (matched == state::kUnprovisionedAccount) {
+        report_refusal(session, frame.messageId, "unprovisioned_token_accepted");
+    }
+    session.accountKey = served;
+    // The queuez mirror travels widely without the Session, so it carries the key with it.
+    session.queuez.accountKey = served;
+    const auto& signOnState = state::sign_on(served);
+    const auto& bapState = state::bap(served);
+    // Every service 25 is answered beyond the token echo, and that reaches the Tower on both
+    // links. The reply is built from State alone, so any residual framing oddity is logged and
+    // never refused. The activity host's hello uses other framing, and refusing it stranded that
+    // link in `_authenticating` with no service named anywhere in the log.
     if (!valid_hello_shape(frame.body)) {
         report_hello_shape(session, frame.body);
-    } else if (!hello_token_matches(frame.body, signOnState)) {
-        report_refusal(session, frame.messageId, "token_mismatch_accepted");
+    } else if (session.authenticated) {
+        report_refusal(session, frame.messageId, "reauthenticated");
     }
     // A repeat hello replaces its context, so the old one goes back before the new one is taken.
     // Holding both at once drains the small pool on the second hello of a session.

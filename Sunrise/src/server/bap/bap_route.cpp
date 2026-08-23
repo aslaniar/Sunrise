@@ -29,7 +29,9 @@ void publish_account_mutation(Session& origin) noexcept {
     origin.accountResyncArmed = false;
     std::size_t armed = 0;
     for (auto& peer : g_sessions) {
-        if (&peer == &origin || peer.id == 0 || !peer.authenticated || !peer.queuez.family4Active) {
+        // Cross-account mutations never arm: each provisioned account resyncs only its own peers.
+        if (&peer == &origin || peer.id == 0 || !peer.authenticated || !peer.queuez.family4Active
+            || peer.accountKey != origin.accountKey) {
             continue;
         }
         peer.accountResyncGeneration = g_accountGeneration;

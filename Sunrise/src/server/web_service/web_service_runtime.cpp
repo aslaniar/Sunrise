@@ -127,7 +127,8 @@ bool consume(std::span<const std::byte> request,
 bool consume(std::span<const std::byte> request,
              std::span<std::byte> response,
              std::size_t& written,
-             Outcome& outcome) noexcept {
+             Outcome& outcome,
+             const core::settings::AccountKey accountKey) noexcept {
     written = 0;
     outcome = {};
     middleware::web_service::Message message;
@@ -186,7 +187,7 @@ bool consume(std::span<const std::byte> request,
         // The request's own key is echoed and adopted. An authored id here costs the ship and the
         // banner.
         if (!bootstrap.hasPrimarySoid) {
-            bootstrap.primarySoid = state::account_snapshot().primarySoid;
+            bootstrap.primarySoid = state::account_snapshot(accountKey).primarySoid;
         }
         const auto investment = state::investment_snapshot();
         if (!parsed
@@ -194,7 +195,9 @@ bool consume(std::span<const std::byte> request,
                 message, bootstrap, investment, response, written)) {
             return encode_echo(message, response, written);
         }
-        if (bootstrap.hasPrimarySoid && !state::set_primary_soid(bootstrap.primarySoid)) {
+        // P2: adoption lands in the CALLING peer's account, never across the provisioned set.
+        if (bootstrap.hasPrimarySoid
+            && !state::set_primary_soid(bootstrap.primarySoid, accountKey)) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::warn,
                              "ev=ws503 stage=adopt result=fail");
