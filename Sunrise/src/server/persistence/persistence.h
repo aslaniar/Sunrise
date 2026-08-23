@@ -72,7 +72,9 @@ void shutdown() noexcept;
  * @return True when both updates commit.
  */
 [[nodiscard]] bool persist_subclass_equip(std::uint64_t newlyEquippedSoid,
-                                          std::uint64_t displacedSoid) noexcept;
+                                          std::uint64_t displacedSoid,
+                                          core::settings::AccountKey key
+                                          = core::settings::kLegacyAccount) noexcept;
 
 /**
  * Persists the selected character's five ability-entry picks in one transaction, reading
@@ -80,7 +82,8 @@ void shutdown() noexcept;
  * is the selected character's row only.
  * @return True when the update commits.
  */
-[[nodiscard]] bool persist_ability_change() noexcept;
+[[nodiscard]] bool persist_ability_change(core::settings::AccountKey key
+                                          = core::settings::kLegacyAccount) noexcept;
 
 /**
  * Sets one inclusive flag range in the persisted bank — the admin verb's DB half (the

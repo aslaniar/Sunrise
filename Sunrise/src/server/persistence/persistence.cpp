@@ -1740,11 +1740,13 @@ bool write_back(const core::settings::AccountKey key) noexcept {
 
 /** Persists one subclass equip in a single transaction: the two-row swap plus the serials. */
 bool persist_subclass_equip(std::uint64_t newlyEquippedSoid,
-                            std::uint64_t displacedSoid) noexcept {
+                            std::uint64_t displacedSoid,
+                            const core::settings::AccountKey key) noexcept {
+    g_activeAccount = key;
     // The serials land with the mutation, so they are read from the published State before the
     // transaction (the same pattern as persist_ability_change). The mover sits in the subclass
     // slot and the displaced item in storage, both carrying their post-swap generations.
-    const state::AccountState account = state::account_snapshot();
+    const state::AccountState account = state::account_snapshot(key);
     std::size_t characterIndex = account.characterCount;
     for (std::size_t index = 0; index < account.characterCount; ++index) {
         if (account.characters[index].selected) {
@@ -1878,8 +1880,9 @@ bool persist_subclass_equip(std::uint64_t newlyEquippedSoid,
 }
 
 /** Persists the selected character's five ability-entry picks. */
-bool persist_ability_change() noexcept {
-    const state::AccountState account = state::account_snapshot();
+bool persist_ability_change(const core::settings::AccountKey key) noexcept {
+    g_activeAccount = key;
+    const state::AccountState account = state::account_snapshot(key);
     std::size_t characterIndex = account.characterCount;
     for (std::size_t index = 0; index < account.characterCount; ++index) {
         if (account.characters[index].selected) {
