@@ -938,6 +938,26 @@ void handle_client_log(SOCKET client, std::string_view query) noexcept {
         const std::string_view levelOut =
             levelIndex == std::size(kLevelNames) ? std::string_view{"info"}
                                                  : kLevelNames[levelIndex];
+        // The client log has no sequence space of its own, and reusing "seq" here would
+        // collide with /events' genuine monotonic ring sequence under the same name and
+        // in the same column. Emit the line's OWN t= instead (ms since the client process
+        // started) - the clock merge_logs.py and boot_record.py already treat as the
+        // client clock. -1 when a line carries no t=.
+        long long lineT = -1;
+        const std::size_t tAt = line.find("t=");
+        if (tAt != std::string_view::npos
+            && (tAt == 0 || line[tAt - 1] == ' ')) {
+            std::string_view rest = line.substr(tAt + 2);
+            long long parsed = 0;
+            std::size_t digits = 0;
+            while (digits < rest.size() && rest[digits] >= '0' && rest[digits] <= '9') {
+                parsed = parsed * 10 + (rest[digits] - '0');
+                ++digits;
+            }
+            if (digits != 0) {
+                lineT = parsed;
+            }
+        }
         if (used + kEventsTailReserve >= kEventsResponseCapacity) {
             truncated = true;
             break;
@@ -945,10 +965,10 @@ void handle_client_log(SOCKET client, std::string_view query) noexcept {
         const std::size_t before = used;
         advance(std::snprintf(out + used,
                               kEventsResponseCapacity - kEventsTailReserve - used,
-                              "%s{\"seq\":%zu,\"channel\":\"%.*s\",\"level\":\"%.*s\","
+                              "%s{\"t\":%lld,\"channel\":\"%.*s\",\"level\":\"%.*s\","
                               "\"text\":\"%s\"}",
                               emitted == 0 ? "" : ",",
-                              index,
+                              lineT,
                               static_cast<int>(channelOut.size()), channelOut.data(),
                               static_cast<int>(levelOut.size()), levelOut.data(),
                               escaped));

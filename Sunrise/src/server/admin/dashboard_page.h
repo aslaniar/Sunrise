@@ -108,7 +108,7 @@ inline constexpr std::string_view kDashboardPage = R"SUNRISE_DASH(<!DOCTYPE html
     </div>
     <div class="feed" id="feed">
       <table>
-        <thead><tr><th class="num">seq</th><th>channel</th><th>level</th><th>text</th></tr></thead>
+        <thead><tr><th class="num" id="ordCol">seq</th><th>channel</th><th>level</th><th>text</th></tr></thead>
         <tbody id="eventsBody"></tbody>
       </table>
     </div>
@@ -227,6 +227,9 @@ function fetchClientLog() {
 
 function setSource(value, el) {
   state.source = value;
+  // The two sources do not share an ordinate: server rows carry the ring's monotonic
+  // sequence, client rows carry the client process's own t=. Name the column honestly.
+  $('ordCol').textContent = value === 'client' ? 't (client)' : 'seq';
   var chips = el.parentNode.children;
   for (var i = 0; i < chips.length; i++) {
     if (chips[i].className.indexOf('chip') === 0) { chips[i].classList.remove('active'); }
@@ -242,14 +245,22 @@ function nearBottom() {
 
 function appendRows(data, clear) {
   var body = $('eventsBody');
-  if (clear) { body.textContent = ''; }
+  // Measure BEFORE clearing. Clearing collapses scrollHeight to clientHeight, which
+  // makes nearBottom() trivially true, which pinned the view to the bottom on every
+  // poll - unusable on the client-log source, where every poll replaces the table.
+  var feed = $('feed');
   var pin = nearBottom();
+  var keepTop = feed.scrollTop;
+  if (clear) { body.textContent = ''; }
   var rows = data.rows || [];
   for (var i = 0; i < rows.length; i++) {
     var row = rows[i];
     var tr = document.createElement('tr');
     var seq = document.createElement('td');
-    seq.textContent = '' + row.seq;
+    // /events rows carry a ring sequence; /clientlog rows carry the client's own
+    // t= instead. They are different spaces and must not be read as comparable.
+    seq.textContent = row.seq !== undefined ? ('' + row.seq)
+                    : (row.t >= 0 ? row.t + 'ms' : '-');
     seq.className = 'num';
     var ch = document.createElement('td');
     ch.textContent = row.channel;
@@ -268,7 +279,12 @@ function appendRows(data, clear) {
   // The server ring holds 4096 entries; a 500-row cap silently threw away most
   // of a boot even after the cursor was fixed.
   while (kids.length > 5000) { body.removeChild(kids[0]); }
-  if (pin) { $('feed').scrollTop = $('feed').scrollHeight; }
+  if (pin) {
+    feed.scrollTop = feed.scrollHeight;
+  } else if (clear) {
+    // A full replace would otherwise dump the reader back to the top.
+    feed.scrollTop = Math.min(keepTop, feed.scrollHeight);
+  }
 }
 
 function fetchEvents(first) {
