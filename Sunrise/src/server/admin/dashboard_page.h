@@ -287,27 +287,42 @@ function fetchMerged() {
   ]).then(function (both) {
     var srvRows = both[0].rows || [], cliRows = both[1].rows || [];
     var fit = solveOffset(both[0].rows || [], both[1].rows || []);
-    var merged = [];
+    var srv = [], cli = [];
     srvRows.forEach(function (r) {
       var t = parseT(r.text);
-      merged.push({ t: t === null ? 0 : t, side: 'S', channel: r.channel,
-                    level: r.level, text: r.text });
+      srv.push({ t: t === null ? 0 : t, side: 'S', channel: r.channel,
+                 level: r.level, text: r.text });
     });
+    cliRows.forEach(function (r) {
+      cli.push({ t: r.t >= 0 ? r.t : 0, side: 'C', channel: r.channel,
+                 level: r.level, text: r.text });
+    });
+    srv.sort(function (a, b) { return a.t - b.t; });
+    cli.sort(function (a, b) { return a.t - b.t; });
+
+    var merged;
     if (fit) {
-      cliRows.forEach(function (r) {
-        merged.push({ t: r.t >= 0 ? r.t + fit.median : 0, side: 'C',
-                      channel: r.channel, level: r.level, text: r.text });
-      });
+      // Anchored: one clock, genuinely interleavable.
+      cli.forEach(function (r) { r.t = r.t + fit.median; });
+      merged = srv.concat(cli);
+      merged.sort(function (a, b) { return a.t - b.t; });
+    } else {
+      // No shared instant in view. Both sides are still shown - hiding the client
+      // rows was worse than showing them - but they are NOT interleaved, because
+      // the two clocks are independent and sorting across them would invent an
+      // order that does not exist. Server block, separator, client block.
+      merged = srv.concat([{ separator: true }]).concat(cli);
     }
-    merged.sort(function (a, b) { return a.t - b.t; });
     appendRows({ rows: merged }, true);
-    $('eventsStatus').className = fit ? 'ok' : 'err';
-    $('eventsStatus').textContent = fit ? 'ok' : 'no anchor';
+    $('eventsStatus').className = fit ? 'ok' : 'lv-warn';
+    $('eventsStatus').textContent = fit ? 'ok' : 'unanchored';
     $('eventsMeta').textContent = fit
       ? ('merged on wire anchor: offset ' + fit.median + 'ms, ' + fit.pairs +
          ' pairs, spread ' + fit.robust + 'ms (p10-p90) | ' + stamp())
-      : ('no wire anchor in view - server pushes and client tape rows must both be ' +
-         'present; showing server side only | ' + stamp());
+      : ('NOT ALIGNED - no wire anchor in view. Both sides are shown on their OWN ' +
+         'clocks and cross-side order is meaningless. The anchor needs a server ' +
+         'activity push paired with a client tape=1 svc=9 row, which only appears ' +
+         'once a session reaches the activity phase. | ' + stamp());
     return merged;
   }).catch(function (err) {
     $('eventsStatus').className = 'err';
@@ -346,6 +361,19 @@ function appendRows(data, clear) {
   var rows = data.rows || [];
   for (var i = 0; i < rows.length; i++) {
     var row = rows[i];
+    if (row.separator) {
+      var sep = document.createElement('tr');
+      var cell = document.createElement('td');
+      cell.colSpan = 4;
+      cell.textContent =
+        '\u2500\u2500 above: server ring (server clock) \u2502 below: client log '
+        + '(client clock) \u2500\u2500 not aligned \u2500\u2500';
+      cell.className = 'lv-warn';
+      cell.style.textAlign = 'center';
+      sep.appendChild(cell);
+      body.appendChild(sep);
+      continue;
+    }
     var tr = document.createElement('tr');
     var seq = document.createElement('td');
     // /events rows carry a ring sequence; /clientlog rows carry the client's own
