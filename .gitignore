@@ -16,3 +16,7 @@
 
 # Build capture noise
 /build_out*.txt
+
+# python bytecode
+__pycache__/
+*.pyc
