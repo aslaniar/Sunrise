@@ -1,19 +1,29 @@
 #include "admin_http.h"
+#include "dashboard_page.h"
 
 #include <WS2tcpip.h>
 #include <WinSock2.h>
 #include <Windows.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
+#include <limits>
+#include <optional>
+#include <span>
 #include <string_view>
 
 #include "../../core/filesystem/path.h"
 #include "../../core/logging/log.h"
+#include "../../core/logging/snapshot/snapshot.h"
+#include "../../core/logging/view/log_snapshot_view.h"
+#include "../../core/settings/address_text.h"
+#include "../../core/settings/settings.h"
 #include "../../state/build_data/cache/internal.h"
 #include "../../state/runtime/equipment/configured_equipment_identity.h"
 #include "../../state/runtime/runtime.h"
@@ -30,8 +40,31 @@ constexpr std::uint16_t kAdminPort = 8099;
 constexpr std::size_t kRequestCapacity = 4096;
 /** The widest JSON answer (the flags' run list). */
 constexpr std::size_t kResponseCapacity = 16384;
+/** The event feed pages fit this window; the snapshot itself is ~4 MiB. */
+constexpr std::size_t kEventsResponseCapacity = 65536;
+/** One event page carries this many rows before the budget truncates it. */
+constexpr std::uint32_t kEventsPageDefault = 300;
+/** A caller may never page more than this many rows at once. */
+constexpr std::uint32_t kEventsPageMaximum = 512;
+/** One escaped row never needs more than this much working space. */
+constexpr std::size_t kEventsRowEscapedCapacity = 8192;
+/**
+ * The events route stacks a value-owned 4096-entry snapshot (~4 MiB) plus
+ * this page buffer, over the 1 MiB default thread stack. The worker thread
+ * gets the server main thread's stack size instead.
+ */
+constexpr std::size_t kListenerThreadStackBytes = 8 * 1024 * 1024;
 /** The worker wakes this often, bounding shutdown latency. */
 constexpr long kPollIntervalMilliseconds = 50;
+
+/** Names are the wire contract; indices must track the Channel enum. */
+constexpr std::string_view kChannelNames[]{"core", "client", "state", "server", "middleware"};
+static_assert(std::size(kChannelNames) == static_cast<std::size_t>(core::log::Channel::count),
+              "channel names must enumerate every logging channel");
+/** Names are the wire contract; indices must track the Level enum. */
+constexpr std::string_view kLevelNames[]{"error", "warn", "info", "debug", "off"};
+static_assert(std::size(kLevelNames) == static_cast<std::size_t>(core::log::Level::off) + 1,
+              "level names must enumerate every logging level");
 
 /** Fixed listener state; the worker thread owns the socket while running. */
 struct Listener {
@@ -87,6 +120,158 @@ std::uint32_t query_number(std::string_view query,
         parsed = parsed * 10U + static_cast<std::uint32_t>(digit - '0');
     }
     return parsed;
+}
+
+/** Parses one unsigned decimal cursor, clamped to a bound. */
+std::uint64_t query_u64(std::string_view query,
+                        std::string_view key,
+                        std::uint64_t fallback) noexcept {
+    const std::string_view value = query_value(query, key);
+    if (value.empty()) {
+        return fallback;
+    }
+    std::uint64_t parsed = 0;
+    for (const char digit : value) {
+        if (digit < '0' || digit > '9') {
+            return fallback;
+        }
+        const std::uint64_t added = static_cast<std::uint64_t>(digit - '0');
+        if (parsed > ((std::numeric_limits<std::uint64_t>::max)() - added) / 10U) {
+            return fallback;
+        }
+        parsed = parsed * 10U + added;
+    }
+    return parsed;
+}
+
+/**
+ * Decodes one query value's %XX escapes into ASCII storage.
+ * The view's text filter is bounded, so an over-long query truncates.
+ * @param encoded Borrowed percent-encoded text.
+ * @param output Receives decoded bytes; never null-terminated by this call.
+ * @return Bytes written, at most the output size.
+ */
+std::size_t decode_query_text(std::string_view encoded, std::span<char> output) noexcept {
+    const auto hex_digit = [](char value) noexcept -> int {
+        if (value >= '0' && value <= '9') {
+            return value - '0';
+        }
+        if (value >= 'a' && value <= 'f') {
+            return value - 'a' + 10;
+        }
+        if (value >= 'A' && value <= 'F') {
+            return value - 'A' + 10;
+        }
+        return -1;
+    };
+    std::size_t written = 0;
+    for (std::size_t index = 0; index < encoded.size() && written < output.size(); ++index) {
+        const char value = encoded[index];
+        if (value == '%' && index + 2 < encoded.size()) {
+            const int high = hex_digit(encoded[index + 1]);
+            const int low = hex_digit(encoded[index + 2]);
+            if (high >= 0 && low >= 0) {
+                output[written++] = static_cast<char>((high << 4) | low);
+                index += 2;
+                continue;
+            }
+        }
+        output[written++] = value;
+    }
+    return written;
+}
+
+/** @return The channel one name denotes, or the channel count when unknown. */
+std::size_t channel_index(std::string_view name) noexcept {
+    for (std::size_t index = 0; index < std::size(kChannelNames); ++index) {
+        if (kChannelNames[index] == name) {
+            return index;
+        }
+    }
+    return std::size(kChannelNames);
+}
+
+/** @return The level one name denotes, or the level count when unknown. */
+std::size_t level_index(std::string_view name) noexcept {
+    for (std::size_t index = 0; index < std::size(kLevelNames); ++index) {
+        if (kLevelNames[index] == name) {
+            return index;
+        }
+    }
+    return std::size(kLevelNames);
+}
+
+/**
+ * JSON-escapes one text value into fixed storage.
+ * Quotes, backslashes, and control bytes are escaped; higher bytes pass
+ * through raw because the structured log lines are ASCII by convention.
+ * @param output Receives the escaped text and a trailing null.
+ * @param capacity Bytes available at output.
+ * @param text Borrowed value to escape.
+ * @return Escaped length, truncated to what fits.
+ */
+std::size_t escape_json_text(char* output, std::size_t capacity, std::string_view text) noexcept {
+    std::size_t used = 0;
+    for (const char value : text) {
+        const auto byte = static_cast<unsigned char>(value);
+        if (value == '"' || value == '\\') {
+            if (used + 2 >= capacity) {
+                break;
+            }
+            output[used++] = '\\';
+            output[used++] = value;
+        } else if (byte < 0x20) {
+            const int written = std::snprintf(output + used, capacity - used, "\\u%04X", byte);
+            if (written <= 0 || static_cast<std::size_t>(written) >= capacity - used) {
+                break;
+            }
+            used += static_cast<std::size_t>(written);
+        } else {
+            if (used + 1 >= capacity) {
+                break;
+            }
+            output[used++] = value;
+        }
+    }
+    output[used] = '\0';
+    return used;
+}
+
+/**
+ * Composes one event row into the response body.
+ * @param body Response storage.
+ * @param capacity Bytes available at body.
+ * @param used Bytes written so far, raised only when the whole row fits.
+ * @param entry Event to serialize.
+ * @param first True when no row was written yet.
+ * @return False when the row would exceed the remaining budget.
+ */
+bool append_event_row(char* body,
+                      std::size_t capacity,
+                      std::size_t& used,
+                      const core::log::snapshot::Entry& entry,
+                      bool first) noexcept {
+    char escaped[kEventsRowEscapedCapacity]{};
+    (void)escape_json_text(escaped, sizeof escaped, entry.text());
+    const std::size_t channel =
+        static_cast<std::size_t>(entry.channel());
+    const std::size_t level = static_cast<std::size_t>(entry.level());
+    const int written = std::snprintf(body + used,
+                                      capacity - used,
+                                      "%s{\"seq\":%llu,\"channel\":\"%.*s\",\"level\":\"%.*s\","
+                                      "\"text\":\"%s\"}",
+                                      first ? "" : ",",
+                                      static_cast<unsigned long long>(entry.sequence()),
+                                      static_cast<int>(kChannelNames[channel].size()),
+                                      kChannelNames[channel].data(),
+                                      static_cast<int>(kLevelNames[level].size()),
+                                      kLevelNames[level].data(),
+                                      escaped);
+    if (written <= 0 || static_cast<std::size_t>(written) >= capacity - used) {
+        return false;
+    }
+    used += static_cast<std::size_t>(written);
+    return true;
 }
 
 /** Appends one line to the persistent intervention journal (the bookkeeping rule). */
@@ -310,6 +495,129 @@ void handle_journal(SOCKET client) noexcept {
             ok ? std::string_view{buffer, read} : std::string_view{"(read failed)\n"});
 }
 
+/** GET / — the self-contained dashboard page. */
+void handle_dashboard(SOCKET client) noexcept {
+    respond(client, "200 OK", "text/html; charset=utf-8", dashboard_page());
+}
+
+/**
+ * GET /events — one paged, filtered page of the in-process log ring.
+ * Filtering happens server-side through the same view the in-game panel
+ * uses; the page's cursor is the monotonic log sequence, so a consumer can
+ * detect events the ring overwrote between polls.
+ */
+void handle_events(SOCKET client, std::string_view query) noexcept {
+    const std::uint64_t since = query_u64(query, "since", 0);
+    const std::uint32_t limit = query_number(query, "limit", kEventsPageDefault);
+    const std::uint32_t pageLimit = (std::min)(limit, kEventsPageMaximum);
+
+    const std::string_view channelName = query_value(query, "channel");
+    const std::string_view levelName = query_value(query, "level");
+    core::log::view::Filter filter{};
+    if (!channelName.empty() && channelName != "all") {
+        const std::size_t index = channel_index(channelName);
+        if (index == std::size(kChannelNames)) {
+            respond(client, "400 Bad Request", "application/json",
+                    "{\"ok\":false,\"reason\":\"unknown channel\"}");
+            return;
+        }
+        filter.channel = static_cast<core::log::Channel>(index);
+    }
+    if (!levelName.empty() && levelName != "all") {
+        const std::size_t index = level_index(levelName);
+        if (index == std::size(kLevelNames)) {
+            respond(client, "400 Bad Request", "application/json",
+                    "{\"ok\":false,\"reason\":\"unknown level\"}");
+            return;
+        }
+        filter.level = static_cast<core::log::Level>(index);
+    }
+    std::array<char, core::log::view::kTextFilterCapacity> textQuery{};
+    const std::size_t textLength =
+        decode_query_text(query_value(query, "text"), textQuery);
+    if (textLength != 0) {
+        (void)core::log::view::set_text(filter, {textQuery.data(), textLength});
+    }
+
+    // The snapshot is value-owned (~4 MiB at the server ring size); the
+    // listener thread carries kListenerThreadStackBytes for this purpose.
+    const core::log::snapshot::Snapshot snapshot = core::log::snapshot::take();
+    const core::log::view::Result result = core::log::view::select(snapshot, filter);
+
+    char body[kEventsResponseCapacity]{};
+    std::size_t used = 0;
+    if (filter.channel.has_value()) {
+        const std::string_view name =
+            kChannelNames[static_cast<std::size_t>(*filter.channel)];
+        used += static_cast<std::size_t>(std::snprintf(
+            body,
+            sizeof body,
+            "{\"since\":%llu,\"limit\":%u,\"count\":%zu,\"first\":%llu,\"last\":%llu,"
+            "\"channel\":\"%.*s\",",
+            static_cast<unsigned long long>(since),
+            static_cast<unsigned>(pageLimit),
+            snapshot.entries().size(),
+            static_cast<unsigned long long>(snapshot.oldest_sequence()),
+            static_cast<unsigned long long>(snapshot.newest_sequence()),
+            static_cast<int>(name.size()),
+            name.data()));
+    } else {
+        used += static_cast<std::size_t>(std::snprintf(
+            body,
+            sizeof body,
+            "{\"since\":%llu,\"limit\":%u,\"count\":%zu,\"first\":%llu,\"last\":%llu,"
+            "\"channel\":null,",
+            static_cast<unsigned long long>(since),
+            static_cast<unsigned>(pageLimit),
+            snapshot.entries().size(),
+            static_cast<unsigned long long>(snapshot.oldest_sequence()),
+            static_cast<unsigned long long>(snapshot.newest_sequence())));
+    }
+    if (filter.level.has_value()) {
+        const std::string_view name = kLevelNames[static_cast<std::size_t>(*filter.level)];
+        used += static_cast<std::size_t>(std::snprintf(
+            body + used,
+            kEventsResponseCapacity - used,
+            "\"level\":\"%.*s\",\"rows\":[",
+            static_cast<int>(name.size()),
+            name.data()));
+    } else {
+        used += static_cast<std::size_t>(std::snprintf(
+            body + used,
+            kEventsResponseCapacity - used,
+            "\"level\":null,\"rows\":["));
+    }
+
+    std::size_t emitted = 0;
+    bool truncated = false;
+    std::uint64_t next = since;
+    for (const core::log::snapshot::Entry* entry : result.entries()) {
+        if (entry->sequence() <= since) {
+            continue;
+        }
+        if (emitted >= pageLimit) {
+            truncated = true;
+            break;
+        }
+        const std::size_t rowStart = used;
+        if (!append_event_row(body, kEventsResponseCapacity, used, *entry, emitted == 0)) {
+            used = rowStart;
+            truncated = true;
+            break;
+        }
+        next = entry->sequence();
+        ++emitted;
+    }
+    used += static_cast<std::size_t>(
+        std::snprintf(body + used,
+                      kEventsResponseCapacity - used,
+                      "],\"emitted\":%zu,\"truncated\":%s,\"next\":%llu}",
+                      emitted,
+                      truncated ? "true" : "false",
+                      static_cast<unsigned long long>(next)));
+    respond(client, "200 OK", "application/json", {body, used});
+}
+
 /** POST /suppress + /restore — one flag range, the runtime + the DB + the journal. */
 void handle_flag_write(SOCKET client,
                        std::string_view query,
@@ -419,7 +727,9 @@ void serve_connection(SOCKET client) noexcept {
     request.path = question == std::string_view::npos ? target : target.substr(0, question);
     request.query = question == std::string_view::npos ? std::string_view{} : target.substr(question + 1);
 
-    if (request.verb == "GET" && request.path == "/state") {
+    if (request.verb == "GET" && request.path == "/") {
+        handle_dashboard(client);
+    } else if (request.verb == "GET" && request.path == "/state") {
         handle_state(client);
     } else if (request.verb == "GET" && request.path == "/ladder") {
         handle_ladder(client);
@@ -427,6 +737,10 @@ void serve_connection(SOCKET client) noexcept {
         handle_flags(client, request.query);
     } else if (request.verb == "GET" && request.path == "/journal") {
         handle_journal(client);
+    } else if (request.verb == "GET" && request.path == "/events") {
+        handle_events(client, request.query);
+        // LANE D INSERTION POINT: the GET /health route (and its handler)
+        // lands next to /events, before the write verbs below.
     } else if (request.verb == "POST" && request.path == "/suppress") {
         handle_flag_write(client, request.query, 0, "suppress");
     } else if (request.verb == "POST" && request.path == "/restore") {
@@ -477,8 +791,25 @@ DWORD WINAPI listener_main(void*) noexcept {
     return 0;
 }
 
-/** Binds the loopback TCP listener. */
-[[nodiscard]] SOCKET bind_loopback_tcp(std::uint16_t port) noexcept {
+/**
+ * Folds configured octets into one address value.
+ * @param octets Dotted-quad order.
+ * @return Host-order IPv4 value.
+ */
+[[nodiscard]] std::uint32_t
+host_address(const std::array<unsigned char, address::kOctets>& octets) noexcept {
+    /** One IPv4 octet is 8 bits, so each fold shifts by that much. */
+    constexpr unsigned kOctetBits = 8;
+    std::uint32_t value = 0;
+    for (const unsigned char octet : octets) {
+        value = (value << kOctetBits) | octet;
+    }
+    return value;
+}
+
+/** Binds the TCP listener to one configured IPv4 address. */
+[[nodiscard]] SOCKET bind_address_tcp(
+    std::uint16_t port, const std::array<unsigned char, address::kOctets>& octets) noexcept {
     const SOCKET created = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (created == INVALID_SOCKET) {
         return INVALID_SOCKET;
@@ -486,7 +817,7 @@ DWORD WINAPI listener_main(void*) noexcept {
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_port = htons(port);
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_addr.s_addr = htonl(host_address(octets));
     if (bind(created, reinterpret_cast<const sockaddr*>(&address), sizeof address)
             == SOCKET_ERROR
         || listen(created, SOMAXCONN) == SOCKET_ERROR) {
@@ -496,9 +827,26 @@ DWORD WINAPI listener_main(void*) noexcept {
     return created;
 }
 
+/** Formats one configured address as a dotted quad. */
+std::string_view
+format_bind_address(const std::array<unsigned char, address::kOctets>& octets,
+                    std::span<char> output) noexcept {
+    const int written = std::snprintf(output.data(),
+                                      output.size(),
+                                      "%u.%u.%u.%u",
+                                      static_cast<unsigned>(octets[0]),
+                                      static_cast<unsigned>(octets[1]),
+                                      static_cast<unsigned>(octets[2]),
+                                      static_cast<unsigned>(octets[3]));
+    if (written <= 0) {
+        return {};
+    }
+    return {output.data(), static_cast<std::size_t>(written)};
+}
+
 } // namespace
 
-/** Starts the loopback admin HTTP listener. */
+/** Starts the admin HTTP listener on the configured bind address. */
 bool initialize() noexcept {
     AcquireSRWLockExclusive(&g_listener.lock);
     if (g_listener.running.load(std::memory_order_acquire)) {
@@ -511,7 +859,9 @@ bool initialize() noexcept {
         return false;
     }
     g_listener.winsockOwned = true;
-    g_listener.socket = bind_loopback_tcp(kAdminPort);
+    const std::array<unsigned char, address::kOctets>& bindAddress =
+        core::settings::get().server.bindAddress;
+    g_listener.socket = bind_address_tcp(kAdminPort, bindAddress);
     if (g_listener.socket == INVALID_SOCKET) {
         core::log::write(core::log::Channel::server,
                          core::log::Level::warn,
@@ -520,7 +870,10 @@ bool initialize() noexcept {
         return false;
     }
     g_listener.running.store(true, std::memory_order_release);
-    g_listener.thread = CreateThread(nullptr, 0, listener_main, nullptr, 0, nullptr);
+    // The events route stacks a multi-megabyte snapshot, so the worker gets
+    // the server main thread's stack size instead of the 1 MiB default.
+    g_listener.thread =
+        CreateThread(nullptr, kListenerThreadStackBytes, listener_main, nullptr, 0, nullptr);
     if (g_listener.thread == nullptr) {
         g_listener.running.store(false, std::memory_order_release);
         (void)closesocket(g_listener.socket);
@@ -529,8 +882,15 @@ bool initialize() noexcept {
         return false;
     }
     std::array<char, core::log::kLineCapacity> line{};
+    std::array<char, 64> bind{};
+    const std::string_view bindText = format_bind_address(bindAddress, bind);
     const int written = std::snprintf(
-        line.data(), line.size(), "ev=admin stage=listen result=ok port=%u", kAdminPort);
+        line.data(),
+        line.size(),
+        "ev=admin stage=listen result=ok port=%u bind=%.*s",
+        kAdminPort,
+        static_cast<int>(bindText.size()),
+        bindText.data());
     if (written > 0) {
         core::log::write(core::log::Channel::server,
                          core::log::Level::info,

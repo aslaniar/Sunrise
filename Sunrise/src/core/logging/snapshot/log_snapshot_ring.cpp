@@ -18,6 +18,8 @@ struct RingState {
     std::size_t nextIndex{};
     std::size_t count{};
     std::uint64_t overwrittenCount{};
+    /** Next sequence to stamp; monotonic across ring overwrites. */
+    std::uint64_t nextSequence{};
 };
 
 RingState g_ring;
@@ -44,6 +46,11 @@ Level Entry::level() const noexcept {
     return level_;
 }
 
+/** @return Monotonic sequence assigned when the ring stored the event. */
+std::uint64_t Entry::sequence() const noexcept {
+    return sequence_;
+}
+
 /** @return Bounded formatted event text without the sink line ending. */
 std::string_view Entry::text() const noexcept {
     return {text_.data(), textLength_};
@@ -57,6 +64,16 @@ std::span<const Entry> Snapshot::entries() const noexcept {
 /** @return Count of older entries replaced by the fixed ring. */
 std::uint64_t Snapshot::overwritten_count() const noexcept {
     return overwrittenCount_;
+}
+
+/** @return Oldest retained sequence, or zero while the snapshot is empty. */
+std::uint64_t Snapshot::oldest_sequence() const noexcept {
+    return count_ != 0 ? entries_[0].sequence_ : 0;
+}
+
+/** @return Newest retained sequence, or zero while the snapshot is empty. */
+std::uint64_t Snapshot::newest_sequence() const noexcept {
+    return count_ != 0 ? entries_[count_ - 1].sequence_ : 0;
 }
 
 /** @return A value-owned chronological copy of all retained events. */
@@ -83,6 +100,7 @@ void reset() noexcept {
     g_ring.nextIndex = 0;
     g_ring.count = 0;
     g_ring.overwrittenCount = 0;
+    g_ring.nextSequence = 0;
     ReleaseSRWLockExclusive(&g_ring.lock);
 }
 
@@ -102,6 +120,10 @@ void record(Channel channel, Level level, std::string_view text) noexcept {
     entry = {};
     entry.channel_ = channel;
     entry.level_ = level;
+    entry.sequence_ = g_ring.nextSequence;
+    if (g_ring.nextSequence != (std::numeric_limits<std::uint64_t>::max)()) {
+        ++g_ring.nextSequence;
+    }
     const std::size_t maximumText = entry.text_.size() - kTextTerminatorBytes;
     entry.textLength_ = (std::min)(text.size(), maximumText);
     if (entry.textLength_ != 0) {

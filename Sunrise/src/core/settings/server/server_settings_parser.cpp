@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "../../../state/entitlements/validation.h"
+#include "../address_text.h"
 #include "../parser.h"
 
 namespace sunrise::core::settings::parser {
@@ -83,6 +84,7 @@ bool Parser::server_settings(server::Settings& output) noexcept {
     bool hasEntitlements = false;
     bool hasBapPort = false;
     bool hasHttpsPort = false;
+    bool hasBindAddress = false;
     bool hasBootstrapToken = false;
     bool hasConfigGuid = false;
     bool hasPackagesDir = false;
@@ -118,6 +120,15 @@ bool Parser::server_settings(server::Settings& output) noexcept {
             }
             output.httpsPort = static_cast<std::uint16_t>(value);
             hasHttpsPort = true;
+        } else if (key == "bind_address") {
+            std::string_view value;
+            // A valid dotted quad only, like the gameplay endpoint's key: an
+            // empty or host-name value refuses the whole settings file.
+            if (hasBindAddress || !string(value)
+                || !address::parse_ipv4(value, output.bindAddress)) {
+                return false;
+            }
+            hasBindAddress = true;
         } else if (key == "bootstrap_token") {
             std::string_view value;
             if (hasBootstrapToken || !string(value)

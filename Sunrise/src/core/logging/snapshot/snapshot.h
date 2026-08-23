@@ -10,8 +10,16 @@
 
 namespace sunrise::core::log::snapshot {
 
-/** The newest 128 events cover short diagnosis windows and cap static storage. */
+/**
+ * Retained events: the standalone server holds a few thousand so its admin
+ * event feed pages real history; the in-process DLL keeps the short window so
+ * no game-thread caller ever stacks a multi-megabyte snapshot.
+ */
+#if defined(SUNRISE_STANDALONE_SERVER)
+inline constexpr std::size_t kEntryCapacity = 4096;
+#else
 inline constexpr std::size_t kEntryCapacity = 128;
+#endif
 
 namespace internal {
 
@@ -29,6 +37,13 @@ public:
     /** @return Severity that accepted the event. */
     [[nodiscard]] Level level() const noexcept;
 
+    /**
+     * @return Monotonic sequence assigned when the ring stored the event.
+     * Sequence numbers survive ring overwrites, so a consumer cursor can
+     * detect dropped events between two snapshots.
+     */
+    [[nodiscard]] std::uint64_t sequence() const noexcept;
+
     /** @return Bounded formatted event text without the sink line ending. */
     [[nodiscard]] std::string_view text() const noexcept;
 
@@ -37,6 +52,7 @@ private:
 
     Channel channel_{Channel::core};
     Level level_{Level::error};
+    std::uint64_t sequence_{};
     std::array<char, kLineCapacity> text_{};
     std::size_t textLength_{};
 };
@@ -49,6 +65,15 @@ public:
 
     /** @return Count of older entries replaced by the fixed ring. */
     [[nodiscard]] std::uint64_t overwritten_count() const noexcept;
+
+    /**
+     * @return Oldest retained sequence, or zero while the snapshot is empty.
+     * A cursor below this value has lost events to the ring.
+     */
+    [[nodiscard]] std::uint64_t oldest_sequence() const noexcept;
+
+    /** @return Newest retained sequence, or zero while the snapshot is empty. */
+    [[nodiscard]] std::uint64_t newest_sequence() const noexcept;
 
 private:
     friend Snapshot take() noexcept;

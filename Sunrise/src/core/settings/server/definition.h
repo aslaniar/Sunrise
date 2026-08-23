@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "../../../state/entitlements/definition.h"
+#include "../address_text.h"
 #include "gameplay/definition.h"
 
 namespace sunrise::core::settings::server {
@@ -30,6 +31,13 @@ struct Settings {
     std::uint16_t bapPort{kDefaultBapPort};
     /** HTTPS listener port. 443 is forced by the Client's scheme-preserving URL rewrite. */
     std::uint16_t httpsPort{kDefaultHttpsPort};
+    /**
+     * Local interface the Layer-2 admin listener binds. Loopback by default;
+     * 0.0.0.0 opens the admin HTTP surface on every interface, which no
+     * offline build needs but the multiplayer bind-address rework rehearses
+     * (the gameplay endpoint already carries the same key).
+     */
+    std::array<unsigned char, address::kOctets> bindAddress{127, 0, 0, 1};
     /** 16 content-id bytes as uppercase or lowercase hex text. Published into State at boot. */
     std::array<char, kBootstrapTokenCapacity> bootstrapToken{"00000000000000000000000000000000"};
     /** Optional served ContentConfig id. Empty serves the State fingerprint id. */

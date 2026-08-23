@@ -44,6 +44,7 @@
   "server": {
     "bap_port": 30974,
     "https_port": 443,
+    "bind_address": "127.0.0.1",
     "bootstrap_token": "00000000000000000000000000000000",
     "packages_dir": "",
     "build_data_path": "",
