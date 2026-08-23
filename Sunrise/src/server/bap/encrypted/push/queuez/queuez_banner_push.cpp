@@ -59,7 +59,7 @@ bool append_banner_notification(Scratch& scratch,
     after = before;
     // The pair names one character, so with none selected there is nothing to publish yet and the
     // first pick delivers it. That is an ordinary boot state, not a failure.
-    if (state::account::selected_character_soid(state::account_snapshot()) == 0) {
+    if (state::account::selected_character_soid(state::account_snapshot(after.accountKey)) == 0) {
         core::log::write(core::log::Channel::server,
                          core::log::Level::info,
                          "ev=queuez stage=banner result=skip reason=unselected");
@@ -68,7 +68,8 @@ bool append_banner_notification(Scratch& scratch,
     snapshot::Prepared prepared{};
     // The unsolicited pair is the family's first delivery, so it carries the full-snapshot flag.
     if (!snapshot::prepare_banner(
-            scratch, familyRootSoid, queuez::kInitialFamilyVersion, 0, prepared)) {
+            scratch, familyRootSoid, queuez::kInitialFamilyVersion, 0, prepared,
+            after.accountKey)) {
         core::log::write(core::log::Channel::server,
                          core::log::Level::warn,
                          "ev=queuez stage=banner result=fail reason=prepare");
@@ -93,7 +94,7 @@ bool append_banner_notification(Scratch& scratch,
     // The Client now holds this pair, so the ladder owns it. Without this an unsubscribe leaves
     // family zero unrecorded and the next pick has no previous record to release.
     const std::uint64_t delivered =
-        state::account::selected_character_soid(state::account_snapshot());
+        state::account::selected_character_soid(state::account_snapshot(after.accountKey));
     if (!after.family0Active && delivered != 0) {
         after.family0Active = true;
         after.family0Character = delivered;
@@ -155,7 +156,8 @@ bool append_banner_move_notification(Scratch& scratch,
                                   before.family4RootSoid,
                                   after.family0Version,
                                   incremental ? before.family0Character : 0,
-                                  prepared)) {
+                                  prepared,
+                                  after.accountKey)) {
         core::log::write(core::log::Channel::server,
                          core::log::Level::warn,
                          "ev=queuez stage=banner_move result=fail reason=prepare");
@@ -211,7 +213,8 @@ bool append_banner_refresh_notification(Scratch& scratch,
                                           before.family4RootSoid,
                                           after.family0Version,
                                           characterSoid,
-                                          prepared)) {
+                                          prepared,
+                                          after.accountKey)) {
         core::log::write(core::log::Channel::server,
                          core::log::Level::warn,
                          "ev=queuez stage=banner_refresh result=fail reason=prepare");
@@ -262,7 +265,7 @@ bool append_roster_refresh_notification(Scratch& scratch,
     if (!queuez::stage_roster_appearance_refresh(before, characterSoid, true, refresh)) {
         return false;
     }
-    const state::AccountState account = state::account_snapshot();
+    const state::AccountState account = state::account_snapshot(after.accountKey);
     std::size_t characterIndex = account.characterCount;
     for (std::size_t index = 0; index < account.characterCount; ++index) {
         if (account.characters[index].soid == characterSoid) {
@@ -273,7 +276,8 @@ bool append_roster_refresh_notification(Scratch& scratch,
     snapshot::Prepared prepared{};
     if (characterIndex >= account.characterCount
         || !snapshot::prepare_roster_appearance_refresh(
-            scratch, refresh, account.characters[characterIndex], characterIndex, prepared)) {
+            scratch, refresh, account.characters[characterIndex], characterIndex, prepared,
+            after.accountKey)) {
         core::log::write(core::log::Channel::server,
                          core::log::Level::warn,
                          "ev=queuez stage=roster_refresh result=fail reason=prepare");

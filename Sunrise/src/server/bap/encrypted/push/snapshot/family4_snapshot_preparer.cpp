@@ -52,7 +52,8 @@ bool prepare(Scratch& scratch,
              const middleware::queuez::Subscription& subscription,
              std::uint32_t accountObjectId,
              const Reservation& reservation,
-             Prepared& prepared) noexcept {
+             Prepared& prepared,
+             core::settings::AccountKey accountKey) noexcept {
     if (reservation.rawWriteOffset > scratch.plaintext.size()
         || reservation.compressedWriteOffset > scratch.sealed.size()) {
         return report_failure("reservation");
@@ -61,7 +62,7 @@ bool prepare(Scratch& scratch,
     if (family4_datagen::account::layout::kObjectSize > rawStorage.size()) {
         return report_failure("account_storage");
     }
-    const state::AccountState account = state::account_snapshot();
+    const state::AccountState account = state::account_snapshot(accountKey);
     if (!state::account::valid(account)) {
         return report_failure("account_state");
     }

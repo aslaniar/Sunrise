@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../../../../middleware/datagen/family4/loadout/definition.h"
+#include "../../../../../core/settings/provisioning.h"
 #include "../../../../../middleware/datagen/family4/loadout/loadout_resolver.h"
 #include "../../../../../state/account/account_state.h"
 #include "../../../../../state/build_data/definition.h"
@@ -54,7 +55,8 @@ inline constexpr std::size_t kSingleObjectCount = 1;
                                   const middleware::queuez::Subscription& subscription,
                                   std::uint32_t objectId,
                                   const Reservation& reservation,
-                                  Prepared& prepared) noexcept;
+                                  Prepared& prepared,
+                            core::settings::AccountKey accountKey = core::settings::kLegacyAccount) noexcept;
 
 /**
  * Builds one incremental Family-3 character record and its optional changed account roster
@@ -70,7 +72,8 @@ inline constexpr std::size_t kSingleObjectCount = 1;
                                                      const queuez::RosterAppearanceRefresh& refresh,
                                                      const state::CharacterState& afterCharacter,
                                                      std::size_t characterIndex,
-                                                     Prepared& prepared) noexcept;
+                                                     Prepared& prepared,
+                                                     core::settings::AccountKey accountKey) noexcept;
 
 /**
  * Compresses one encoded family-four object into the next sealed scratch segment.
@@ -104,7 +107,8 @@ inline constexpr std::size_t kSingleObjectCount = 1;
                            const middleware::queuez::Subscription& subscription,
                            std::uint32_t accountObjectId,
                            const Reservation& reservation,
-                           Prepared& prepared) noexcept;
+                           Prepared& prepared,
+                            core::settings::AccountKey accountKey = core::settings::kLegacyAccount) noexcept;
 
 /**
  * Builds the Family-4 increment that moves the character object to the picked character.
@@ -115,7 +119,8 @@ inline constexpr std::size_t kSingleObjectCount = 1;
  */
 [[nodiscard]] bool prepare_selection_move(Scratch& scratch,
                                           const queuez::SelectCharacter& select,
-                                          Prepared& prepared) noexcept;
+                                          Prepared& prepared,
+                            core::settings::AccountKey accountKey = core::settings::kLegacyAccount) noexcept;
 
 /**
  * Builds the Family-4 increment for the opcode-403 subclass equip — the CHARACTER upsert
@@ -131,7 +136,8 @@ inline constexpr std::size_t kSingleObjectCount = 1;
  */
 [[nodiscard]] bool prepare_subclass_equip(Scratch& scratch,
                                           const queuez::SubclassEquip& equip,
-                                          Prepared& prepared) noexcept;
+                                          Prepared& prepared,
+                            core::settings::AccountKey accountKey = core::settings::kLegacyAccount) noexcept;
 
 /**
  * Builds the Family-4 increment that republishes the SUBCLASS ITEM instance record at the
@@ -155,7 +161,8 @@ inline constexpr std::size_t kSingleObjectCount = 1;
                                           std::uint64_t characterSoid,
                                           const queuez::SessionState& after,
                                           Prepared& prepared,
-                                          bool clearedSockets = false) noexcept;
+                                          bool clearedSockets = false,
+                            core::settings::AccountKey accountKey = core::settings::kLegacyAccount) noexcept;
 
 /**
  * Builds the Family-4 increment that republishes the subclass item after an opcode-801
@@ -168,7 +175,8 @@ inline constexpr std::size_t kSingleObjectCount = 1;
  */
 [[nodiscard]] bool prepare_subclass_selection(Scratch& scratch,
                                               const queuez::SubclassSelection& selection,
-                                              Prepared& prepared) noexcept;
+                                              Prepared& prepared,
+                            core::settings::AccountKey accountKey = core::settings::kLegacyAccount) noexcept;
 
 /**
  * Builds the Family-4 increment that republishes the subclass item after an opcode-2100
@@ -181,7 +189,8 @@ inline constexpr std::size_t kSingleObjectCount = 1;
  */
 [[nodiscard]] bool prepare_ability_change(Scratch& scratch,
                                           const queuez::AbilityChange& change,
-                                          Prepared& prepared) noexcept;
+                                          Prepared& prepared,
+                            core::settings::AccountKey accountKey = core::settings::kLegacyAccount) noexcept;
 
 /** Selected-character mappings the character and item-instance encoders need. */
 struct Resolved {

@@ -158,7 +158,7 @@ bool stage_service_outcome(Scratch& scratch,
         // cache header now (atomic temp+rename) so the next boot's identity gate matches the
         // post-mutation account without a manual repair step.
         const std::uint64_t postHash =
-            state::runtime::equipment::configured_hash(state::account_snapshot());
+            state::runtime::equipment::configured_hash(state::account_snapshot(before.accountKey));
         if (!state::build_data::cache::restamp_equipment_hash(postHash)) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::warn,
@@ -193,7 +193,7 @@ bool stage_service_outcome(Scratch& scratch,
         // The ability picks mix into the configured equipment hash, so the cache header
         // re-stamps exactly like the subclass equip does.
         const std::uint64_t postHash =
-            state::runtime::equipment::configured_hash(state::account_snapshot());
+            state::runtime::equipment::configured_hash(state::account_snapshot(before.accountKey));
         if (!state::build_data::cache::restamp_equipment_hash(postHash)) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::warn,
@@ -263,7 +263,7 @@ bool stage_service_outcome(Scratch& scratch,
             return true;
         }
         const std::uint64_t postHash =
-            state::runtime::equipment::configured_hash(state::account_snapshot());
+            state::runtime::equipment::configured_hash(state::account_snapshot(before.accountKey));
         if (!state::build_data::cache::restamp_equipment_hash(postHash)) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::warn,

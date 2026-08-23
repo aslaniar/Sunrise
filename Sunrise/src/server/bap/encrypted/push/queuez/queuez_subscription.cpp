@@ -36,7 +36,7 @@ namespace {
     companion.familyRootSoid = familyRootSoid;
 
     snapshot::Prepared prepared{};
-    if (!snapshot::prepare_initial(scratch, companion, prepared)) {
+    if (!snapshot::prepare_initial(scratch, companion, prepared, before.accountKey)) {
         core::log::write(core::log::Channel::server,
                          core::log::Level::warn,
                          "ev=queuez stage=companion result=fail reason=prepare");
@@ -124,7 +124,7 @@ void append_queuez_notification(Scratch& scratch,
     if (subscription.familyType == queuez::kBannerFamilyType) {
         // Family zero's version and flags come from this peer's own ladder, so it is prepared
         // here instead of through the generic initial-snapshot path.
-        const state::AccountState account = state::account_snapshot();
+        const state::AccountState account = state::account_snapshot(before.accountKey);
         std::uint64_t selected = 0;
         for (std::size_t index = 0; index < account.characterCount; ++index) {
             if (account.characters[index].selected) {
@@ -150,11 +150,13 @@ void append_queuez_notification(Scratch& scratch,
                                       subscription.familyRootSoid,
                                       stagedAfter.family0Version,
                                       incremental ? before.family0Character : 0,
-                                      prepared)) {
+                                      prepared,
+                                   before.accountKey)) {
             queuez_report::subscription_failure("prepare_banner");
             return;
         }
-    } else if (!snapshot::prepare_initial(scratch, subscription, prepared)) {
+    } else if (!snapshot::prepare_initial(scratch, subscription, prepared,
+                                          before.accountKey)) {
         queuez_report::subscription_failure("prepare");
         return;
     }

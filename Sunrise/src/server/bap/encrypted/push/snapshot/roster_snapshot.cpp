@@ -120,8 +120,9 @@ bool prepare_roster(Scratch& scratch,
                     const middleware::queuez::Subscription& subscription,
                     std::uint32_t objectId,
                     const Reservation& reservation,
-                    Prepared& prepared) noexcept {
-    const state::AccountState account = state::account_snapshot();
+                    Prepared& prepared,
+            core::settings::AccountKey accountKey) noexcept {
+    const state::AccountState account = state::account_snapshot(accountKey);
     if (reservation.rawWriteOffset > scratch.plaintext.size()) {
         return false;
     }
@@ -169,13 +170,14 @@ bool prepare_roster_appearance_refresh(Scratch& scratch,
                                        const queuez::RosterAppearanceRefresh& refresh,
                                        const state::CharacterState& afterCharacter,
                                        std::size_t characterIndex,
-                                       Prepared& prepared) noexcept {
+                                       Prepared& prepared,
+            core::settings::AccountKey accountKey) noexcept {
     const Reservation reservation = reserve_prior(scratch, prepared);
     if (reservation.rawWriteOffset > scratch.plaintext.size()
         || reservation.compressedWriteOffset > scratch.sealed.size()) {
         return report_failure("roster_refresh_reservation");
     }
-    state::AccountState account = state::account_snapshot();
+    state::AccountState account = state::account_snapshot(accountKey);
     if (!refresh.after.family3Active || refresh.after.family3RootSoid == 0
         || refresh.after.family3Version <= kInitialFamilyVersion || refresh.characterSoid == 0
         || afterCharacter.soid != refresh.characterSoid || characterIndex >= account.characterCount

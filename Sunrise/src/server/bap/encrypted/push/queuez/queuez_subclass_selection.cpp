@@ -25,7 +25,8 @@ bool append_subclass_selection_notification(
     std::span<std::byte> response,
     std::size_t& written) noexcept {
     snapshot::Prepared prepared{};
-    if (!snapshot::prepare_subclass_selection(scratch, selection, prepared)) {
+    if (!snapshot::prepare_subclass_selection(scratch, selection, prepared,
+                                        selection.after.accountKey)) {
         return false;
     }
     const std::size_t objectCount = prepared.family.objects.size();

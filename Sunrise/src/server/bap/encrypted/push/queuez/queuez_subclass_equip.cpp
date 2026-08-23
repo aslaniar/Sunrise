@@ -27,7 +27,7 @@ bool append_subclass_equip_notification(Scratch& scratch,
                                         std::span<std::byte> response,
                                         std::size_t& written) noexcept {
     snapshot::Prepared prepared{};
-    if (!snapshot::prepare_subclass_equip(scratch, equip, prepared)) {
+    if (!snapshot::prepare_subclass_equip(scratch, equip, prepared, equip.after.accountKey)) {
         return false;
     }
     const std::size_t beforeBytes = written;

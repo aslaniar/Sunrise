@@ -38,13 +38,14 @@ bool prepare_item_republish(Scratch& scratch,
                             std::uint64_t characterSoid,
                             const queuez::SessionState& after,
                             Prepared& prepared,
-                            bool clearedSockets) noexcept {
+                            bool clearedSockets,
+            core::settings::AccountKey accountKey) noexcept {
     const Reservation reservation = reserve_prior(scratch, prepared);
     if (reservation.rawWriteOffset > scratch.plaintext.size()
         || reservation.compressedWriteOffset > scratch.sealed.size()) {
         return report_failure("item_republish_reservation");
     }
-    const state::AccountState account = state::account_snapshot();
+    const state::AccountState account = state::account_snapshot(accountKey);
     const std::optional<std::size_t> selectedIndex = find_character_index(account);
     Resolved selected{};
     if (!state::account::valid(account) || !selectedIndex.has_value()
@@ -131,20 +132,23 @@ bool prepare_item_republish(Scratch& scratch,
  *  selection — the fork's exact shape (one item upsert, the mutated sockets). */
 bool prepare_subclass_selection(Scratch& scratch,
                                 const queuez::SubclassSelection& selection,
-                                Prepared& prepared) noexcept {
+                                Prepared& prepared,
+            core::settings::AccountKey accountKey) noexcept {
     return prepare_item_republish(scratch,
                                   selection.mutation.subclassInstanceSoid,
                                   selection.characterSoid,
                                   selection.after,
-                                  prepared);
+                                  prepared,
+                                  selection.after.accountKey);
 }
 
 /** Builds the Family-4 increment that republishes the subclass item after an opcode-2100
  *  change whose mutate succeeded — the same item-upsert shape (the display's source). */
 bool prepare_ability_change(Scratch& scratch,
                             const queuez::AbilityChange& change,
-                            Prepared& prepared) noexcept {
-    const state::AccountState account = state::account_snapshot();
+                            Prepared& prepared,
+            core::settings::AccountKey accountKey) noexcept {
+    const state::AccountState account = state::account_snapshot(accountKey);
     const std::optional<std::size_t> selectedIndex = find_character_index(account);
     if (!state::account::valid(account) || !selectedIndex.has_value()) {
         return report_failure("ability_change_selection");
@@ -157,7 +161,7 @@ bool prepare_ability_change(Scratch& scratch,
         return report_failure("ability_change_subclass");
     }
     return prepare_item_republish(scratch, slot->instanceSoid, change.characterSoid,
-                                  change.after, prepared);
+                                  change.after, prepared, change.after.accountKey);
 }
 
 } // namespace sunrise::server::bap::encrypted::push::snapshot

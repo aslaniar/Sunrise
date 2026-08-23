@@ -27,13 +27,14 @@ namespace family4_datagen = middleware::datagen::family4;
  */
 bool prepare_subclass_equip(Scratch& scratch,
                             const queuez::SubclassEquip& equip,
-                            Prepared& prepared) noexcept {
+                            Prepared& prepared,
+            core::settings::AccountKey accountKey) noexcept {
     const Reservation reservation = reserve_prior(scratch, prepared);
     if (reservation.rawWriteOffset > scratch.plaintext.size()
         || reservation.compressedWriteOffset > scratch.sealed.size()) {
         return report_failure("equip_reservation");
     }
-    const state::AccountState account = state::account_snapshot();
+    const state::AccountState account = state::account_snapshot(accountKey);
     const std::optional<std::size_t> selectedIndex = find_character_index(account);
     Resolved selected{};
     if (!state::account::valid(account) || !selectedIndex.has_value()

@@ -7,7 +7,8 @@ namespace sunrise::server::bap::encrypted::push::snapshot {
 /** Builds one full family snapshot at the initial version from State and build mappings. */
 bool prepare_initial(Scratch& scratch,
                      const middleware::queuez::Subscription& subscription,
-                     Prepared& prepared) noexcept {
+                     Prepared& prepared,
+                     core::settings::AccountKey accountKey) noexcept {
     // Family zero never reaches here. It carries the banner pair, and its version and flags come
     // from the peer's own state, so the subscription path builds it directly.
     const Reservation reservation = reserve_prior(scratch, prepared);
@@ -22,9 +23,10 @@ bool prepare_initial(Scratch& scratch,
         middleware::datagen::object_id(subscription.familyType, slotIndex, objectId);
     bool success = false;
     if (subscription.familyType == kRosterFamilyType && hasDefinition) {
-        success = prepare_roster(scratch, subscription, objectId, reservation, staged);
+        success = prepare_roster(scratch, subscription, objectId, reservation, staged,
+                                 accountKey);
     } else if (subscription.familyType == kAccountFamilyType && hasDefinition) {
-        success = prepare(scratch, subscription, objectId, reservation, staged);
+        success = prepare(scratch, subscription, objectId, reservation, staged, accountKey);
     }
     // A family with no generated objects still publishes an empty full snapshot. That promotes the
     // record without claiming a manifest.

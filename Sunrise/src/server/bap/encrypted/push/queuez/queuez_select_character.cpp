@@ -22,7 +22,8 @@ bool append_select_character_notification(Scratch& scratch,
                                           std::span<std::byte> response,
                                           std::size_t& written) noexcept {
     snapshot::Prepared prepared{};
-    if (!snapshot::prepare_selection_move(scratch, select, prepared)) {
+    if (!snapshot::prepare_selection_move(scratch, select, prepared,
+                                             select.after.accountKey)) {
         return false;
     }
     const std::size_t objectCount = prepared.family.objects.size();

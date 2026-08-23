@@ -24,13 +24,14 @@ namespace selection_patch = middleware::datagen::family4::account::selection_pat
 /** Builds the Family-4 increment that moves the character object to the picked character. */
 bool prepare_selection_move(Scratch& scratch,
                             const queuez::SelectCharacter& select,
-                            Prepared& prepared) noexcept {
+                            Prepared& prepared,
+            core::settings::AccountKey accountKey) noexcept {
     const Reservation reservation = reserve_prior(scratch, prepared);
     if (reservation.rawWriteOffset > scratch.plaintext.size()
         || reservation.compressedWriteOffset > scratch.sealed.size()) {
         return report_failure("move_reservation");
     }
-    const state::AccountState account = state::account_snapshot();
+    const state::AccountState account = state::account_snapshot(accountKey);
     const std::optional<std::size_t> selectedIndex = find_character_index(account);
     Resolved selected{};
     if (!state::account::valid(account) || !selectedIndex.has_value()

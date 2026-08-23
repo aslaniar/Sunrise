@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include "../../../../../core/settings/provisioning.h"
 #include <cstddef>
 
 #include "../../../../../middleware/datagen/family4/loadout/definition.h"
@@ -47,7 +48,8 @@ struct Prepared {
  */
 [[nodiscard]] bool prepare_initial(Scratch& scratch,
                                    const middleware::queuez::Subscription& subscription,
-                                   Prepared& prepared) noexcept;
+                                   Prepared& prepared,
+                                   core::settings::AccountKey accountKey = core::settings::kLegacyAccount) noexcept;
 
 /**
  * Builds the family-zero banner anchor and the record for the character it names.
@@ -63,7 +65,8 @@ struct Prepared {
                                   std::uint64_t familyRootSoid,
                                   std::int32_t version,
                                   std::uint64_t previousCharacter,
-                                  Prepared& prepared) noexcept;
+                                  Prepared& prepared,
+                            core::settings::AccountKey accountKey = core::settings::kLegacyAccount) noexcept;
 
 /**
  * Builds the family-zero in-place character-record upsert a subclass mutation owes: the
@@ -74,7 +77,8 @@ struct Prepared {
                                           std::uint64_t familyRootSoid,
                                           std::int32_t version,
                                           std::uint64_t characterSoid,
-                                          Prepared& prepared) noexcept;
+                                          Prepared& prepared,
+                            core::settings::AccountKey accountKey = core::settings::kLegacyAccount) noexcept;
 
 /**
  * Builds one incremental Family-3 character record and its optional changed account roster
@@ -90,6 +94,7 @@ struct Prepared {
                                                      const queuez::RosterAppearanceRefresh& refresh,
                                                      const state::CharacterState& afterCharacter,
                                                      std::size_t characterIndex,
-                                                     Prepared& prepared) noexcept;
+                                                     Prepared& prepared,
+                                                     core::settings::AccountKey accountKey = core::settings::kLegacyAccount) noexcept;
 
 } // namespace sunrise::server::bap::encrypted::push::snapshot

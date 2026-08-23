@@ -54,7 +54,7 @@ void report_repush(const char* stage, std::size_t bytes) noexcept {
     session.bannerRepushArmed = false;
     // Nothing is owed while no character is selected. The pair has no character to name, and the
     // first pick publishes it. Logging that as a failed re-push would be wrong.
-    if (state::account::selected_character_soid(state::account_snapshot()) == 0) {
+    if (state::account::selected_character_soid(state::account_snapshot(session.accountKey)) == 0) {
         return false;
     }
     touchesScratch = true;
@@ -65,7 +65,7 @@ void report_repush(const char* stage, std::size_t bytes) noexcept {
     if (!push::append_banner_notification(scratch,
                                           session.queuez,
                                           session.bannerRepushRoot,
-                                          state::bap().sessionKey,
+                                          state::bap(session.accountKey).sessionKey,
                                           nextSendNonce,
                                           scratch.framed,
                                           framedSize,
@@ -105,14 +105,14 @@ void report_repush(const char* stage, std::size_t bytes) noexcept {
     std::size_t framedSize = 0;
     queuez::SessionState current = session.queuez;
     bool wrote = false;
-    const state::AccountState account = state::account_snapshot();
+    const state::AccountState account = state::account_snapshot(session.accountKey);
     const std::uint64_t selected = state::account::selected_character_soid(account);
     if (selected != 0 && current.family0Active) {
         queuez::SessionState appearanceAfter{};
         if (push::append_banner_refresh_notification(scratch,
                                                      current,
                                                      selected,
-                                                     state::bap().sessionKey,
+                                                     state::bap(session.accountKey).sessionKey,
                                                      nextSendNonce,
                                                      scratch.framed,
                                                      framedSize,
@@ -126,7 +126,7 @@ void report_repush(const char* stage, std::size_t bytes) noexcept {
         if (push::append_roster_refresh_notification(scratch,
                                                      current,
                                                      selected,
-                                                     state::bap().sessionKey,
+                                                     state::bap(session.accountKey).sessionKey,
                                                      nextSendNonce,
                                                      scratch.framed,
                                                      framedSize,
@@ -205,7 +205,7 @@ bool consume_deferred(Session& session,
     push::append_queuez_notification(scratch,
                                      session.queuez,
                                      subscription,
-                                     state::bap().sessionKey,
+                                     state::bap(session.accountKey).sessionKey,
                                      nextSendNonce,
                                      scratch.framed,
                                      framedSize,

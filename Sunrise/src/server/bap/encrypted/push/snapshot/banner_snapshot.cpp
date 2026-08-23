@@ -24,9 +24,10 @@ bool prepare_banner(Scratch& scratch,
                     std::uint64_t familyRootSoid,
                     std::int32_t version,
                     std::uint64_t previousCharacter,
-                    Prepared& prepared) noexcept {
+                    Prepared& prepared,
+            core::settings::AccountKey accountKey) noexcept {
     const Reservation reservation = reserve_prior(scratch, prepared);
-    const state::AccountState account = state::account_snapshot();
+    const state::AccountState account = state::account_snapshot(accountKey);
     if (reservation.rawWriteOffset > scratch.plaintext.size()) {
         return false;
     }
@@ -127,9 +128,10 @@ bool prepare_banner_refresh(Scratch& scratch,
                             std::uint64_t familyRootSoid,
                             std::int32_t version,
                             std::uint64_t characterSoid,
-                            Prepared& prepared) noexcept {
+                            Prepared& prepared,
+            core::settings::AccountKey accountKey) noexcept {
     const Reservation reservation = reserve_prior(scratch, prepared);
-    const state::AccountState account = state::account_snapshot();
+    const state::AccountState account = state::account_snapshot(accountKey);
     if (reservation.rawWriteOffset > scratch.plaintext.size()) {
         return false;
     }
