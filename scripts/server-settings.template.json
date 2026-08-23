@@ -1,0 +1,21 @@
+{
+  "version": 6,
+  "core": {
+    "logging": {
+      "file_sink": true,
+      "levels": {
+        "core": "info",
+        "state": "info",
+        "server": "info"
+      }
+    }
+  },
+  "server": {
+    "bap_port": 30975,
+    "https_port": 443,
+    "bootstrap_token": "00000000000000000000000000000000",
+    "packages_dir": "",
+    "build_data_path": "",
+    "content_dir": ""
+  }
+}
