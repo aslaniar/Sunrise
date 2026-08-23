@@ -33,7 +33,6 @@ namespace hmac = middleware::crypto::hmac;
 namespace {
 
 /** Network-order IPv4 loopback returned by the in-process SignOn route. */
-constexpr std::uint32_t kLoopbackAddress = 0x7F000001;
 /** Default one-hour lifetime for generated SignOn session tokens. */
 constexpr std::uint32_t kDefaultTokenLifetimeSeconds = 3600;
 /** Family 5 uses the largest signed 64-bit value as its process-global object key. */
@@ -235,7 +234,11 @@ bool initialize(void* module,
         build_data::shutdown();
         return false;
     }
-    initialized.signOn.relayAddress = kLoopbackAddress;
+    const auto& relayOctets = core::settings::get().server.relayAddress;
+    initialized.signOn.relayAddress = (std::uint32_t(relayOctets[0]) << 24)
+                                    | (std::uint32_t(relayOctets[1]) << 16)
+                                    | (std::uint32_t(relayOctets[2]) << 8)
+                                    | std::uint32_t(relayOctets[3]);
     // The published relay port is the one the listener binds, so both move with one setting.
     initialized.signOn.relayPort = core::settings::get().server.bapPort;
     initialized.signOn.tokenLifetimeSeconds = kDefaultTokenLifetimeSeconds;

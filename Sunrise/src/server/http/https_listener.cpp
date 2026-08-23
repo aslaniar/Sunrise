@@ -635,7 +635,20 @@ bool initialize() noexcept {
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_port = htons(core::settings::get().server.httpsPort);
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    const auto& bindOctets = core::settings::get().server.bindAddress;
+    address.sin_addr.s_addr = htonl((std::uint32_t(bindOctets[0]) << 24)
+                                  | (std::uint32_t(bindOctets[1]) << 16)
+                                  | (std::uint32_t(bindOctets[2]) << 8)
+                                  | std::uint32_t(bindOctets[3]));
+    // The client holds connections to this port for a whole session, so a restart lands
+    // inside their TIME_WAIT window and the bind fails. Same option the BAP acceptor sets
+    // (bap_listener.cpp); the admin listener needed it for the same reason (2026-08-22).
+    BOOL httpsReuse = TRUE;
+    (void)setsockopt(g_listener.acceptor,
+                     SOL_SOCKET,
+                     SO_REUSEADDR,
+                     reinterpret_cast<const char*>(&httpsReuse),
+                     sizeof httpsReuse);
     if (bind(g_listener.acceptor,
              reinterpret_cast<const sockaddr*>(&address),
              sizeof address)

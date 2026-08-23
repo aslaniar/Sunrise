@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "../../../state/entitlements/validation.h"
+#include "../address_text.h"
 #include "../parser.h"
 
 namespace sunrise::core::settings::parser {
@@ -83,8 +84,11 @@ bool Parser::server_settings(server::Settings& output) noexcept {
     bool hasEntitlements = false;
     bool hasBapPort = false;
     bool hasHttpsPort = false;
+    bool hasBindAddress = false;
+    bool hasRelayAddress = false;
     bool hasBootstrapToken = false;
     bool hasConfigGuid = false;
+    bool hasClientLogPath = false;
     bool hasPackagesDir = false;
     bool hasBuildDataPath = false;
     bool hasContentDir = false;
@@ -118,6 +122,23 @@ bool Parser::server_settings(server::Settings& output) noexcept {
             }
             output.httpsPort = static_cast<std::uint16_t>(value);
             hasHttpsPort = true;
+        } else if (key == "bind_address") {
+            std::string_view value;
+            // A valid dotted quad only, like the gameplay endpoint's key: an
+            // empty or host-name value refuses the whole settings file.
+            if (hasBindAddress || !string(value)
+                || !address::parse_ipv4(value, output.bindAddress)) {
+                return false;
+            }
+            hasBindAddress = true;
+        } else if (key == "relay_address") {
+            std::string_view value;
+            // Same dotted-quad rule as bind_address: host names refuse the file.
+            if (hasRelayAddress || !string(value)
+                || !address::parse_ipv4(value, output.relayAddress)) {
+                return false;
+            }
+            hasRelayAddress = true;
         } else if (key == "bootstrap_token") {
             std::string_view value;
             if (hasBootstrapToken || !string(value)
@@ -142,6 +163,18 @@ bool Parser::server_settings(server::Settings& output) noexcept {
                 return false;
             }
             hasConfigGuid = true;
+        } else if (key == "client_log_path") {
+            std::string_view value;
+            if (hasClientLogPath || !string(value)
+                || value.size() >= server::kPathCapacity) {
+                return false;
+            }
+            if (value.empty()) {
+                output.clientLogPath = {};
+            } else if (!decode_wide_text(value, output.clientLogPath)) {
+                return false;
+            }
+            hasClientLogPath = true;
         } else if (key == "packages_dir") {
             std::string_view value;
             if (hasPackagesDir || !string(value)

@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "../../../state/entitlements/definition.h"
+#include "../address_text.h"
 #include "gameplay/definition.h"
 
 namespace sunrise::core::settings::server {
@@ -30,6 +31,15 @@ struct Settings {
     std::uint16_t bapPort{kDefaultBapPort};
     /** HTTPS listener port. 443 is forced by the Client's scheme-preserving URL rewrite. */
     std::uint16_t httpsPort{kDefaultHttpsPort};
+    /**
+     * Local interface the Layer-2 admin listener binds. Loopback by default;
+     * 0.0.0.0 opens the admin HTTP surface on every interface, which no
+     * offline build needs but the multiplayer bind-address rework rehearses
+     * (the gameplay endpoint already carries the same key).
+     */
+    std::array<unsigned char, address::kOctets> bindAddress{127, 0, 0, 1};
+    /** Address published in the SignOn relay field; loopback keeps today's behavior. */
+    std::array<unsigned char, address::kOctets> relayAddress{127, 0, 0, 1};
     /** 16 content-id bytes as uppercase or lowercase hex text. Published into State at boot. */
     std::array<char, kBootstrapTokenCapacity> bootstrapToken{"00000000000000000000000000000000"};
     /** Optional served ContentConfig id. Empty serves the State fingerprint id. */
@@ -40,6 +50,13 @@ struct Settings {
     std::array<wchar_t, kPathCapacity> buildDataPath{};
     /** Optional decoded-content directory for the S1-3 oracle swap. Empty resolves `<exe>\content`. */
     std::array<wchar_t, kPathCapacity> contentDir{};
+    /**
+     * Optional path to the CLIENT's own log file, so the dashboard can show it.
+     * The client channel is written by the mod DLL in the game process, which keeps a
+     * separate ring this process cannot reach; reading the file is the only way to
+     * surface those lines here. Empty disables the /clientlog route.
+     */
+    std::array<wchar_t, kPathCapacity> clientLogPath{};
     /**
      * S2-0 probe switch: after the join burst, emit ONE static vendor baseline (the
      * type-7 sobject_message carrier with Commander Zavala at his Tower spot) plus a
