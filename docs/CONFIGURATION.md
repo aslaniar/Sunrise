@@ -35,6 +35,8 @@ server enabled the client ignores it.
 |---|---|---|---|
 | `server.bap_port` | 1..65535 | `30974` | Main server transport port. **Must match the client side** or the client never reaches the server. |
 | `server.https_port` | 1..65535 | `443` | HTTPS listener port. |
+| `server.bind_address` | IPv4 dotted quad | `127.0.0.1` | Address every listener binds. Set to your LAN IP (or `0.0.0.0`) for remote players; also becomes the TLS certificate subject. |
+| `server.relay_address` | IPv4 dotted quad | `127.0.0.1` | Address published in the SignOn relay field - what clients dial for BAP. Set to the server's reachable IP for remote play. |
 | `server.bootstrap_token` | string, <= 32 printable chars | placeholder of zeros | Shared secret between client and server. See [The bootstrap token](#the-bootstrap-token). |
 | `server.config_guid` | string | empty | Optional validation override for logging only. The served manifest always carries the server's own computed content GUID; leave empty unless told otherwise by the log. |
 | `server.packages_dir` | string path | empty (auto) | Game package directory. Empty = auto-resolved under the server root. |
