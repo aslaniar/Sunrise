@@ -42,6 +42,8 @@ constexpr std::size_t kRequestCapacity = 4096;
 constexpr std::size_t kResponseCapacity = 16384;
 /** The event feed pages fit this window; the snapshot itself is ~4 MiB. */
 constexpr std::size_t kEventsResponseCapacity = 65536;
+/** Room the row loop must leave for the closing "],\"emitted\":..,\"next\":..}" object. */
+constexpr std::size_t kEventsTailReserve = 96;
 /** One event page carries this many rows before the budget truncates it. */
 constexpr std::uint32_t kEventsPageDefault = 300;
 /** A caller may never page more than this many rows at once. */
@@ -623,7 +625,13 @@ void handle_events(SOCKET client, std::string_view query) noexcept {
             break;
         }
         const std::size_t rowStart = used;
-        if (!append_event_row(body, kEventsResponseCapacity, used, *entry, emitted == 0)) {
+        // Rows may only fill up to the reserved tail: append_event_row bounds itself
+        // correctly, but the closing object below does not, and snprintf's would-be
+        // return length would then push `used` past the buffer and make respond() send
+        // stack memory off the end of it (observed: 65,576 bytes out of a 65,536 buffer,
+        // trailing NULs and a fragment of an unrelated log line).
+        if (!append_event_row(body, kEventsResponseCapacity - kEventsTailReserve, used,
+                              *entry, emitted == 0)) {
             used = rowStart;
             truncated = true;
             break;
@@ -631,13 +639,19 @@ void handle_events(SOCKET client, std::string_view query) noexcept {
         next = entry->sequence();
         ++emitted;
     }
-    used += static_cast<std::size_t>(
+    const int tailWritten =
         std::snprintf(body + used,
-                      kEventsResponseCapacity - used,
+                      used < kEventsResponseCapacity ? kEventsResponseCapacity - used : 0,
                       "],\"emitted\":%zu,\"truncated\":%s,\"next\":%llu}",
                       emitted,
                       truncated ? "true" : "false",
-                      static_cast<unsigned long long>(next)));
+                      static_cast<unsigned long long>(next));
+    if (tailWritten > 0) {
+        used += static_cast<std::size_t>(tailWritten);
+        if (used >= kEventsResponseCapacity) {
+            used = kEventsResponseCapacity - 1;
+        }
+    }
     respond(client, "200 OK", "application/json", {body, used});
 }
 

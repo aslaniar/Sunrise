@@ -78,6 +78,12 @@ inline constexpr std::string_view kDashboardPage = R"SUNRISE_DASH(<!DOCTYPE html
   </section>
   <section style="grid-column: 1 / -1;">
     <h2>Event feed</h2>
+    <p class="muted" style="margin: 0 0 8px 0;">
+      This is the <b>server</b> process's log ring. The <code>client</code> channel is
+      written by the mod DLL inside the game process, which keeps its own separate ring -
+      those lines live in <code>Game/bin/x64/Sunrise/logs/sunrise.log</code> and cannot
+      appear here.
+    </p>
     <div class="chips">
       <span class="muted">channel</span>
       <button class="chip active" id="ch-all" onclick="setChip('channel', 'all', this)">all</button>
@@ -217,7 +223,9 @@ function appendRows(data, clear) {
     body.appendChild(tr);
   }
   var kids = body.children;
-  while (kids.length > 500) { body.removeChild(kids[0]); }
+  // The server ring holds 4096 entries; a 500-row cap silently threw away most
+  // of a boot even after the cursor was fixed.
+  while (kids.length > 5000) { body.removeChild(kids[0]); }
   if (pin) { $('feed').scrollTop = $('feed').scrollHeight; }
 }
 
@@ -253,17 +261,28 @@ function fetchEvents(first) {
   });
 }
 
+// Pages forward until the feed has caught up with the ring's newest row. One
+// response is capped by the server's byte budget, so the whole ring takes
+// several round trips; the depth cap keeps a pathological ring from looping.
+function pageUntilCaughtUp(first, depth) {
+  return fetchEvents(first).then(function (data) {
+    if (data && data.truncated && depth < 64) {
+      return pageUntilCaughtUp(false, depth + 1);
+    }
+    return data;
+  });
+}
+
 function initialSync() {
   $('eventsStatus').className = 'ok';
   $('eventsStatus').textContent = 'syncing';
   fetchJson('/events?since=0&limit=0').then(function (e) {
-    if (e.count > 0 && e.last >= e.first) {
-      var back = Math.min(e.count, 200);
-      state.cursor = Math.max(e.first, e.last - back + 1);
-    } else {
-      state.cursor = 0;
-    }
-    return fetchEvents(true);
+    // Start from the OLDEST retained row, not a fixed window back from the
+    // newest. The boot's own core/state lines sit in the first ~30 events, so a
+    // short window hid them completely and the feed looked server-only. The
+    // cursor is EXCLUSIVE, so step one below the oldest retained sequence.
+    state.cursor = (e.count > 0 && e.last >= e.first) ? Math.max(0, e.first - 1) : 0;
+    return pageUntilCaughtUp(true, 0);
   }).catch(function (err) {
     $('eventsStatus').className = 'err';
     $('eventsStatus').textContent = 'ERR ' + err.message;
