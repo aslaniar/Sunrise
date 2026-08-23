@@ -17,7 +17,7 @@ namespace sunrise::server::admin {
  * (beside /events) and one more panel here; the marked spot is inside the
  * event section, so the call log can share the filter chips' row format.
  */
-inline constexpr std::string_view kDashboardPage = R"SUNRISE_DASHBOARD(<!DOCTYPE html>
+inline constexpr std::string_view kDashboardPage = R"SUNRISE_DASH(<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -223,7 +223,7 @@ function appendRows(data, clear) {
 
 function fetchEvents(first) {
   return fetchJson(eventsUrl(state.cursor)).then(function (data) {
-    appendRows(data, false);
+    appendRows(data, first);
     var noFilter = state.channel === 'all' && state.level === 'all' &&
       !$('eventText').value.trim();
     if (noFilter && data.first > data.since + 1) {
@@ -314,7 +314,7 @@ refreshFlags();
 </script>
 </body>
 </html>
-)SUNRISE_DASHBOARD";
+)SUNRISE_DASH";
 
 /** @return The complete self-contained dashboard page. */
 [[nodiscard]] inline std::string_view dashboard_page() noexcept {

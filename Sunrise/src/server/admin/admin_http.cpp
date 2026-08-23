@@ -430,9 +430,26 @@ void handle_flags(SOCKET client, std::string_view query) noexcept {
     std::size_t twos = 0;
     char body[kResponseCapacity]{};
     std::size_t used = 0;
-    used += static_cast<std::size_t>(
-        std::snprintf(body, sizeof body, "{\"scope\":\"%.*s\",\"total\":%zu,\"zeros\":",
-                      static_cast<int>(scopeName.size()), scopeName.data(), bank.size()));
+    // snprintf returns the length it WOULD have written, so an overflowing append pushes
+    // `used` past the buffer; `kResponseCapacity - used` is size_t and underflows to a huge
+    // value, handing every later append an effectively unbounded size and writing off the end
+    // of this stack buffer. Clamp after every write, and stop emitting runs while the closing
+    // object still fits. A fragmented bank can produce far more runs than 16 KiB holds
+    // (measured 2026-08-22: account 333 runs / 3,998 B; the buffer fills near 1,260 runs).
+    const auto remaining = [&used]() noexcept -> std::size_t {
+        return used < kResponseCapacity ? kResponseCapacity - used : 0;
+    };
+    const auto advance = [&used](int written) noexcept {
+        if (written <= 0) {
+            return;
+        }
+        used += static_cast<std::size_t>(written);
+        if (used >= kResponseCapacity) {
+            used = kResponseCapacity - 1;
+        }
+    };
+    advance(std::snprintf(body, sizeof body, "{\"scope\":\"%.*s\",\"total\":%zu,\"zeros\":",
+                          static_cast<int>(scopeName.size()), scopeName.data(), bank.size()));
     // The zero runs first so the counts follow without re-encoding.
     std::size_t runs = 0;
     for (std::size_t index = 0; index < bank.size(); ++index) {
@@ -446,9 +463,12 @@ void handle_flags(SOCKET client, std::string_view query) noexcept {
             ++runs;
         }
     }
-    used += static_cast<std::size_t>(std::snprintf(body + used, kResponseCapacity - used,
-                                                   "%zu,\"twos\":%zu,\"runs\":[", zeros, twos));
+    advance(std::snprintf(body + used, remaining(), "%zu,\"twos\":%zu,\"runs\":[",
+                          zeros, twos));
+    // Room for the closing "],\"run_count\":N,\"truncated\":true}" in the worst case.
+    constexpr std::size_t kTailReserve = 64;
     bool firstRun = true;
+    bool truncated = false;
     for (std::size_t index = 0; index < bank.size();) {
         if (bank[index] != 0) {
             ++index;
@@ -458,13 +478,16 @@ void handle_flags(SOCKET client, std::string_view query) noexcept {
         while (index < bank.size() && bank[index] == 0) {
             ++index;
         }
-        used += static_cast<std::size_t>(std::snprintf(
-            body + used, kResponseCapacity - used, "%s[%zu,%zu]", firstRun ? "" : ",",
-            start, index - 1));
+        if (remaining() <= kTailReserve) {
+            truncated = true;
+            break;
+        }
+        advance(std::snprintf(body + used, remaining(), "%s[%zu,%zu]", firstRun ? "" : ",",
+                              start, index - 1));
         firstRun = false;
     }
-    used += static_cast<std::size_t>(std::snprintf(body + used, kResponseCapacity - used,
-                                                   "],\"run_count\":%zu}", runs));
+    advance(std::snprintf(body + used, remaining(), "],\"run_count\":%zu,\"truncated\":%s}",
+                          runs, truncated ? "true" : "false"));
     respond(client, "200 OK", "application/json", {body, used});
 }
 
@@ -797,7 +820,7 @@ DWORD WINAPI listener_main(void*) noexcept {
  * @return Host-order IPv4 value.
  */
 [[nodiscard]] std::uint32_t
-host_address(const std::array<unsigned char, address::kOctets>& octets) noexcept {
+host_address(const std::array<unsigned char, core::settings::address::kOctets>& octets) noexcept {
     /** One IPv4 octet is 8 bits, so each fold shifts by that much. */
     constexpr unsigned kOctetBits = 8;
     std::uint32_t value = 0;
@@ -809,7 +832,7 @@ host_address(const std::array<unsigned char, address::kOctets>& octets) noexcept
 
 /** Binds the TCP listener to one configured IPv4 address. */
 [[nodiscard]] SOCKET bind_address_tcp(
-    std::uint16_t port, const std::array<unsigned char, address::kOctets>& octets) noexcept {
+    std::uint16_t port, const std::array<unsigned char, core::settings::address::kOctets>& octets) noexcept {
     const SOCKET created = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (created == INVALID_SOCKET) {
         return INVALID_SOCKET;
@@ -818,6 +841,16 @@ host_address(const std::array<unsigned char, address::kOctets>& octets) noexcept
     address.sin_family = AF_INET;
     address.sin_port = htons(port);
     address.sin_addr.s_addr = htonl(host_address(octets));
+    // The dashboard polls this port every second, so a restart lands inside the
+    // TIME_WAIT window of its own just-closed connections. Without this the bind
+    // fails and admin failure is fatal to the whole server. Same option the BAP
+    // acceptor already sets (bap_listener.cpp).
+    BOOL reuse = TRUE;
+    (void)setsockopt(created,
+                     SOL_SOCKET,
+                     SO_REUSEADDR,
+                     reinterpret_cast<const char*>(&reuse),
+                     sizeof reuse);
     if (bind(created, reinterpret_cast<const sockaddr*>(&address), sizeof address)
             == SOCKET_ERROR
         || listen(created, SOMAXCONN) == SOCKET_ERROR) {
@@ -829,7 +862,7 @@ host_address(const std::array<unsigned char, address::kOctets>& octets) noexcept
 
 /** Formats one configured address as a dotted quad. */
 std::string_view
-format_bind_address(const std::array<unsigned char, address::kOctets>& octets,
+format_bind_address(const std::array<unsigned char, core::settings::address::kOctets>& octets,
                     std::span<char> output) noexcept {
     const int written = std::snprintf(output.data(),
                                       output.size(),
@@ -859,7 +892,7 @@ bool initialize() noexcept {
         return false;
     }
     g_listener.winsockOwned = true;
-    const std::array<unsigned char, address::kOctets>& bindAddress =
+    const std::array<unsigned char, core::settings::address::kOctets>& bindAddress =
         core::settings::get().server.bindAddress;
     g_listener.socket = bind_address_tcp(kAdminPort, bindAddress);
     if (g_listener.socket == INVALID_SOCKET) {

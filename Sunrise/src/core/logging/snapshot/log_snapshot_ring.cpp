@@ -68,12 +68,12 @@ std::uint64_t Snapshot::overwritten_count() const noexcept {
 
 /** @return Oldest retained sequence, or zero while the snapshot is empty. */
 std::uint64_t Snapshot::oldest_sequence() const noexcept {
-    return count_ != 0 ? entries_[0].sequence_ : 0;
+    return count_ != 0 ? entries_[0].sequence() : 0;
 }
 
 /** @return Newest retained sequence, or zero while the snapshot is empty. */
 std::uint64_t Snapshot::newest_sequence() const noexcept {
-    return count_ != 0 ? entries_[count_ - 1].sequence_ : 0;
+    return count_ != 0 ? entries_[count_ - 1].sequence() : 0;
 }
 
 /** @return A value-owned chronological copy of all retained events. */

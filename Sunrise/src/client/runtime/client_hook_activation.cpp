@@ -210,9 +210,13 @@ void clear_game_targets() noexcept {
     // (uncomment both installs) only when actually resuming that investigation.
     // (void)hooks::ability_gate::install();
     // (void)hooks::gate_trace::install();
-    // The weapon/armor validation-chain observers (item_gate, FINDINGS 14.23): log-only,
-    // cool path (per item-instance event, not per tick). The two-bugs front's instrument.
-    (void)hooks::item_gate::install();
+    // The weapon/armor validation-chain observers (item_gate, FINDINGS 14.23): log-only
+    // research instrumentation for the two-bugs front, which CLOSED at 15.9. Left
+    // uninstalled by default (2026-08-22) - the "cool path" note above was wrong: it
+    // emitted 114,126 of 114,671 client lines in one boot (98.6%), which buried the
+    // retail narration and the protocol tape in an 14 MB log. Re-enable (uncomment the
+    // install) only when actually resuming that investigation.
+    // (void)hooks::item_gate::install();
     // The R1 schema-hash close: log-only observer on the schema-decode entry, so the
     // client's own player-baseline decode prints the real schemaTagHash (the
     // world_population_schema_hash knob value). Internal no-op while externalServer is
