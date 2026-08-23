@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <string_view>
 
 #include "../../state/account/account_state.h"
@@ -8,10 +9,19 @@
 #include "../../state/unlocks/definition.h"
 #include "../logging/log.h"
 #include "client/definition.h"
+#include "provisioning.h"
 #include "server/definition.h"
 #include "steam/definition.h"
 
 namespace sunrise::core::settings {
+
+/** One provisioned account: its authored State block plus the token that names it. */
+struct ProvisionedAccount {
+    /** Complete checked account, same shape and rules as the legacy initialAccount. */
+    state::AccountState account{};
+    /** 32 hex characters + NUL. Derives this account's wrap keys and session token. */
+    std::array<char, 33> bootstrapToken{};
+};
 
 /**
  * Layout version of the settings file this build writes and expects.
@@ -43,6 +53,14 @@ struct Settings {
     state::unlocks::Table initialUnlocks;
     /** Authored family-5 unlock overrides. Only the two override lists are authored here. */
     state::Family5State initialFamily5;
+    /**
+     * Optional P2 provisioned accounts. Empty (count zero) means legacy single-account mode:
+     * exactly one account built from initialAccount + server.bootstrap_token, written here at
+     * parse time so every consumer reads the same normalized list. Entry 0 in explicit arrays
+     * replaces the legacy block entirely.
+     */
+    std::array<ProvisionedAccount, kAccountCapacity> accounts{};
+    std::size_t provisionedAccountCount{};
 };
 
 /** @return The complete default settings. */

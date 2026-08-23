@@ -87,6 +87,22 @@ private:
      */
     [[nodiscard]] bool steam_user_settings(steam::User& output) noexcept;
     [[nodiscard]] bool state_settings(Settings& output) noexcept;
+
+    /**
+     * Fills the legacy single account into slot 0 when no explicit array was authored, then
+     * validates every entry. Called once at the closing brace of the state block.
+     * @param output Parsed settings, updated in place.
+     * @return True when every provisioned entry carries a nonzero account and a 32-hex token.
+     */
+    [[nodiscard]] bool normalize_accounts(Settings& output) noexcept;
+
+    /**
+     * Parses one provisioned-account array element: the legacy account block keys plus the
+     * bootstrap token that names the account on the wire.
+     * @param output Receives the account and its 32-hex-character bootstrap token.
+     * @return True when the object parses and carries a valid token.
+     */
+    [[nodiscard]] bool provisioned_account_entry(ProvisionedAccount& output) noexcept;
     /**
      * Parses the optional activity settings object on top of the State defaults.
      * @param output Receives one replacement only after its whole row is valid.

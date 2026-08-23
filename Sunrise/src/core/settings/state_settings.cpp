@@ -164,6 +164,52 @@ bool Parser::state_settings(Settings& output) noexcept {
             if (!account(output.initialAccount)) {
                 return false;
             }
+        } else if (key == "accounts") {
+            // P2 provisioned accounts. An explicit array replaces the legacy block entirely.
+            if (output.provisionedAccountCount != 0 || !consume('[')) {
+                return false;
+            }
+            if (!consume(']')) {
+                for (;;) {
+                    if (output.provisionedAccountCount >= kAccountCapacity) {
+                        return false;
+                    }
+                    ProvisionedAccount& entry = output.accounts[output.provisionedAccountCount];
+                    if (!provisioned_account_entry(entry)) {
+                        return false;
+                    }
+                    ++output.provisionedAccountCount;
+                    if (consume(']')) {
+                        break;
+                    }
+                    if (!consume(',')) {
+                        return false;
+                    }
+                }
+            }
+        } else if (key == "accounts") {
+            // P2 provisioned accounts. An explicit array replaces the legacy block entirely.
+            if (output.provisionedAccountCount != 0 || !consume('[')) {
+                return false;
+            }
+            if (!consume(']')) {
+                for (;;) {
+                    if (output.provisionedAccountCount >= kAccountCapacity) {
+                        return false;
+                    }
+                    ProvisionedAccount& entry = output.accounts[output.provisionedAccountCount];
+                    if (!provisioned_account_entry(entry)) {
+                        return false;
+                    }
+                    ++output.provisionedAccountCount;
+                    if (consume(']')) {
+                        break;
+                    }
+                    if (!consume(',')) {
+                        return false;
+                    }
+                }
+            }
         } else if (key == "characters") {
             if (!characters(output.initialAccount)) {
                 return false;
@@ -186,8 +232,91 @@ bool Parser::state_settings(Settings& output) noexcept {
             return false;
         }
         if (consume('}')) {
-            return state::account::valid(output.initialAccount)
+            return normalize_accounts(output)
+                   && state::account::valid(output.initialAccount)
                    && state::activity::defaults::valid(output.initialActivityDefaults);
+        }
+        if (!consume(',')) {
+            return false;
+        }
+    }
+}
+
+/**
+ * Fills the legacy single account into slot 0 when no explicit array was authored, so every
+ * downstream consumer reads one normalized list. Legacy mode keeps today's behavior exactly:
+ * the settings initialAccount plus server.bootstrap_token become provisioned entry 0.
+ * @param output Parsed settings, updated in place.
+ * @return True when every provisioned entry carries a nonzero account and a 32-hex token.
+ */
+bool Parser::normalize_accounts(Settings& output) noexcept {
+    if (output.provisionedAccountCount == 0) {
+        const std::string_view token(output.server.bootstrapToken.data(), 32);
+        if (token.size() != output.accounts[0].bootstrapToken.size() - 1) {
+            return false;
+        }
+        output.accounts[0].account = output.initialAccount;
+        token.copy(output.accounts[0].bootstrapToken.data(), token.size());
+        output.provisionedAccountCount = 1;
+    }
+    for (std::size_t index = 0; index < output.provisionedAccountCount; ++index) {
+        const ProvisionedAccount& entry = output.accounts[index];
+        if (entry.account.primarySoid == 0) {
+            return false;
+        }
+        const std::string_view token(entry.bootstrapToken.data(), 32);
+        for (const char digit : token) {
+            const bool hex = (digit >= '0' && digit <= '9') || (digit >= 'a' && digit <= 'f')
+                             || (digit >= 'A' && digit <= 'F');
+            if (!hex) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+/**
+ * Parses one provisioned-account array element: the legacy account block keys plus the
+ * bootstrap token that names the account on the wire.
+ * @param output Receives the account and its bootstrap token.
+ * @return True when the object parses and carries a valid account and token.
+ */
+bool Parser::provisioned_account_entry(ProvisionedAccount& output) noexcept {
+    output = {};
+    if (!consume('{')) {
+        return false;
+    }
+    bool hasToken = false;
+    if (consume('}')) {
+        return false;
+    }
+    for (;;) {
+        std::string_view key;
+        if (!string(key) || !consume(':')) {
+            return false;
+        }
+        if (key == "account") {
+            if (!account(output.account)) {
+                return false;
+            }
+        } else if (key == "characters") {
+            if (!characters(output.account)) {
+                return false;
+            }
+        } else if (key == "bootstrap_token") {
+            std::string_view value;
+            if (hasToken || !string(value)
+                || value.size() != output.bootstrapToken.size() - 1) {
+                return false;
+            }
+            value.copy(output.bootstrapToken.data(), value.size());
+            hasToken = true;
+        } else if (!skip_value(0)) {
+            return false;
+        }
+        if (consume('}')) {
+            return hasToken && state::account::valid(output.account);
         }
         if (!consume(',')) {
             return false;
