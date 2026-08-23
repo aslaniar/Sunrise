@@ -4,6 +4,46 @@ This is a fork of stanuwu's Sunrise repo with my own extensions, including a ful
 Disclaimer: This repo is heavily AI authored.
 Development was started on PC then transferred over to MacOS, MacOS specific information is also provided should you want to develop there as well.
 
+## This fork adds a dedicated server
+
+This repository is a public fork of [stanuwu/Sunrise](https://github.com/stanuwu/Sunrise)
+(GPL-3.0). Everything upstream provides still works here; on top of it, this fork adds:
+
+- **A standalone dedicated server (`sunrise-server.exe`)** - a separate headless process
+  you can build on Windows, Linux, and macOS. The server logic that upstream ran inside
+  the game process becomes a real external host the modded client connects to.
+- **Persistent equipment and inventory** - gear, levels, sockets and plugs, and full
+  subclass plus ability swapping survive restarts, stored in a local database.
+- **Early shared-world groundwork** - the transport already accepts multiple peer
+  connections and the persistence schema is keyed for multiple accounts.
+
+### Status (read before booting)
+
+This is a playable solo baseline: destinations load, inventory and equipment persist, and
+subclass/ability swaps work end to end. The server currently serves a single shared
+account - a second simultaneous client would see the same guardian. True multiplayer
+(guest accounts, shared activity bubbles, seeing other players) is roadmap work, not a
+shipped feature.
+
+### Ground rules for this fork
+
+Bring your own copy of the game. Nothing derived from game data is redistributed here:
+packages, cache files, and proprietary libraries must be generated or copied from your own
+install. This project has zero contact with live game servers - everything runs on your
+own hardware, fully offline.
+
+### Documentation
+
+- [docs/SERVER-QUICKSTART.md](docs/SERVER-QUICKSTART.md) - first server boot, first client connect
+- [docs/BUILDING.md](docs/BUILDING.md) - building the client mod and the server per platform
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) - reading the boot log: benign vs fatal
+- [docs/ARCHITECTURE-ROADMAP.md](docs/ARCHITECTURE-ROADMAP.md) - how the pieces fit, what is next
+
+*Fork of [stanuwu/Sunrise](https://github.com/stanuwu/Sunrise), released under the same
+GPL-3.0 license. Upstream's original README continues below.*
+
+---
+
 Destiny 2 Offline Exploration Mod
 
 > This mod installs onto an old build of the game and allows you to play it offline, loading into
