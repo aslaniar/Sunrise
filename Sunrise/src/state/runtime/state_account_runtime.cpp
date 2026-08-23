@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <limits>
 
+#include "../../core/settings/provisioning.h"
 #include "../build_data/runtime.h"
 #include "runtime.h"
 #include "state.h"
@@ -11,13 +12,21 @@
 
 namespace sunrise::state {
 
+/** Bounds-checks a caller key and returns its mutable provisioned slot. */
+[[nodiscard]] AccountState& slot_account(const AccountKey key) noexcept {
+    return runtime::storage::g_states[key < runtime::storage::g_accountCount
+                                          ? key
+                                          : static_cast<AccountKey>(kLegacyAccount)]
+        .account;
+}
+
 /** Stores the active account key without publishing an incomplete account. */
-bool set_primary_soid(std::uint64_t primarySoid) noexcept {
+bool set_primary_soid(std::uint64_t primarySoid, const AccountKey key) noexcept {
     if (primarySoid == 0) {
         return false;
     }
     AcquireSRWLockExclusive(&runtime::storage::g_stateLock);
-    AccountState candidate = runtime::storage::g_state.account;
+    AccountState candidate = slot_account(key);
     candidate.primarySoid = primarySoid;
     // Characters belong to the account key the Client uses. The reference account and its
     // characters differ only in the low byte, so the authored rows are rebased onto that key.
@@ -29,19 +38,19 @@ bool set_primary_soid(std::uint64_t primarySoid) noexcept {
         return false;
     }
     // Publish only after the settings and identity rules hold together.
-    runtime::storage::g_state.account = candidate;
+    slot_account(key) = candidate;
     ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
     return true;
 }
 
 /** Moves the selection to one authored character. */
-bool set_selected_character(std::uint64_t characterSoid, bool& changed) noexcept {
+bool set_selected_character(std::uint64_t characterSoid, bool& changed, const AccountKey key) noexcept {
     changed = false;
     if (characterSoid == 0) {
         return false;
     }
     AcquireSRWLockExclusive(&runtime::storage::g_stateLock);
-    AccountState candidate = runtime::storage::g_state.account;
+    AccountState candidate = slot_account(key);
     std::size_t picked = candidate.characterCount;
     for (std::size_t index = 0; index < candidate.characterCount; ++index) {
         if (candidate.characters[index].soid == characterSoid) {
@@ -63,16 +72,16 @@ bool set_selected_character(std::uint64_t characterSoid, bool& changed) noexcept
         return false;
     }
     // Publish only after the whole account still meets its identity rules.
-    runtime::storage::g_state.account = candidate;
+    slot_account(key) = candidate;
     ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
     changed = !alreadySelected;
     return true;
 }
 
 /** @return A copy of the active account state, read under the lock. */
-AccountState account_snapshot() noexcept {
+AccountState account_snapshot(const AccountKey key) noexcept {
     AcquireSRWLockShared(&runtime::storage::g_stateLock);
-    const AccountState snapshot = runtime::storage::g_state.account;
+    const AccountState snapshot = slot_account(key);
     ReleaseSRWLockShared(&runtime::storage::g_stateLock);
     return snapshot;
 }
@@ -116,23 +125,23 @@ constexpr std::uint8_t kSubclassBucketId = 16;
 } // namespace
 
 /** Checks the subclass-equip request policy without touching State. */
-bool subclass_equip_request_valid(std::uint64_t itemSoid) noexcept {
+bool subclass_equip_request_valid(std::uint64_t itemSoid, const AccountKey key) noexcept {
     if (itemSoid == 0) {
         return false;
     }
     AcquireSRWLockShared(&runtime::storage::g_stateLock);
-    const bool validRequest = subclass_equip_valid_on(runtime::storage::g_state.account, itemSoid);
+    const bool validRequest = subclass_equip_valid_on(slot_account(key), itemSoid);
     ReleaseSRWLockShared(&runtime::storage::g_stateLock);
     return validRequest;
 }
 
 /** Equips one storage item onto the selected character's subclass slot. */
-bool equip_subclass_item(std::uint64_t itemSoid, std::uint64_t& displacedSoid) noexcept {    displacedSoid = 0;
+bool equip_subclass_item(std::uint64_t itemSoid, std::uint64_t& displacedSoid, const AccountKey key) noexcept {    displacedSoid = 0;
     if (itemSoid == 0) {
         return false;
     }
     AcquireSRWLockExclusive(&runtime::storage::g_stateLock);
-    AccountState candidate = runtime::storage::g_state.account;
+    AccountState candidate = slot_account(key);
     const std::size_t characterIndex = selected_index(candidate);
     if (characterIndex >= candidate.characterCount
         || !subclass_equip_valid_on(candidate, itemSoid)) {
@@ -198,19 +207,19 @@ bool equip_subclass_item(std::uint64_t itemSoid, std::uint64_t& displacedSoid) n
         return false;
     }
     // Publish only after the whole account still meets its identity rules.
-    runtime::storage::g_state.account = candidate;
+    slot_account(key) = candidate;
     ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
     return true;
 }
 
 /** Applies one opcode-2100 ability change to the selected character. */
-bool apply_ability_change(std::uint32_t definitionHash) noexcept {
+bool apply_ability_change(std::uint32_t definitionHash, const AccountKey key) noexcept {
     if (definitionHash == 0
         || definitionHash == state::build_data::socket_entry_lists::kNoPlugSource) {
         return false;
     }
     AcquireSRWLockExclusive(&runtime::storage::g_stateLock);
-    AccountState candidate = runtime::storage::g_state.account;
+    AccountState candidate = slot_account(key);
     const std::size_t characterIndex = selected_index(candidate);
     if (characterIndex >= candidate.characterCount) {
         ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
@@ -287,7 +296,7 @@ bool apply_ability_change(std::uint32_t definitionHash) noexcept {
         return false;
     }
     // Publish only after the whole account still meets its identity rules.
-    runtime::storage::g_state.account = candidate;
+    slot_account(key) = candidate;
     ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
     return true;
 }
@@ -463,7 +472,8 @@ struct AbilityRoute {
 /** Prepares one checked subclass socket-entry selection without publishing account State. */
 bool prepare_subclass_selection(std::uint64_t subclassInstanceSoid,
                                 std::uint8_t requestedEntry,
-                                PendingSubclassSelection& mutation) noexcept {
+                                PendingSubclassSelection& mutation,
+                                const AccountKey key) noexcept {
     mutation = {};
     const AccountState snapshot = account_snapshot();
     std::size_t characterIndex = snapshot.characterCount;
@@ -485,7 +495,7 @@ bool prepare_subclass_selection(std::uint64_t subclassInstanceSoid,
 }
 
 /** Commits one prepared subclass selection behind an exact staleness guard. */
-bool commit_subclass_selection(PendingSubclassSelection& mutation) noexcept {
+bool commit_subclass_selection(PendingSubclassSelection& mutation, const AccountKey key) noexcept {
     const PendingSubclassSelection prepared = mutation;
     mutation = {};
     if (!prepared.prepared || prepared.characterSoid == 0 || prepared.subclassInstanceSoid == 0
@@ -496,7 +506,7 @@ bool commit_subclass_selection(PendingSubclassSelection& mutation) noexcept {
         return false;
     }
     AcquireSRWLockExclusive(&runtime::storage::g_stateLock);
-    AccountState candidate = runtime::storage::g_state.account;
+    AccountState candidate = slot_account(key);
     if (prepared.characterIndex >= candidate.characterCount
         || candidate.characters[prepared.characterIndex].soid != prepared.characterSoid
         || !same_ability_picks(candidate.characters[prepared.characterIndex],
@@ -520,7 +530,7 @@ bool commit_subclass_selection(PendingSubclassSelection& mutation) noexcept {
         ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
         return false;
     }
-    runtime::storage::g_state.account = candidate;
+    slot_account(key) = candidate;
     ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
     return true;
 }

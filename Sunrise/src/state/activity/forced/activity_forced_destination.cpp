@@ -68,7 +68,7 @@ bool publish(const ForcedDestination& value) noexcept {
         return false;
     }
     AcquireSRWLockExclusive(&runtime::storage::g_stateLock);
-    runtime::storage::g_state.activity.forced = value;
+    runtime::storage::g_states[core::settings::kLegacyAccount].activity.forced = value;
     ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
     return true;
 }
@@ -76,14 +76,14 @@ bool publish(const ForcedDestination& value) noexcept {
 /** Copies the forced destination. */
 void snapshot(ForcedDestination& value) noexcept {
     AcquireSRWLockShared(&runtime::storage::g_stateLock);
-    value = runtime::storage::g_state.activity.forced;
+    value = runtime::storage::g_states[core::settings::kLegacyAccount].activity.forced;
     ReleaseSRWLockShared(&runtime::storage::g_stateLock);
 }
 
 /** Drops the selection and the switch, the same as the interface's clear action. */
 void clear() noexcept {
     AcquireSRWLockExclusive(&runtime::storage::g_stateLock);
-    runtime::storage::g_state.activity.forced = {};
+    runtime::storage::g_states[core::settings::kLegacyAccount].activity.forced = {};
     ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
 }
 

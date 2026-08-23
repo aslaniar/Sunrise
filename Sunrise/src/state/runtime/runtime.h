@@ -3,9 +3,16 @@
 #include <cstdint>
 #include <span>
 
+#include "../../core/settings/provisioning.h"
 #include "state.h"
 
 namespace sunrise::state {
+
+// The P2 account-key vocabulary lives in core::settings so both layers share one definition.
+using core::settings::kAccountCapacity;
+using core::settings::kLegacyAccount;
+using core::settings::kUnprovisionedAccount;
+using core::settings::AccountKey;
 
 /**
  * Loads cached build data and generates secrets with Sunrise's authored activity defaults.
@@ -31,20 +38,33 @@ initialize(void* module,
 /** Securely clears State, including activity destinations and matchmaking descriptors. */
 void shutdown() noexcept;
 
-/** @return Immutable generated SignOn session fields. */
-[[nodiscard]] const SignOnState& sign_on() noexcept;
+/** @return Immutable generated SignOn session fields for one provisioned account. */
+[[nodiscard]] const SignOnState& sign_on(AccountKey key = kLegacyAccount) noexcept;
+
+/** @return How many accounts this process serves (>= 1 after initialize). */
+[[nodiscard]] std::size_t account_count() noexcept;
+
+/**
+ * Matches an echoed service-25 session token against every provisioned account.
+ * @param echoed The 32 token bytes carried in the hello body.
+ * @return The matching slot key, or kUnprovisionedAccount when nothing matches.
+ */
+[[nodiscard]] AccountKey
+match_session_token(std::span<const std::byte, kSessionTokenSize> echoed) noexcept;
 
 [[nodiscard]] bool publish_bootstrap_token(std::span<const std::byte> token) noexcept;
 
-/** @return Immutable generated BAP session fields. */
-[[nodiscard]] const BapState& bap() noexcept;
+/** @return Immutable generated BAP session fields for one provisioned account. */
+[[nodiscard]] const BapState& bap(AccountKey key = kLegacyAccount) noexcept;
 
 /**
  * Stores the active nonzero account key when the account remains complete.
  * @param primarySoid Account key selected by the local Client.
+ * @param key Provisioned slot to mutate; defaults preserve every existing caller.
  * @return False when the key or resulting account State is invalid.
  */
-[[nodiscard]] bool set_primary_soid(std::uint64_t primarySoid) noexcept;
+[[nodiscard]] bool set_primary_soid(std::uint64_t primarySoid,
+                                    AccountKey key = kLegacyAccount) noexcept;
 
 /**
  * Moves the selection to one authored character.
@@ -52,14 +72,17 @@ void shutdown() noexcept;
  * choice enters State.
  * @param characterSoid Picked character key, which must name an authored character.
  * @param changed Receives whether the selection moved to a different character.
+ * @param key Provisioned slot to mutate.
  * @return False when no authored character carries that key.
  */
-[[nodiscard]] bool set_selected_character(std::uint64_t characterSoid, bool& changed) noexcept;
+[[nodiscard]] bool set_selected_character(std::uint64_t characterSoid,
+                                          bool& changed,
+                                          AccountKey key = kLegacyAccount) noexcept;
 
 /** @return A copy of the active account state, read under the lock. */
-[[nodiscard]] AccountState account_snapshot() noexcept;
+[[nodiscard]] AccountState account_snapshot(AccountKey key = kLegacyAccount) noexcept;
 /** @return A copy of the evaluated content state, read under the lock. */
-[[nodiscard]] InvestmentState investment_snapshot() noexcept;
+[[nodiscard]] InvestmentState investment_snapshot(AccountKey key = kLegacyAccount) noexcept;
 
 /**
  * Applies one opcode-2100 ability change to the selected character. The definition
@@ -67,10 +90,12 @@ void shutdown() noexcept;
  * competition group names the lane (movement/grenade/super/melee/class), and that
  * lane's pick moves to the named entry.
  * @param definitionHash The ability definition hash the Client's 2100 carried.
+ * @param key Provisioned slot to mutate.
  * @return True when a selected character equips a subclass that offers the entry
  *         and the whole account stayed valid after the move.
  */
-[[nodiscard]] bool apply_ability_change(std::uint32_t definitionHash) noexcept;
+[[nodiscard]] bool apply_ability_change(std::uint32_t definitionHash,
+                                        AccountKey key = kLegacyAccount) noexcept;
 
 /** One prepared opcode-801 subclass socket-entry selection, ready to commit. */
 struct PendingSubclassSelection {
@@ -90,18 +115,22 @@ struct PendingSubclassSelection {
  * @param subclassInstanceSoid Instance key of the equipped subclass the selection names.
  * @param requestedEntry Zero-based socket-entry index the Client picked.
  * @param mutation Receives the before/after character pair when the entry routes.
+ * @param key Provisioned slot to mutate.
  * @return True when the entry's resolved bucket names one ability field it changes.
  */
 [[nodiscard]] bool prepare_subclass_selection(std::uint64_t subclassInstanceSoid,
                                               std::uint8_t requestedEntry,
-                                              PendingSubclassSelection& mutation) noexcept;
+                                              PendingSubclassSelection& mutation,
+                                              AccountKey key = kLegacyAccount) noexcept;
 
 /**
  * Commits one prepared subclass selection behind an exact character staleness guard.
  * @param mutation The prepared selection; cleared on failure.
+ * @param key Provisioned slot to mutate.
  * @return True when the whole account stayed valid and the selection published.
  */
-[[nodiscard]] bool commit_subclass_selection(PendingSubclassSelection& mutation) noexcept;
+[[nodiscard]] bool commit_subclass_selection(PendingSubclassSelection& mutation,
+                                             AccountKey key = kLegacyAccount) noexcept;
 
 /**
  * Equips one storage item onto the selected character's subclass slot, returning the
@@ -110,25 +139,59 @@ struct PendingSubclassSelection {
  * staging step cannot fail after a request passed.
  * @param itemSoid Instance key of the storage item to equip.
  * @param displacedSoid Receives the previously equipped subclass instance key, or zero.
+ * @param key Provisioned slot to mutate.
  * @return True when the swap left the whole account valid and was published.
  */
 [[nodiscard]] bool equip_subclass_item(std::uint64_t itemSoid,
-                                       std::uint64_t& displacedSoid) noexcept;
+                                       std::uint64_t& displacedSoid,
+                                       AccountKey key = kLegacyAccount) noexcept;
 
 /**
  * Checks the subclass-equip request policy without touching State.
  * @param itemSoid Instance key the Client asked to equip.
+ * @param key Provisioned slot to inspect.
  * @return True when a selected character owns that key in storage and the definition is a
  *         bucket-16 (subclass) item.
  */
-[[nodiscard]] bool subclass_equip_request_valid(std::uint64_t itemSoid) noexcept;
+[[nodiscard]] bool subclass_equip_request_valid(std::uint64_t itemSoid,
+                                                AccountKey key = kLegacyAccount) noexcept;
 
 /**
  * Replaces the published family-5 override lists with the persisted rows.
  * Object identity (objectSoid) and the content-gate arm stay owned by State.
  * @param family Bounded override lists read back from the state database.
+ * @param key Provisioned slot to mutate.
  * @return False when the counts exceed the fixed capacities.
  */
-[[nodiscard]] bool publish_family5(const Family5State& family) noexcept;
+[[nodiscard]] bool publish_family5(const Family5State& family,
+                                   AccountKey key = kLegacyAccount) noexcept;
+
+/**
+ * Provisions every settings-authored account into its own State slot. With no state.accounts
+ * array this is exactly one account built from initialAccount + server.bootstrap_token, so
+ * legacy hosts keep today's behavior byte for byte. Slot 0 drives build-data identity.
+ * @param module Loaded Sunrise module, or null to disable disk persistence.
+ * @param activityDefaults Complete local fallback policy from immutable Core settings.
+ * @return True when every provisioned account built and published.
+ */
+[[nodiscard]] bool initialize_provisioned(
+    void* module,
+    const activity::defaults::ActivityDefaults& activityDefaults) noexcept;
+
+/**
+ * Replaces one provisioned slot's State with a persisted account (the boot's database pass).
+ * Slot 0 keeps build-data ownership exactly like the historical two-pass flow; other slots
+ * rebuild without touching the shared cache identity.
+ * @param module Loaded Sunrise module, or null to disable disk persistence.
+ * @param account The complete checked account loaded for this slot.
+ * @param activityDefaults Complete local fallback policy from immutable Core settings.
+ * @param key Provisioned slot to replace.
+ * @return True when the slot rebuilt and published.
+ */
+[[nodiscard]] bool reload_account_from_database(
+    void* module,
+    const AccountState& account,
+    const activity::defaults::ActivityDefaults& activityDefaults,
+    AccountKey key) noexcept;
 
 } // namespace sunrise::state

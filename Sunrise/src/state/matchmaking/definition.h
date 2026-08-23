@@ -8,7 +8,7 @@
 namespace sunrise::state::matchmaking {
 
 /** 4 slots cover every local backend channel open at once, with no heap storage. */
-inline constexpr std::size_t kContextCapacity = 4;
+inline constexpr std::size_t kContextCapacity = 8;
 /**
  * Sunrise keeps 16 variants as headroom over the current valid ones.
  * This is not a protocol limit. It makes eviction fixed and heap-free.

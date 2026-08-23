@@ -26,7 +26,7 @@ bool prepare_variant_update(ContextHandle context,
         return false;
     }
     AcquireSRWLockShared(&runtime::storage::g_stateLock);
-    MatchmakingState& state = runtime::storage::g_state.matchmaking;
+    MatchmakingState& state = runtime::storage::g_states[core::settings::kLegacyAccount].matchmaking;
     ContextSlot* slot = transactions::resolve(state, context);
     if (slot == nullptr || slot->data.revision == (std::numeric_limits<std::uint64_t>::max)()) {
         ReleaseSRWLockShared(&runtime::storage::g_stateLock);
@@ -79,7 +79,7 @@ bool prepare_initial_latest(ContextHandle context,
     advertisementId = kAbsentAdvertisementId;
     mutation = {};
     AcquireSRWLockShared(&runtime::storage::g_stateLock);
-    MatchmakingState& state = runtime::storage::g_state.matchmaking;
+    MatchmakingState& state = runtime::storage::g_states[core::settings::kLegacyAccount].matchmaking;
     ContextSlot* slot = transactions::resolve(state, context);
     if (slot == nullptr) {
         ReleaseSRWLockShared(&runtime::storage::g_stateLock);

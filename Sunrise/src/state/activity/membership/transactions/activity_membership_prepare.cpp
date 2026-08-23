@@ -18,7 +18,7 @@ bool prepare_identity(std::uint64_t sessionId,
     }
 
     AcquireSRWLockShared(&runtime::storage::g_stateLock);
-    const auto& root = runtime::storage::g_state;
+    const auto& root = runtime::storage::g_states[core::settings::kLegacyAccount];
     PendingMutation prepared{};
     const SessionRecord* record =
         transactions::prepare_base(root.activity, root.account.primarySoid, sessionId, prepared);
@@ -61,7 +61,7 @@ bool prepare_refresh(std::uint64_t sessionId,
     }
 
     AcquireSRWLockShared(&runtime::storage::g_stateLock);
-    const auto& root = runtime::storage::g_state;
+    const auto& root = runtime::storage::g_states[core::settings::kLegacyAccount];
     PendingMutation prepared{};
     const SessionRecord* record =
         transactions::prepare_base(root.activity, root.account.primarySoid, sessionId, prepared);
@@ -94,7 +94,7 @@ bool prepare_acknowledgement(std::uint64_t sessionId,
     }
 
     AcquireSRWLockShared(&runtime::storage::g_stateLock);
-    const auto& root = runtime::storage::g_state;
+    const auto& root = runtime::storage::g_states[core::settings::kLegacyAccount];
     PendingMutation prepared{};
     const SessionRecord* record =
         transactions::prepare_base(root.activity, root.account.primarySoid, sessionId, prepared);

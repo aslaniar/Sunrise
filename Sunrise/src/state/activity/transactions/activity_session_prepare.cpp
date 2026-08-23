@@ -63,7 +63,7 @@ bool prepare_session(std::uint64_t& sessionId, PendingAllocation& allocation) no
     allocation = {};
     const std::uint64_t soidBase = session_soid_base();
     AcquireSRWLockShared(&runtime::storage::g_stateLock);
-    const ActivityState& state = runtime::storage::g_state.activity;
+    const ActivityState& state = runtime::storage::g_states[core::settings::kLegacyAccount].activity;
     const bool ready = prepare_locked(
         state, state.defaults.defaultDestination.selection, soidBase, sessionId, allocation);
     ReleaseSRWLockShared(&runtime::storage::g_stateLock);
@@ -83,7 +83,7 @@ bool prepare_session(const destination::DestinationSelection& selection,
     const std::uint64_t soidBase = session_soid_base();
     AcquireSRWLockShared(&runtime::storage::g_stateLock);
     const bool ready = prepare_locked(
-        runtime::storage::g_state.activity, selection, soidBase, sessionId, allocation);
+        runtime::storage::g_states[core::settings::kLegacyAccount].activity, selection, soidBase, sessionId, allocation);
     ReleaseSRWLockShared(&runtime::storage::g_stateLock);
     return ready;
 }

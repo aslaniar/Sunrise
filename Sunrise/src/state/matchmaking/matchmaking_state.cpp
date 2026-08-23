@@ -16,7 +16,7 @@ namespace sunrise::state::matchmaking {
 bool acquire_context(ContextHandle& context) noexcept {
     context = {};
     AcquireSRWLockExclusive(&runtime::storage::g_stateLock);
-    MatchmakingState& state = runtime::storage::g_state.matchmaking;
+    MatchmakingState& state = runtime::storage::g_states[core::settings::kLegacyAccount].matchmaking;
     if (state.allocatorRevision == kInvalidRevision) {
         ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
         return false;
@@ -45,7 +45,7 @@ bool acquire_context(ContextHandle& context) noexcept {
 /** Releases a context and securely erases every descriptor it owns. */
 bool release_context(ContextHandle context) noexcept {
     AcquireSRWLockExclusive(&runtime::storage::g_stateLock);
-    ContextSlot* slot = transactions::resolve(runtime::storage::g_state.matchmaking, context);
+    ContextSlot* slot = transactions::resolve(runtime::storage::g_states[core::settings::kLegacyAccount].matchmaking, context);
     if (slot == nullptr) {
         ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
         return false;
@@ -62,7 +62,7 @@ bool release_context(ContextHandle context) noexcept {
 bool latest_snapshot(ContextHandle context, LatestSnapshot& snapshot) noexcept {
     SecureZeroMemory(&snapshot, sizeof snapshot);
     AcquireSRWLockShared(&runtime::storage::g_stateLock);
-    MatchmakingState& state = runtime::storage::g_state.matchmaking;
+    MatchmakingState& state = runtime::storage::g_states[core::settings::kLegacyAccount].matchmaking;
     ContextSlot* slot = transactions::resolve(state, context);
     if (slot == nullptr) {
         ReleaseSRWLockShared(&runtime::storage::g_stateLock);

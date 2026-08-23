@@ -110,7 +110,7 @@ bool republish(std::uint64_t sessionId) noexcept {
     }
     bool advanced = false;
     AcquireSRWLockExclusive(&runtime::storage::g_stateLock);
-    auto& root = runtime::storage::g_state;
+    auto& root = runtime::storage::g_states[core::settings::kLegacyAccount];
     ActivityState& state = root.activity;
     for (SessionRecord& record : state.sessions) {
         if (!record.occupied || !record.joined || record.sessionId != sessionId) {
@@ -144,7 +144,7 @@ bool commit(PendingMutation& mutation) noexcept {
     }
 
     AcquireSRWLockExclusive(&runtime::storage::g_stateLock);
-    auto& root = runtime::storage::g_state;
+    auto& root = runtime::storage::g_states[core::settings::kLegacyAccount];
     ActivityState& state = root.activity;
     SessionRecord& record = state.sessions[prepared.targetSlot];
     bool committed = state.stateRevision == prepared.expectedStateRevision && record.occupied

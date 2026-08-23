@@ -16,7 +16,7 @@ bool select_grant(std::uint64_t sessionId, std::int32_t sliceSetIndex, Grant& gr
     const auto bubble = static_cast<std::uint8_t>(sliceSetIndex >> kSliceSetToBubbleShift);
     bool owed = false;
     AcquireSRWLockShared(&runtime::storage::g_stateLock);
-    const ActivityState& state = runtime::storage::g_state.activity;
+    const ActivityState& state = runtime::storage::g_states[core::settings::kLegacyAccount].activity;
     const std::size_t target = activity::transactions::find_session(state, sessionId);
     if (target != kInvalidSessionSlot && bubble < kFallbackBubble
         && state.sessions[target].bubbleAuthority.grantTokens[bubble] == 0) {
@@ -34,7 +34,7 @@ void record_grant(std::uint64_t sessionId, const Grant& grant) noexcept {
         return;
     }
     AcquireSRWLockExclusive(&runtime::storage::g_stateLock);
-    ActivityState& state = runtime::storage::g_state.activity;
+    ActivityState& state = runtime::storage::g_states[core::settings::kLegacyAccount].activity;
     const std::size_t target = activity::transactions::find_session(state, sessionId);
     if (target != kInvalidSessionSlot) {
         state.sessions[target].bubbleAuthority.grantTokens[grant.bubble] = grant.token;
@@ -48,7 +48,7 @@ void clear_grants(std::uint64_t sessionId) noexcept {
         return;
     }
     AcquireSRWLockExclusive(&runtime::storage::g_stateLock);
-    ActivityState& state = runtime::storage::g_state.activity;
+    ActivityState& state = runtime::storage::g_states[core::settings::kLegacyAccount].activity;
     const std::size_t target = activity::transactions::find_session(state, sessionId);
     if (target != kInvalidSessionSlot) {
         state.sessions[target].bubbleAuthority = {};

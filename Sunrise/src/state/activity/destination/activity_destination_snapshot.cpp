@@ -18,7 +18,7 @@ bool snapshot(std::uint64_t sessionId, DestinationSelection& output) noexcept {
     DestinationSelection selected{};
     bool found = false;
     AcquireSRWLockShared(&runtime::storage::g_stateLock);
-    for (const SessionRecord& record : runtime::storage::g_state.activity.sessions) {
+    for (const SessionRecord& record : runtime::storage::g_states[core::settings::kLegacyAccount].activity.sessions) {
         if (record.occupied && record.sessionId == sessionId) {
             selected = record.destination;
             found = true;

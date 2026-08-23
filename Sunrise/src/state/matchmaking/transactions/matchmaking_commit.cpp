@@ -24,7 +24,7 @@ bool commit(PendingMutation& mutation) noexcept {
         return false;
     }
     AcquireSRWLockExclusive(&runtime::storage::g_stateLock);
-    MatchmakingState& state = runtime::storage::g_state.matchmaking;
+    MatchmakingState& state = runtime::storage::g_states[core::settings::kLegacyAccount].matchmaking;
     ContextSlot* slot = transactions::resolve(state, prepared.context);
     if (slot == nullptr || slot->data.revision != prepared.expectedContextRevision
         || slot->data.revision == (std::numeric_limits<std::uint64_t>::max)()) {

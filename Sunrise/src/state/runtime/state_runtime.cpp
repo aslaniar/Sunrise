@@ -11,6 +11,7 @@
 #include <string_view>
 
 #include "../../core/logging/log.h"
+#include "../../core/settings/provisioning.h"
 #include "../../core/settings/settings.h"
 #include "../../middleware/crypto/hmac.h"
 #include "../activity/defaults/activity_defaults_validation.h"
@@ -23,7 +24,10 @@
 namespace sunrise::state {
 namespace runtime::storage {
 
-State g_state;
+/** One State per provisioned account; slot 0 is the historical sole account. */
+std::array<State, kAccountCapacity> g_states{};
+/** How many slots are live (>=1 after any successful initialize). */
+std::size_t g_accountCount = 1;
 SRWLOCK g_stateLock{SRWLOCK_INIT};
 
 } // namespace runtime::storage
@@ -64,27 +68,6 @@ constexpr std::size_t kBootstrapTokenBytes = 16;
 }
 
 /**
- * Decodes the configured 32-hex-character bootstrap token into 16 raw bytes.
- * @param output Receives the decoded token.
- * @return True when the configured text is exactly 32 valid hex characters.
- */
-[[nodiscard]] bool decode_bootstrap_token(std::array<std::byte, kBootstrapTokenBytes>& output) noexcept {
-    const std::string_view text(core::settings::get().server.bootstrapToken.data());
-    if (text.size() != output.size() * 2) {
-        return false;
-    }
-    for (std::size_t index = 0; index < output.size(); ++index) {
-        unsigned int high = 0;
-        unsigned int low = 0;
-        if (!hex_nibble(text[index * 2], high) || !hex_nibble(text[index * 2 + 1], low)) {
-            return false;
-        }
-        output[index] = static_cast<std::byte>((high << 4) | low);
-    }
-    return true;
-}
-
-/**
  * Derives the SignOn envelope-wrap keys from the configured bootstrap token, so every process
  * that shares the setting derives the identical pair. The Standalone server and the Client's
  * own in-process SignOn responder are separate processes with no live handshake of their own -
@@ -94,25 +77,27 @@ constexpr std::size_t kBootstrapTokenBytes = 16;
  * @param signOn Receives the derived encryptionKey and authenticationKey.
  * @return True when the token is configured as valid hex and both derivations succeed.
  */
-[[nodiscard]] bool derive_envelope_wrap_keys(SignOnState& signOn) noexcept {
-    std::array<std::byte, kBootstrapTokenBytes> token{};
-    if (!decode_bootstrap_token(token)) {
-        return false;
-    }
+[[nodiscard]] bool derive_signon_secrets(const std::array<std::byte, kBootstrapTokenBytes>& token,
+                                         SignOnState& signOn) noexcept {
     constexpr std::string_view kEncryptionLabel = "sunrise-signon-encryption-key";
     constexpr std::string_view kAuthenticationLabel = "sunrise-signon-authentication-key";
-    const auto encryptionLabel =
-        std::as_bytes(std::span<const char>(kEncryptionLabel.data(), kEncryptionLabel.size()));
-    const auto authenticationLabel =
-        std::as_bytes(std::span<const char>(kAuthenticationLabel.data(), kAuthenticationLabel.size()));
+    // P2: the session token derives from the same bootstrap token instead of being randomized.
+    // Both sides of the hybrid architecture (a client DLL answering its own SignOn and the
+    // external BAP server) derive identical tokens from one authored setting, which turns the
+    // service-25 hello echo into a real identity proof. Same pattern as b84f8de's wrap keys.
+    constexpr std::string_view kSessionTokenLabel = "sunrise-signon-session-token";
+    const auto label_bytes = [](const std::string_view text) {
+        return std::as_bytes(std::span<const char>(text.data(), text.size()));
+    };
     hmac::Digest encryptionDigest{};
     hmac::Digest authenticationDigest{};
+    hmac::Digest sessionDigest{};
     const bool derived =
-        hmac::authenticate(
-            hmac::Algorithm::sha256, token, encryptionLabel, {}, encryptionDigest)
+        hmac::authenticate(hmac::Algorithm::sha256, token, label_bytes(kEncryptionLabel), {}, encryptionDigest)
         && hmac::authenticate(
-            hmac::Algorithm::sha256, token, authenticationLabel, {}, authenticationDigest);
-    SecureZeroMemory(token.data(), token.size());
+            hmac::Algorithm::sha256, token, label_bytes(kAuthenticationLabel), {}, authenticationDigest)
+        && hmac::authenticate(
+            hmac::Algorithm::sha256, token, label_bytes(kSessionTokenLabel), {}, sessionDigest);
     if (!derived) {
         return false;
     }
@@ -121,6 +106,8 @@ constexpr std::size_t kBootstrapTokenBytes = 16;
     std::copy_n(authenticationDigest.bytes.begin(),
                signOn.authenticationKey.size(),
                signOn.authenticationKey.begin());
+    static_assert(kSessionTokenSize <= hmac::kMaximumDigestSize);
+    std::copy_n(sessionDigest.bytes.begin(), signOn.sessionToken.size(), signOn.sessionToken.begin());
     return true;
 }
 
@@ -183,57 +170,62 @@ template <std::size_t Size>
 
 } // namespace
 
+/** One provisioned account's boot inputs: authored State plus the token that names it. */
+struct ProvisionedAccountInput {
+    const AccountState* account{};
+    std::string_view bootstrapTokenHex;
+};
+
 /**
- * Loads build data and generates secrets with Sunrise's authored activity defaults.
- * @param module Loaded Sunrise module, or null to disable disk persistence.
- * @param initialAccount Empty State, or a complete checked account from Core settings.
- * @return True when the cached data passes its checks and every secret gets random bytes.
+ * Decodes 32 hex characters into the 16 raw token bytes.
+ * @param text Authored hex text. @param output Receives the raw bytes.
+ * @return True when every character is valid hex and the length matches exactly.
  */
-bool initialize(void* module, const AccountState& initialAccount) noexcept {
-    return initialize(module, initialAccount, activity::defaults::authored());
+[[nodiscard]] bool
+decode_hex_token(std::string_view text,
+                 std::array<std::byte, kBootstrapTokenBytes>& output) noexcept {
+    if (text.size() != output.size() * 2) {
+        return false;
+    }
+    for (std::size_t index = 0; index < output.size(); ++index) {
+        unsigned int high = 0;
+        unsigned int low = 0;
+        if (!hex_nibble(text[index * 2], high) || !hex_nibble(text[index * 2 + 1], low)) {
+            return false;
+        }
+        output[index] = static_cast<std::byte>((high << 4) | low);
+    }
+    return true;
 }
 
 /**
- * Loads build data and publishes fixed activity defaults in one step.
- * @param module Loaded Sunrise module, or null to disable disk persistence.
- * @param initialAccount Empty State, or a complete checked account from Core settings.
+ * Builds one complete account State: derived secrets, relay fields, authored content policy.
+ * @param input Authored account plus its bootstrap token.
  * @param activityDefaults Complete local fallback policy from immutable Core settings.
- * @return True when account, defaults, cached data, and generated secrets are valid.
+ * @param initialized Receives the built State on success.
+ * @return True when every secret derives and the account passes its checks.
  */
-bool initialize(void* module,
-                const AccountState& initialAccount,
-                const activity::defaults::ActivityDefaults& activityDefaults) noexcept {
-    AccountState runtimeAccount = initialAccount;
-    if (!seed_inventory_runtime_fields(runtimeAccount)
-        || !activity::defaults::valid(activityDefaults)) {
+[[nodiscard]] bool
+build_account_state(const ProvisionedAccountInput& input,
+                    const activity::defaults::ActivityDefaults& activityDefaults,
+                    State& initialized) noexcept {
+    initialized = {};
+    if (input.account == nullptr) {
         return false;
     }
-    if (!build_data::initialize(module, runtime::equipment::configured_hash(runtimeAccount))) {
+    AccountState runtimeAccount = *input.account;
+    if (!seed_inventory_runtime_fields(runtimeAccount)) {
         return false;
     }
-    {
-        // The account key is authored, and a truncated one is consistent enough to go unnoticed.
-        std::array<char, 96> line{};
-        const int written =
-            std::snprintf(line.data(),
-                          line.size(),
-                          "ev=account stage=identity primary=0x%016llX characters=%zu",
-                          static_cast<unsigned long long>(runtimeAccount.primarySoid),
-                          runtimeAccount.characterCount);
-        if (written > 0) {
-            core::log::write(core::log::Channel::state,
-                             core::log::Level::info,
-                             {line.data(), static_cast<std::size_t>(written)});
-        }
-    }
-    State initialized{};
-    if (!derive_envelope_wrap_keys(initialized.signOn)
-        || !randomize(initialized.signOn.sessionToken) || !randomize(initialized.bap.nonce)
-        || !randomize(initialized.bap.sessionKey) || !randomize(initialized.bap.envelopeIv)) {
-        SecureZeroMemory(&initialized, sizeof initialized);
-        build_data::shutdown();
+    std::array<std::byte, kBootstrapTokenBytes> token{};
+    if (!decode_hex_token(input.bootstrapTokenHex, token)
+        || !derive_signon_secrets(token, initialized.signOn)
+        || !randomize(initialized.bap.nonce) || !randomize(initialized.bap.sessionKey)
+        || !randomize(initialized.bap.envelopeIv)) {
+        SecureZeroMemory(token.data(), token.size());
         return false;
     }
+    SecureZeroMemory(token.data(), token.size());
     const auto& relayOctets = core::settings::get().server.relayAddress;
     initialized.signOn.relayAddress = (std::uint32_t(relayOctets[0]) << 24)
                                     | (std::uint32_t(relayOctets[1]) << 16)
@@ -254,32 +246,205 @@ bool initialize(void* module,
     // The arm is account-wide and rides the first ws-503, which goes out before any pick. Nothing
     // is selected at boot, so it is armed when any authored character carries the bypass. The
     // per-character objB byte is the other half, and it still decides which character it opens.
-    for (std::size_t index = 0; index < initialAccount.characterCount; ++index) {
-        if (initialAccount.characters[index].contentBypass) {
+    for (std::size_t index = 0; index < input.account->characterCount; ++index) {
+        if (input.account->characters[index].contentBypass) {
             initialized.investment.family5.contentGateArm = true;
             break;
         }
     }
+    return true;
+}
 
-    // Publish one complete State only after every generated secret is valid.
+/**
+ * Provisions every authored account into its own State slot in one pass.
+ * Slot 0 keeps full legacy responsibility: its equipment hash drives build-data identity.
+ * @param module Loaded Sunrise module, or null to disable disk persistence.
+ * @param accounts One input per provisioned account, slot order = key order.
+ * @param activityDefaults Complete local fallback policy from immutable Core settings.
+ * @return True when every account built and the whole array published under the lock.
+ */
+bool initialize_accounts(void* module,
+                         std::span<const ProvisionedAccountInput> accounts,
+                         const activity::defaults::ActivityDefaults& activityDefaults) noexcept {
+    if (accounts.empty() || accounts.size() > kAccountCapacity
+        || !activity::defaults::valid(activityDefaults)) {
+        return false;
+    }
+    for (const ProvisionedAccountInput& input : accounts) {
+        if (input.account == nullptr || !account::valid(*input.account)) {
+            return false;
+        }
+    }
+    {
+        // Slot 0 drives build-data identity exactly as the single-account pass always did.
+        AccountState probe = *accounts[0].account;
+        if (!seed_inventory_runtime_fields(probe)
+            || !build_data::initialize(module, runtime::equipment::configured_hash(probe))) {
+            return false;
+        }
+    }
+    std::array<State, kAccountCapacity> built{};
+    for (std::size_t index = 0; index < accounts.size(); ++index) {
+        if (!build_account_state(accounts[index], activityDefaults, built[index])) {
+            SecureZeroMemory(built.data(), sizeof built);
+            build_data::shutdown();
+            return false;
+        }
+        std::array<char, 128> line{};
+        const int written =
+            std::snprintf(line.data(),
+                          line.size(),
+                          "ev=account stage=identity key=%zu primary=0x%016llX characters=%zu",
+                          index,
+                          static_cast<unsigned long long>(built[index].account.primarySoid),
+                          built[index].account.characterCount);
+        if (written > 0) {
+            core::log::write(core::log::Channel::state,
+                             core::log::Level::info,
+                             {line.data(), static_cast<std::size_t>(written)});
+        }
+    }
+
+    // Publish the whole provisioned set only after every secret is valid.
     AcquireSRWLockExclusive(&runtime::storage::g_stateLock);
-    runtime::storage::g_state = initialized;
+    for (std::size_t index = 0; index < accounts.size(); ++index) {
+        runtime::storage::g_states[index] = built[index];
+    }
+    runtime::storage::g_accountCount = accounts.size();
     ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
-    SecureZeroMemory(&initialized, sizeof initialized);
+    SecureZeroMemory(built.data(), sizeof built);
+    return true;
+}
+
+/**
+ * Legacy single-account entry point: provisions exactly one account from the caller's block
+ * and the settings bootstrap token. Multi-account hosts call initialize_provisioned instead.
+ * @param module Loaded Sunrise module, or null to disable disk persistence.
+ * @param initialAccount Empty State, or a complete checked account from Core settings.
+ * @param activityDefaults Complete local fallback policy from immutable Core settings.
+ * @return True when account, defaults, cached data, and generated secrets are valid.
+ */
+bool initialize(void* module,
+                const AccountState& initialAccount,
+                const activity::defaults::ActivityDefaults& activityDefaults) noexcept {
+    const std::array<ProvisionedAccountInput, 1> accounts{
+        ProvisionedAccountInput{
+            &initialAccount,
+            std::string_view(core::settings::get().server.bootstrapToken.data())}};
+    return initialize_accounts(module, accounts, activityDefaults);
+}
+
+/**
+ * Provisions every settings-authored account: state.accounts[] entries, legacy-normalized to
+ * exactly one entry when no array was authored.
+ * @param module Loaded Sunrise module, or null to disable disk persistence.
+ * @param activityDefaults Complete local fallback policy from immutable Core settings.
+ * @return True when every provisioned account built and published.
+ */
+bool initialize_provisioned(
+    void* module,
+    const activity::defaults::ActivityDefaults& activityDefaults) noexcept {
+    const core::settings::Settings& settings = core::settings::get();
+    std::array<ProvisionedAccountInput, kAccountCapacity> inputs{};
+    for (std::size_t index = 0; index < settings.provisionedAccountCount; ++index) {
+        inputs[index] =
+            ProvisionedAccountInput{&settings.accounts[index].account,
+                                    std::string_view(settings.accounts[index]
+                                                         .bootstrapToken.data())};
+    }
+    return initialize_accounts(
+        module,
+        std::span<const ProvisionedAccountInput>(inputs.begin(),
+                                                 settings.provisionedAccountCount),
+        activityDefaults);
+}
+
+/**
+ * Loads build data and generates secrets with Sunrise's authored activity defaults.
+ * @param module Loaded Sunrise module, or null to disable disk persistence.
+ * @param initialAccount Empty State, or a complete checked account from Core settings.
+ * @return True when the cached data passes its checks and every secret gets random bytes.
+ */
+bool initialize(void* module, const AccountState& initialAccount) noexcept {
+    return initialize(module, initialAccount, activity::defaults::authored());
+}
+
+/**
+ * Replaces one provisioned slot's State with a persisted account (the boot's database pass).
+ * Slot 0 keeps build-data ownership exactly like the historical two-pass flow; other slots
+ * rebuild without touching the shared cache identity.
+ */
+bool reload_account_from_database(
+    void* module,
+    const AccountState& account,
+    const activity::defaults::ActivityDefaults& activityDefaults,
+    const AccountKey key) noexcept {
+    if (account.primarySoid == 0 || !account::valid(account)
+        || !activity::defaults::valid(activityDefaults)) {
+        return false;
+    }
+    const core::settings::Settings& settings = core::settings::get();
+    const std::size_t index =
+        key < settings.provisionedAccountCount ? key : kLegacyAccount;
+    if (key == kLegacyAccount) {
+        // Slot 0 keeps the historical responsibility for the shared cache identity.
+        AccountState probe = account;
+        if (!seed_inventory_runtime_fields(probe)
+            || !build_data::initialize(module, runtime::equipment::configured_hash(probe))) {
+            return false;
+        }
+    }
+    State built{};
+    if (!build_account_state(ProvisionedAccountInput{
+                                 &account,
+                                 std::string_view(settings.accounts[index]
+                                                      .bootstrapToken.data())},
+                             activityDefaults,
+                             built)) {
+        return false;
+    }
+    AcquireSRWLockExclusive(&runtime::storage::g_stateLock);
+    runtime::storage::g_states[key] = built;
+    if (static_cast<std::size_t>(key) >= runtime::storage::g_accountCount) {
+        runtime::storage::g_accountCount = static_cast<std::size_t>(key) + 1;
+    }
+    ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
+    SecureZeroMemory(&built, sizeof built);
     return true;
 }
 
 /** Securely erases State, including activity destinations and matchmaking descriptors. */
 void shutdown() noexcept {
     AcquireSRWLockExclusive(&runtime::storage::g_stateLock);
-    SecureZeroMemory(&runtime::storage::g_state, sizeof runtime::storage::g_state);
+    SecureZeroMemory(runtime::storage::g_states.data(), sizeof runtime::storage::g_states);
+    runtime::storage::g_accountCount = 1;
     ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
     build_data::shutdown();
 }
 
-/** @return Immutable generated SignOn session fields. */
-const SignOnState& sign_on() noexcept {
-    return runtime::storage::g_state.signOn;
+/** Clamps a caller key into the live provisioned range; slot 0 always exists. */
+[[nodiscard]] AccountKey clamp_key(const AccountKey key) noexcept {
+    return key < runtime::storage::g_accountCount ? key : kLegacyAccount;
+}
+
+/** @return Immutable generated SignOn session fields for one account slot. */
+const SignOnState& sign_on(const AccountKey key) noexcept {
+    return runtime::storage::g_states[clamp_key(key)].signOn;
+}
+
+/** @return How many accounts this process serves. */
+std::size_t account_count() noexcept {
+    return runtime::storage::g_accountCount;
+}
+
+AccountKey match_session_token(std::span<const std::byte, kSessionTokenSize> echoed) noexcept {
+    for (std::size_t index = 0; index < runtime::storage::g_accountCount; ++index) {
+        const SignOnState& candidate = runtime::storage::g_states[index].signOn;
+        if (std::equal(echoed.begin(), echoed.end(), candidate.sessionToken.begin())) {
+            return static_cast<AccountKey>(index);
+        }
+    }
+    return kUnprovisionedAccount;
 }
 
 /**
@@ -288,7 +453,7 @@ const SignOnState& sign_on() noexcept {
  * @return True when the complete token is kept for this process.
  */
 bool publish_bootstrap_token(std::span<const std::byte> token) noexcept {
-    SignOnState& signOn = runtime::storage::g_state.signOn;
+    SignOnState& signOn = runtime::storage::g_states[kLegacyAccount].signOn;
     if (token.size() != signOn.bootstrapToken.size()) {
         return false;
     }
@@ -297,29 +462,31 @@ bool publish_bootstrap_token(std::span<const std::byte> token) noexcept {
     return true;
 }
 
-/** @return Immutable generated BAP session fields. */
-const BapState& bap() noexcept {
-    return runtime::storage::g_state.bap;
+/** @return Immutable generated BAP session fields for one account slot. */
+const BapState& bap(const AccountKey key) noexcept {
+    return runtime::storage::g_states[clamp_key(key)].bap;
 }
 
 /** @return A copy of the evaluated content state, read under the lock. */
-InvestmentState investment_snapshot() noexcept {
+InvestmentState investment_snapshot(const AccountKey key) noexcept {
     AcquireSRWLockShared(&runtime::storage::g_stateLock);
-    const InvestmentState snapshot = runtime::storage::g_state.investment;
+    const InvestmentState snapshot =
+        runtime::storage::g_states[clamp_key(key)].investment;
     ReleaseSRWLockShared(&runtime::storage::g_stateLock);
     return snapshot;
 }
 
 /** Replaces the published family-5 override lists, keeping object identity and gate. */
-bool publish_family5(const Family5State& family) noexcept {
+bool publish_family5(const Family5State& family, const AccountKey key) noexcept {
     if (family.flagCount > family.flags.size() || family.valueCount > family.values.size()) {
         return false;
     }
     AcquireSRWLockExclusive(&runtime::storage::g_stateLock);
-    runtime::storage::g_state.investment.family5.flags = family.flags;
-    runtime::storage::g_state.investment.family5.flagCount = family.flagCount;
-    runtime::storage::g_state.investment.family5.values = family.values;
-    runtime::storage::g_state.investment.family5.valueCount = family.valueCount;
+    InvestmentState& investment = runtime::storage::g_states[clamp_key(key)].investment;
+    investment.family5.flags = family.flags;
+    investment.family5.flagCount = family.flagCount;
+    investment.family5.values = family.values;
+    investment.family5.valueCount = family.valueCount;
     ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
     return true;
 }
