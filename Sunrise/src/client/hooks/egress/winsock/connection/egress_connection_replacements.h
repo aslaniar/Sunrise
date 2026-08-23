@@ -18,8 +18,8 @@ int WSAAPI connect_socket_ex(SOCKET socket,
 
 /** Redirects every nonempty ANSI node to the IPv4 redirect literal. */
 BOOL PASCAL connect_by_name_a(SOCKET socket,
-                              LPSTR nodeName,
-                              LPSTR serviceName,
+                              LPCSTR nodeName,
+                              LPCSTR serviceName,
                               LPDWORD localAddressLength,
                               LPSOCKADDR localAddress,
                               LPDWORD remoteAddressLength,

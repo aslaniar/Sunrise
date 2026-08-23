@@ -8,7 +8,7 @@ namespace sunrise::client::hooks::egress::dns {
 DNS_STATUS WINAPI query_a(PCSTR name,
                           WORD type,
                           DWORD options,
-                          PIP4_ARRAY extra,
+                          PVOID extra,
                           PDNS_RECORD* results,
                           PVOID* reserved) noexcept;
 
@@ -16,7 +16,7 @@ DNS_STATUS WINAPI query_a(PCSTR name,
 DNS_STATUS WINAPI query_w(PCWSTR name,
                           WORD type,
                           DWORD options,
-                          PIP4_ARRAY extra,
+                          PVOID extra,
                           PDNS_RECORD* results,
                           PVOID* reserved) noexcept;
 
@@ -24,7 +24,7 @@ DNS_STATUS WINAPI query_w(PCWSTR name,
 DNS_STATUS WINAPI query_utf8(PCSTR name,
                              WORD type,
                              DWORD options,
-                             PIP4_ARRAY extra,
+                             PVOID extra,
                              PDNS_RECORD* results,
                              PVOID* reserved) noexcept;
 
