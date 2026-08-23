@@ -7,6 +7,7 @@
 #include <limits>
 
 #include "../../core/logging/log.h"
+#include "../../core/settings/settings.h"
 
 namespace sunrise::server::tls {
 namespace {
@@ -14,9 +15,16 @@ namespace {
 /** Per-user key container that owns the self-signed server key. */
 constexpr wchar_t kKeyContainerName[] = L"SunriseStandaloneServer";
 /** The subject names the address the Client always connects to. */
-constexpr wchar_t kCertificateSubject[] = L"CN=127.0.0.1";
+/** Built from the configured bind address; see server.bind_address. */
 /** Server-authentication usage satisfies every TLS client stack. */
 constexpr char kServerAuthenticationOid[] = szOID_PKIX_KP_SERVER_AUTH;
+/** Formats the self-signed certificate subject from the configured bind address. */
+void format_certificate_subject(wchar_t (&out)[64]) noexcept {
+    const auto& octets = core::settings::get().server.bindAddress;
+    std::swprintf(out, 64, L"CN=%u.%u.%u.%u",
+                  unsigned{octets[0]}, unsigned{octets[1]},
+                  unsigned{octets[2]}, unsigned{octets[3]});
+}
 /**
  * Success-severity handshake status the SDK no longer names: one more record fragment is
  * required before the security package can continue. Documented value 0x00090313.
@@ -77,6 +85,8 @@ constexpr SECURITY_STATUS kIncompleteMessage = static_cast<SECURITY_STATUS>(0x00
 
 /** Generates one self-signed certificate and acquires the inbound credential handle. */
 bool initialize(Context& context) noexcept {
+    wchar_t subjectText[64];
+    format_certificate_subject(subjectText);
     // The key container is per-user, so booting the listener needs no elevation.
     HCRYPTPROV provider = 0;
     if (!CryptAcquireContextW(&provider, kKeyContainerName, nullptr, PROV_RSA_FULL, CRYPT_NEWKEYSET)) {
@@ -100,7 +110,7 @@ bool initialize(Context& context) noexcept {
     std::array<BYTE, 512> encodedSubject{};
     DWORD encodedSubjectSize = static_cast<DWORD>(encodedSubject.size());
     if (CertStrToNameW(X509_ASN_ENCODING,
-                       kCertificateSubject,
+                       subjectText,
                        CERT_X500_NAME_STR,
                        nullptr,
                        encodedSubject.data(),

@@ -174,7 +174,11 @@ bool initialize_on_port(std::uint16_t port) noexcept {
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_port = htons(port);
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    const auto& bindOctets = core::settings::get().server.bindAddress;
+    address.sin_addr.s_addr = htonl((std::uint32_t(bindOctets[0]) << 24)
+                                  | (std::uint32_t(bindOctets[1]) << 16)
+                                  | (std::uint32_t(bindOctets[2]) << 8)
+                                  | std::uint32_t(bindOctets[3]));
     BOOL reuse = TRUE;
     (void)setsockopt(g_listener.acceptor,
                      SOL_SOCKET,

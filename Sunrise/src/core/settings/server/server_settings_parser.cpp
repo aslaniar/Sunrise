@@ -85,6 +85,7 @@ bool Parser::server_settings(server::Settings& output) noexcept {
     bool hasBapPort = false;
     bool hasHttpsPort = false;
     bool hasBindAddress = false;
+    bool hasRelayAddress = false;
     bool hasBootstrapToken = false;
     bool hasConfigGuid = false;
     bool hasClientLogPath = false;
@@ -130,6 +131,14 @@ bool Parser::server_settings(server::Settings& output) noexcept {
                 return false;
             }
             hasBindAddress = true;
+        } else if (key == "relay_address") {
+            std::string_view value;
+            // Same dotted-quad rule as bind_address: host names refuse the file.
+            if (hasRelayAddress || !string(value)
+                || !address::parse_ipv4(value, output.relayAddress)) {
+                return false;
+            }
+            hasRelayAddress = true;
         } else if (key == "bootstrap_token") {
             std::string_view value;
             if (hasBootstrapToken || !string(value)

@@ -38,6 +38,8 @@ struct Settings {
      * (the gameplay endpoint already carries the same key).
      */
     std::array<unsigned char, address::kOctets> bindAddress{127, 0, 0, 1};
+    /** Address published in the SignOn relay field; loopback keeps today's behavior. */
+    std::array<unsigned char, address::kOctets> relayAddress{127, 0, 0, 1};
     /** 16 content-id bytes as uppercase or lowercase hex text. Published into State at boot. */
     std::array<char, kBootstrapTokenCapacity> bootstrapToken{"00000000000000000000000000000000"};
     /** Optional served ContentConfig id. Empty serves the State fingerprint id. */
