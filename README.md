@@ -61,6 +61,8 @@ Destiny 2 Offline Exploration Mod
 - Exploration Features (Fly, Noclip, Activity Override, ...)
 - Basic Inventory Management
 
+- **ADDED IN THIS FORK**: Full subclass and ability swap functionality
+
 ## WIP
 
 This mod is work in progress. Things might break or work in unexpected ways. There is also currently
