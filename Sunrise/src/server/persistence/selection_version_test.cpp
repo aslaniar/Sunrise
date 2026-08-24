@@ -18,6 +18,7 @@
 #include "../../middleware/datagen/family4/loadout/loadout_resolver.h"
 #include "../../middleware/queuez/queuez_update.h"
 #include "../../middleware/web_service/web_service_envelope.h"
+#include "../../middleware/web_service/messages/opcode504.h"
 #include "../../state/account/account_state.h"
 #include "../../state/account/inventory/inventory_state.h"
 #include "../../state/build_data/runtime.h"
@@ -385,6 +386,62 @@ int run_selection_version_test(void* module) noexcept {
                           && carriedAfter.family3RootSoid == carried.family3RootSoid
                           && carriedAfter.family3Version == carried.family3Version,
                       "carried_staging_keeps_family3_ladder");
+    }
+
+    // THE PER-SLOT SELECTION GATE (P2, FINDINGS 20.20): a peer's character pick must move ITS
+    // OWN provisioned slot's selection and no other. `set_selected_character` takes the slot as
+    // a DEFAULTED argument, and the web-service handler called it without one, so every peer's
+    // pick moved the LEGACY slot instead. The keyed `prepare_selection_move` that follows then
+    // read its own slot, found the selection unmoved, and refused with step=move_selection - no
+    // Family-4 move frame went out and the second client hung in 'character:signin' until it
+    // timed out (a black screen with a live cursor). Invisible with one client, because slot
+    // zero IS the default. Same shape as the P2-C1 state::bap() default and the 20.17 mirror
+    // key: a defaulted provisioned-slot argument is the recurring hazard in this codebase.
+    {
+        const state::AccountState secondSlot = state::account_snapshot(1);
+        if (secondSlot.characterCount == 0) {
+            report("ev=selection_version stage=check result=skip what=per_slot_selection "
+                   "reason=one_provisioned_account");
+        } else {
+            const std::uint64_t legacyBefore =
+                state::account::selected_character_soid(state::account_snapshot(0));
+            std::uint64_t pick = 0;
+            for (std::size_t index = 0; index < secondSlot.characterCount; ++index) {
+                if (!secondSlot.characters[index].selected) {
+                    pick = secondSlot.characters[index].soid;
+                    break;
+                }
+            }
+            harness.check(pick != 0, "second_slot_has_an_unselected_character");
+            // The gate drives the REAL handler, not the State setter: the setter always took a
+            // slot, and the defect was the web-service caller omitting it. A hand-built
+            // opcode-504 envelope is the whole request - a 6-byte header (big-endian u16 opcode,
+            // big-endian u32 transaction id) followed by the bare big-endian u64 character id.
+            std::array<std::byte, 14> body{};
+            body[0] = static_cast<std::byte>(
+                (middleware::web_service::messages::opcode504::kOpcode >> 8) & 0xFF);
+            body[1] = static_cast<std::byte>(
+                middleware::web_service::messages::opcode504::kOpcode & 0xFF);
+            for (std::size_t index = 0; index < 8; ++index) {
+                body[6 + index] =
+                    static_cast<std::byte>((pick >> (56 - 8 * index)) & 0xFFULL);
+            }
+            std::array<std::byte, 256> reply{};
+            std::size_t replySize = 0;
+            web_service::Outcome wsOutcome{};
+            harness.check(web_service::consume(std::span<const std::byte>(body),
+                                               std::span(reply),
+                                               replySize,
+                                               wsOutcome,
+                                               1),
+                          "second_slot_select_accepted");
+            harness.check(state::account::selected_character_soid(state::account_snapshot(1))
+                              == pick,
+                          "second_slot_select_moves_its_own_slot");
+            harness.check(state::account::selected_character_soid(state::account_snapshot(0))
+                              == legacyBefore,
+                          "second_slot_select_leaves_the_legacy_slot");
+        }
     }
 
     // THE ACQUIRED-STATE LANE GATE (13.7, the purple diamonds): every item frame's

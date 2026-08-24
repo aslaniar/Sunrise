@@ -82,15 +82,17 @@ bool stage_service_outcome(Scratch& scratch,
         // OPEN items), so the mutation precedes the frame encodes, and every failure arm
         // reverts it. A crash mid-flow can lose at most an unpersisted in-memory swap.
         std::uint64_t displacedSoid = 0;
-        if (!state::equip_subclass_item(outcome.subclassEquip.itemSoid, displacedSoid)) {
+        if (!state::equip_subclass_item(
+                outcome.subclassEquip.itemSoid, displacedSoid, before.accountKey)) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::warn,
                              "ev=queuez stage=subclass_equip result=fail step=mutate");
             return false;
         }
-        const auto revert_swap = [&displacedSoid](const char* step) noexcept {
+        const auto revert_swap = [&displacedSoid, &before](const char* step) noexcept {
             std::uint64_t reverted = 0;
-            (void)state::equip_subclass_item(displacedSoid, reverted);
+            // The revert has to land in the SAME slot the swap mutated.
+            (void)state::equip_subclass_item(displacedSoid, reverted, before.accountKey);
             std::array<char, 96> line{};
             const int lineWritten = std::snprintf(
                 line.data(),

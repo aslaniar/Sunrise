@@ -44,10 +44,18 @@ constexpr std::size_t kSelectLineCapacity = 96;
  * Records the player's character pick, which arrives nowhere else.
  * A bad or unknown id leaves the selection alone. The reply is the status pair either way. The
  * Family-4 object move follows this call, and the family-zero pair after it.
+ * THE KEY IS LOAD-BEARING (P2, FINDINGS 20.20): unkeyed, this moved the LEGACY slot's selection
+ * for every peer, and the keyed `prepare_selection_move` that follows then found its own slot's
+ * selection unmoved and refused with step=move_selection - no Family-4 move frame, and the peer
+ * hung in 'character:signin' until it timed out. Invisible with one client, because slot zero
+ * IS the default.
  * @param message Parsed select-character request.
  * @param outcome Gets the picked key once the selection has moved in State.
+ * @param accountKey Provisioned slot the calling peer owns.
  */
-void select_character(const middleware::web_service::Message& message, Outcome& outcome) noexcept {
+void select_character(const middleware::web_service::Message& message,
+                      Outcome& outcome,
+                      const core::settings::AccountKey accountKey) noexcept {
     middleware::web_service::messages::opcode504::Request picked;
     if (!middleware::web_service::messages::opcode504::parse_request(message, picked)) {
         core::log::write(
@@ -55,7 +63,7 @@ void select_character(const middleware::web_service::Message& message, Outcome& 
         return;
     }
     bool changed = false;
-    if (!state::set_selected_character(picked.characterSoid, changed)) {
+    if (!state::set_selected_character(picked.characterSoid, changed, accountKey)) {
         core::log::write(core::log::Channel::server,
                          core::log::Level::warn,
                          "ev=ws504 stage=select result=unknown");
@@ -174,7 +182,7 @@ bool consume(std::span<const std::byte> request,
     }
 
     if (message.opcode == middleware::web_service::messages::opcode205::kOpcode) {
-        const auto investment = state::investment_snapshot();
+        const auto investment = state::investment_snapshot(accountKey);
         return middleware::web_service::messages::opcode205::encode_response(
                    message, investment, response, written)
                || encode_echo(message, response, written);
@@ -189,7 +197,7 @@ bool consume(std::span<const std::byte> request,
         if (!bootstrap.hasPrimarySoid) {
             bootstrap.primarySoid = state::account_snapshot(accountKey).primarySoid;
         }
-        const auto investment = state::investment_snapshot();
+        const auto investment = state::investment_snapshot(accountKey);
         if (!parsed
             || !middleware::web_service::messages::opcode503::encode_response(
                 message, bootstrap, investment, response, written)) {
@@ -208,7 +216,7 @@ bool consume(std::span<const std::byte> request,
     if (message.opcode == middleware::web_service::messages::opcode501::kOpcode) {
         // Returns a SOID family three already publishes. The request body is not parsed.
         const std::uint64_t characterSoid =
-            state::account::selected_character_soid(state::account_snapshot());
+            state::account::selected_character_soid(state::account_snapshot(accountKey));
         return middleware::web_service::messages::opcode501::encode_response(
                    message, characterSoid, response, written)
                || encode_echo(message, response, written);
@@ -234,7 +242,7 @@ bool consume(std::span<const std::byte> request,
                            | static_cast<std::uint64_t>(message.payload[byte]);
             }
         }
-        if (state::subclass_equip_request_valid(itemSoid)) {
+        if (state::subclass_equip_request_valid(itemSoid, accountKey)) {
             outcome.hasSubclassEquip = true;
             outcome.subclassEquipSoid = itemSoid;
         }
@@ -266,7 +274,8 @@ bool consume(std::span<const std::byte> request,
                 message, selectionRequest)
             && state::prepare_subclass_selection(selectionRequest.subclassInstanceSoid,
                                                  selectionRequest.socketEntry,
-                                                 outcome.subclassSelection)) {
+                                                 outcome.subclassSelection,
+                                                 accountKey)) {
             outcome.hasSubclassSelection = true;
         }
     }
@@ -295,7 +304,7 @@ bool consume(std::span<const std::byte> request,
     }
     if (message.opcode == middleware::web_service::messages::opcode504::kOpcode) {
         // The selection is State, not a response field, so it publishes after the reply encodes.
-        select_character(message, outcome);
+        select_character(message, outcome, accountKey);
     }
     return true;
 }
