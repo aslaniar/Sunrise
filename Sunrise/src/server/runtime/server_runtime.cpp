@@ -24,6 +24,16 @@ bool initialize() noexcept {
                          "ev=transport stage=listen result=fail");
         return false;
     }
+    // The gameplay endpoint must bind before any descriptor advertises it. A failure here is
+    // logged and not fatal, matching the in-process branch below: an unbound endpoint leaves
+    // endpoint::ready() false, which leaves the citizen advertisement absent, which is the
+    // byte-for-byte behaviour this process had before the plane was wired at all. A disabled
+    // topology succeeds without binding, so settings alone restore that behaviour.
+    if (!gameplay::initialize()) {
+        core::log::write(core::log::Channel::server,
+                         core::log::Level::warn,
+                         "ev=gameplay stage=init result=fail");
+    }
     return true;
 #else
     if (!client::network::register_http_consumer(&http::consume)) {
@@ -71,6 +81,8 @@ void service(std::uint64_t now) noexcept {
 /** Unregisters Server consumers in reverse registration order. */
 void shutdown() noexcept {
 #if defined(SUNRISE_STANDALONE_SERVER)
+    // Reverse initialization order: the endpoint closes before the transport it was bound after.
+    gameplay::shutdown();
     transport::shutdown();
     bap::shutdown();
 #else

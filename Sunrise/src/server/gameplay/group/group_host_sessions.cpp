@@ -183,8 +183,10 @@ void allocate_claimed_host_sessions() noexcept {
         // Outside the table lock: the allocation takes the State lock and the two may not nest.
         std::uint64_t sessionId = state::activity::kAbsentSessionId;
         state::activity::PendingAllocation allocation{};
-        // NAMED, not defaulted: the gameplay group host has no per-peer context yet (the
-        // plane is unwired in server_main), so it allocates from the legacy slot's band.
+        // NAMED, not defaulted: a group session belongs to a REGION and not to a peer, so there
+        // is no per-peer context to key it on. It allocates from the legacy slot's band, which
+        // makes every region's host session slot-zero's regardless of which peer advertised it.
+        // Revisit when the admission path stops aliasing two peers onto one session record.
         if (!state::activity::prepare_session(core::settings::kLegacyAccount,
                                               sessionId,
                                               allocation)
