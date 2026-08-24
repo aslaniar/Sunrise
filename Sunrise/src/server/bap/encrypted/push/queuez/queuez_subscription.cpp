@@ -103,6 +103,24 @@ void append_queuez_notification(Scratch& scratch,
                                 bool& armsRepush) noexcept {
     after = before;
     armsRepush = false;
+    // P2-C3 instrument: names every subscription's family and requested root, so the
+    // dual-root pattern (one subscribe per identity source) is visible on the success
+    // path too, not only when staging refuses. Strip when the dual-account front closes.
+    {
+        std::array<char, core::log::kLineCapacity> line{};
+        const int written =
+            std::snprintf(line.data(),
+                          line.size(),
+                          "ev=queuez stage=subscribe_in family=%u root=%016llX key=%d",
+                          static_cast<unsigned>(subscription.familyType),
+                          static_cast<unsigned long long>(subscription.familyRootSoid),
+                          static_cast<int>(before.accountKey));
+        if (written > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::info,
+                             {line.data(), static_cast<std::size_t>(written)});
+        }
+    }
     if (subscription.familyType == queuez::kAccountFamilyType && before.family4Active
         && before.family4Version != queuez::kInitialFamilyVersion) {
         // Our mirror of the Client's records is an observation, not an authority on what may be
