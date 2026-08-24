@@ -107,6 +107,33 @@ bool Parser::ability_entry(std::uint8_t& output) noexcept {
     return true;
 }
 
+/** Parses one character's non-equipped storage array. */
+bool Parser::storage_items(state::CharacterState& output) noexcept {
+    output.storageItemCount = 0;
+    if (!consume('[')) {
+        return false;
+    }
+    if (consume(']')) {
+        return true;
+    }
+    for (;;) {
+        if (output.storageItemCount >= output.storageItems.size()) {
+            return false;
+        }
+        state::account::inventory::Item item{};
+        if (!equipment_item(item)) {
+            return false;
+        }
+        output.storageItems[output.storageItemCount++] = item;
+        if (consume(']')) {
+            return true;
+        }
+        if (!consume(',')) {
+            return false;
+        }
+    }
+}
+
 /** Parses one authored character identity. */
 bool Parser::character(state::CharacterState& output) noexcept {
     output = {};
@@ -115,6 +142,7 @@ bool Parser::character(state::CharacterState& output) noexcept {
     }
     bool hasSoid = false;
     bool hasEquipment = false;
+    bool hasInventory = false;
     if (consume('}')) {
         return false;
     }
@@ -202,6 +230,11 @@ bool Parser::character(state::CharacterState& output) noexcept {
                 return false;
             }
             hasEquipment = true;
+        } else if (key == "inventory") {
+            if (hasInventory || !storage_items(output)) {
+                return false;
+            }
+            hasInventory = true;
         } else if (!skip_value(0)) {
             return false;
         }

@@ -169,6 +169,14 @@ private:
      */
     [[nodiscard]] bool profile_items(state::AccountState& output) noexcept;
     /**
+     * Parses one authored character's non-equipped storage array.
+     * Entries carry the same named fields as equipment items; no slot is authored because
+     * bucket placement happens at resolve time (the spare subclasses ride here).
+     * @param output Receives the storage rows and their count.
+     * @return True when every entry is complete and the array fits the fixed capacity.
+     */
+    [[nodiscard]] bool storage_items(state::CharacterState& output) noexcept;
+    /**
      * Parses one authored character identity.
      * @param output Receives one complete authored character row.
      * @return True when the object contains one nonzero SOID.

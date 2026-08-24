@@ -18,6 +18,8 @@ enum class ItemField : std::size_t {
     plugs,
     count,
 };
+/** Optional item field: native accumulated item-state bits (authored storage rows carry it). */
+constexpr std::size_t kOptionalItemFieldFlags = static_cast<std::size_t>(ItemField::count);
 
 } // namespace
 
@@ -78,7 +80,7 @@ bool Parser::equipment_item(authored_inventory::Item& output) noexcept {
     if (!consume('{')) {
         return false;
     }
-    std::bitset<static_cast<std::size_t>(ItemField::count)> supplied;
+    std::bitset<static_cast<std::size_t>(ItemField::count) + 1> supplied;
     const auto mark = [&supplied](ItemField field) noexcept {
         const std::size_t index = static_cast<std::size_t>(field);
         if (supplied.test(index)) {
@@ -118,12 +120,25 @@ bool Parser::equipment_item(authored_inventory::Item& output) noexcept {
             if (!mark(ItemField::plugs) || !equipment_plugs(parsed.sockets)) {
                 return false;
             }
+        } else if (key == "flags") {
+            std::uint64_t value = 0;
+            if (supplied.test(kOptionalItemFieldFlags) || !unsigned_value(value)
+                || value > (std::numeric_limits<std::uint32_t>::max)()) {
+                return false;
+            }
+            supplied.set(kOptionalItemFieldFlags);
+            parsed.flags = static_cast<std::uint32_t>(value);
         } else {
             return false;
         }
 
         if (consume('}')) {
-            if (!supplied.all() || !authored_inventory::valid(parsed)) {
+            static constexpr std::size_t kRequiredCount = static_cast<std::size_t>(ItemField::count);
+            bool allRequired = true;
+            for (std::size_t index = 0; index < kRequiredCount; ++index) {
+                allRequired = allRequired && supplied.test(index);
+            }
+            if (!allRequired || !authored_inventory::valid(parsed)) {
                 return false;
             }
             output = parsed;

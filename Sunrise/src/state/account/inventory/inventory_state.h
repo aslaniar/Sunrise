@@ -55,9 +55,10 @@ inline constexpr std::size_t kProfileItemCapacity = 32;
 /**
  * Non-equipped character inventory rows a character may carry in addition to the 16
  * authored equipment slots. Bucket placement happens at resolve time, so this bound is a
- * State ceiling, not a wire limit (the character object accepts 350 rows).
+ * State ceiling, not a wire limit (the character object accepts 350 rows). 64 covers the
+ * authored capture's 40 storage rows per character with headroom for equip swaps.
  */
-inline constexpr std::size_t kCharacterStorageCapacity = 32;
+inline constexpr std::size_t kCharacterStorageCapacity = 64;
 
 /** One authored account-wide item, placed by the inventory bucket its definition names. */
 struct ProfileItem {
