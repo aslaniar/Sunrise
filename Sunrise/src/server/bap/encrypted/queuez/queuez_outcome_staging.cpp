@@ -157,8 +157,9 @@ bool stage_service_outcome(Scratch& scratch,
         // L5 stage 6: the equipment fingerprint moved with the persisted swap. Re-stamp the
         // cache header now (atomic temp+rename) so the next boot's identity gate matches the
         // post-mutation account without a manual repair step.
+        // A2(c): re-stamp with the STABLE provisioned-union identity, never one peer hash.
         const std::uint64_t postHash =
-            state::runtime::equipment::configured_hash(state::account_snapshot(before.accountKey));
+            state::runtime::equipment::configured_hash_provisioned();
         if (!state::build_data::cache::restamp_equipment_hash(postHash)) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::warn,
@@ -194,8 +195,9 @@ bool stage_service_outcome(Scratch& scratch,
         }
         // The ability picks mix into the configured equipment hash, so the cache header
         // re-stamps exactly like the subclass equip does.
+        // A2(c): re-stamp with the STABLE provisioned-union identity, never one peer hash.
         const std::uint64_t postHash =
-            state::runtime::equipment::configured_hash(state::account_snapshot(before.accountKey));
+            state::runtime::equipment::configured_hash_provisioned();
         if (!state::build_data::cache::restamp_equipment_hash(postHash)) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::warn,
@@ -265,8 +267,9 @@ bool stage_service_outcome(Scratch& scratch,
                              "ev=queuez stage=subclass_selection result=fail step=persist");
             return true;
         }
+        // A2(c): re-stamp with the STABLE provisioned-union identity, never one peer hash.
         const std::uint64_t postHash =
-            state::runtime::equipment::configured_hash(state::account_snapshot(before.accountKey));
+            state::runtime::equipment::configured_hash_provisioned();
         if (!state::build_data::cache::restamp_equipment_hash(postHash)) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::warn,

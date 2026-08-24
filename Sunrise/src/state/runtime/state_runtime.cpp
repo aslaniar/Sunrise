@@ -277,9 +277,12 @@ bool initialize_accounts(void* module,
     }
     {
         // Slot 0 drives build-data identity exactly as the single-account pass always did.
+        // A2: every pass of a boot folds the SAME provisioned-union identity, so no pass
+        // can go stale against another. Single-slot hosts fold to the legacy slot-0 hash.
         AccountState probe = *accounts[0].account;
         if (!seed_inventory_runtime_fields(probe)
-            || !build_data::initialize(module, runtime::equipment::configured_hash(probe))) {
+            || !build_data::initialize(
+                module, runtime::equipment::configured_hash_provisioned())) {
             return false;
         }
     }
@@ -390,7 +393,8 @@ bool reload_account_from_database(
         // Slot 0 keeps the historical responsibility for the shared cache identity.
         AccountState probe = account;
         if (!seed_inventory_runtime_fields(probe)
-            || !build_data::initialize(module, runtime::equipment::configured_hash(probe))) {
+            || !build_data::initialize(
+                module, runtime::equipment::configured_hash_provisioned())) {
             return false;
         }
     }

@@ -701,8 +701,10 @@ void handle_flag_write(SOCKET client,
 
 /** POST /restamp — the eqHash repair as a verb (the identity-pair bookkeeping). */
 void handle_restamp(SOCKET client) noexcept {
+    // A2(c): repair means restoring the STABLE provisioned-union identity, matching what
+    // every boot pass now writes - never a single peer's account hash.
     const std::uint64_t hash =
-        state::runtime::equipment::configured_hash(state::account_snapshot());
+        state::runtime::equipment::configured_hash_provisioned();
     const bool ok = state::build_data::cache::restamp_equipment_hash(hash);
     char args[64]{};
     const int argsWritten =

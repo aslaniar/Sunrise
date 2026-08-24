@@ -1,3 +1,5 @@
+#include "../../../core/settings/provisioning.h"
+#include "../../../core/settings/settings.h"
 #include "configured_equipment_identity.h"
 
 #include <limits>
@@ -105,6 +107,28 @@ std::uint64_t configured_hash(const AccountState& accountState) noexcept {
         }
     }
     return hash;
+}
+
+std::uint64_t configured_hash_provisioned() noexcept {
+    const auto& settings = core::settings::get();
+    const std::uint64_t first =
+        configured_hash(settings.accounts[core::settings::kLegacyAccount].account);
+    if (settings.provisionedAccountCount <= 1) {
+        return first;
+    }
+    // Multi-slot domain: chain the ordered per-slot hashes through the same FNV family,
+    // prefixed by the slot count so {A,B} can never collide with {B,A} or a bare {A}.
+    std::uint64_t folded = kEquipmentHashOffsetBasis;
+    const auto mix_u64 = [&folded](std::uint64_t value) noexcept {
+        for (std::size_t byteIndex = 0; byteIndex < sizeof value; ++byteIndex) {
+            mix_byte(folded, static_cast<std::uint8_t>(value >> (byteIndex * 8U)));
+        }
+    };
+    mix_u64(static_cast<std::uint64_t>(settings.provisionedAccountCount));
+    for (std::size_t index = 0; index < settings.provisionedAccountCount; ++index) {
+        mix_u64(configured_hash(settings.accounts[index].account));
+    }
+    return folded ^ first;
 }
 
 } // namespace sunrise::state::runtime::equipment

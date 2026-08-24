@@ -5,6 +5,8 @@
 #include <utility>
 
 #include "../../../../state/account/account_state.h"
+#include "../../../../core/settings/provisioning.h"
+#include "../../../../core/settings/settings.h"
 #include "../../../../state/runtime/runtime.h"
 #include "internal.h"
 
@@ -101,13 +103,8 @@ constexpr std::size_t kCharacterStatRowOffsets[]{593, 594, 595, 622, 623, 624};
 
 } // namespace
 
-/** Collects the authored equipment and plug hashes every configured character names. */
-bool collect_authored_hashes(AuthoredHashes& output) noexcept {
-    output = {};
-    const state::AccountState account = state::account_snapshot();
-    if (!state::account::valid(account)) {
-        return false;
-    }
+/** Walks one account's characters into the authored-hash set. */
+void walk_account(const state::AccountState& account, AuthoredHashes& output) noexcept {
     for (std::size_t character = 0; character < account.characterCount; ++character) {
         for (const auto& item : account.characters[character].equipment.slots) {
             if (!item.has_value() || output.count >= output.values.size()) {
@@ -120,6 +117,26 @@ bool collect_authored_hashes(AuthoredHashes& output) noexcept {
                 }
             }
         }
+    }
+}
+
+/**
+ * Collects the authored equipment and plug hashes every provisioned account names,
+ * plus the live legacy snapshot so runtime-equipped items keep their coverage
+ * (A2a: the detail domain must serve every slot, not only the booting one).
+ */
+bool collect_authored_hashes(AuthoredHashes& output) noexcept {
+    output = {};
+    const auto& settings = core::settings::get();
+    for (std::size_t index = 0; index < settings.provisionedAccountCount; ++index) {
+        const state::AccountState& authored = settings.accounts[index].account;
+        if (state::account::valid(authored)) {
+            walk_account(authored, output);
+        }
+    }
+    const state::AccountState live = state::account_snapshot();
+    if (state::account::valid(live)) {
+        walk_account(live, output);
     }
     const auto end = output.values.begin() + static_cast<std::ptrdiff_t>(output.count);
     std::sort(output.values.begin(), end);
