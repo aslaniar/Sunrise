@@ -168,8 +168,8 @@ core::settings::AccountKey g_activeAccount = core::settings::kLegacyAccount;
     return {storage.data(), std::strlen(storage.data())};
 }
 
-/** Seeds the meta and account identity rows. */
-bool seed_meta_and_account() noexcept {
+/** Seeds the meta rows. Runs once per database, whatever the provisioned count. */
+bool seed_meta() noexcept {
     static constexpr char kMetaSql[] =
         "INSERT INTO meta (key, value) VALUES ('schema_version', '1'), ('build_id', ?), "
         "('manifest_era', ?);";
@@ -182,7 +182,11 @@ bool seed_meta_and_account() noexcept {
         return false;
     }
     sqlite3_finalize(meta);
+    return true;
+}
 
+/** Seeds the active slot's account identity row. */
+bool seed_account_row() noexcept {
     static constexpr char kAccountSql[] =
         "INSERT INTO accounts (account_id, created_at) VALUES (?, unixepoch());";
     sqlite3_stmt* account = nullptr;
@@ -432,7 +436,17 @@ bool seed_profile_items_from(const state::AccountState& account) noexcept {
         const state::account::inventory::ProfileItem& item = account.profileItems[index];
         state::build_data::items::Definition definition{};
         if (!state::build_data::find_item_definition_hash(item.definitionHash, definition)) {
-            fail("seed_profile_resolve", "definition hash not in build data");
+            std::array<char, 96> line{};
+            const int written = std::snprintf(line.data(),
+                                              line.size(),
+                                              "ev=persistence stage=seed_profile_resolve "
+                                              "result=fail def=0x%08X",
+                                              item.definitionHash);
+            if (written > 0) {
+                core::log::write(core::log::Channel::server,
+                                 core::log::Level::error,
+                                 {line.data(), static_cast<std::size_t>(written)});
+            }
             sqlite3_finalize(statement);
             return false;
         }
@@ -453,11 +467,6 @@ bool seed_profile_items_from(const state::AccountState& account) noexcept {
     }
     sqlite3_finalize(statement);
     return true;
-}
-
-/** Seeds the profile rows from the authored settings. */
-bool seed_profile_items() noexcept {
-    return seed_profile_items_from(core::settings::get().initialAccount);
 }
 
 /** Seeds one expanded flag bank. */
@@ -567,11 +576,6 @@ bool seed_family5_from(const state::Family5State& family5) noexcept {
     return true;
 }
 
-/** Seeds the family-5 lists from the authored settings. */
-bool seed_family5() noexcept {
-    return seed_family5_from(core::settings::get().initialFamily5);
-}
-
 /** Seeds the entitlement policy. */
 bool seed_entitlements_from(const state::entitlements::Table& table) noexcept {
     static constexpr char kSql[] =
@@ -603,34 +607,65 @@ bool seed_entitlements_from(const state::entitlements::Table& table) noexcept {
     return true;
 }
 
-/** Seeds the entitlement policy from the authored settings. */
-bool seed_entitlements() noexcept {
-    return seed_entitlements_from(core::settings::get().server.entitlements);
+/** Seeds every authored row inside one transaction. */
+/**
+ * Seeds every account-owned row for the active slot from one built account and the
+ * process-global authored policy. The caller names the slot in g_activeAccount first, so
+ * every bind below lands on that slot's account id.
+ */
+bool seed_account_owned_rows(const state::AccountState& account) noexcept {
+    const core::settings::Settings& settings = core::settings::get();
+    const state::unlocks::Table& unlocks = settings.initialUnlocks;
+    bool seeded = seed_profile_items_from(account)
+                  && seed_family5_from(settings.initialFamily5)
+                  && seed_entitlements_from(settings.server.entitlements)
+                  && seed_flags("account", unlocks.accountFlags)
+                  && seed_flags("profile", unlocks.profileFlags)
+                  && seed_flags("character", unlocks.characterFlags)
+                  && seed_flags("character_object", unlocks.characterObjectFlags)
+                  && seed_objectives("account", unlocks.objectiveValues)
+                  && seed_objectives("character_object", unlocks.characterObjectValues);
+    for (std::size_t index = 0; seeded && index < account.characterCount; ++index) {
+        seeded = seed_character(index, account.characters[index]);
+    }
+    return seeded;
 }
 
-/** Seeds every authored row inside one transaction. */
+/** @return True when the active slot's account row already exists. */
+bool account_row_exists() noexcept {
+    std::array<char, 128> sql{};
+    const std::string_view activeId = seed_account_id();
+    (void)std::snprintf(sql.data(),
+                        sql.size(),
+                        "SELECT 1 FROM accounts WHERE account_id = '%s';",
+                        activeId.data());
+    sqlite3_stmt* statement = nullptr;
+    if (sqlite3_prepare_v2(g_database, sql.data(), -1, &statement, nullptr) != SQLITE_OK) {
+        fail("account_row_exists", error_text());
+        return false;
+    }
+    const int code = sqlite3_step(statement);
+    sqlite3_finalize(statement);
+    return code == SQLITE_ROW;
+}
+
+/** Seeds every provisioned slot inside one transaction (the fresh-database path). */
 bool seed_from_settings() noexcept {
     if (!exec("BEGIN;")) {
         return false;
     }
     // The published State is the seed's source of truth: it carries the runtime-stamped
     // ascending inventory serials (the settings block itself has none), so the fresh database
-    // holds the same generations the first boot publishes.
-    // KNOWN LIMITATION, made explicit (FINDINGS 20.22): the fresh-database seed reads the
-    // legacy slot only, so a database created from scratch carries just that account. It runs
-    // once, when no state.db exists. Seeding every provisioned slot is its own change.
-    const state::AccountState account = state::account_snapshot(core::settings::kLegacyAccount);
-    const state::unlocks::Table& unlocks = core::settings::get().initialUnlocks;
-    bool seeded =
-        seed_meta_and_account() && seed_profile_items() && seed_family5() && seed_entitlements()
-        && seed_flags("account", unlocks.accountFlags)
-        && seed_flags("profile", unlocks.profileFlags)
-        && seed_flags("character", unlocks.characterFlags)
-        && seed_flags("character_object", unlocks.characterObjectFlags)
-        && seed_objectives("account", unlocks.objectiveValues)
-        && seed_objectives("character_object", unlocks.characterObjectValues);
-    for (std::size_t index = 0; seeded && index < account.characterCount; ++index) {
-        seeded = seed_character(index, account.characters[index]);
+    // holds the same generations the first boot publishes. Every provisioned slot seeds its
+    // own rows under its own authored identity (FINDINGS 20.22 named the single-slot limit;
+    // this replaces it).
+    bool seeded = seed_meta();
+    const std::size_t provisionedCount = core::settings::get().provisionedAccountCount;
+    for (std::size_t key = 0; seeded && key < provisionedCount; ++key) {
+        g_activeAccount = static_cast<core::settings::AccountKey>(key);
+        seeded = seed_account_row()
+                 && seed_account_owned_rows(state::account_snapshot(
+                     static_cast<core::settings::AccountKey>(key)));
     }
     if (!seeded) {
         fail("seed", error_text());
@@ -644,6 +679,43 @@ bool seed_from_settings() noexcept {
     core::log::write(core::log::Channel::state,
                      core::log::Level::info,
                      "ev=persistence stage=seed result=ok");
+    return true;
+}
+
+/**
+ * Adds any provisioned slot whose rows are missing from an existing database, one
+ * transaction per slot. Present accounts are never rewritten: a database created before a
+ * second account was provisioned gains exactly the new slot's rows.
+ */
+bool ensure_provisioned_accounts() noexcept {
+    const std::size_t provisionedCount = core::settings::get().provisionedAccountCount;
+    for (std::size_t key = 0; key < provisionedCount; ++key) {
+        g_activeAccount = static_cast<core::settings::AccountKey>(key);
+        if (account_row_exists()) {
+            continue;
+        }
+        if (!exec("BEGIN;")) {
+            return false;
+        }
+        const state::AccountState account = state::account_snapshot(
+            static_cast<core::settings::AccountKey>(key));
+        const bool ok = seed_account_row() && seed_account_owned_rows(account);
+        if (!ok || !exec("COMMIT;")) {
+            fail("ensure_account", error_text());
+            (void)exec("ROLLBACK;");
+            return false;
+        }
+        std::array<char, 96> line{};
+        const int written = std::snprintf(line.data(),
+                                          line.size(),
+                                          "ev=persistence stage=ensure result=ok slot=%zu",
+                                          key);
+        if (written > 0) {
+            core::log::write(core::log::Channel::state,
+                             core::log::Level::info,
+                             {line.data(), static_cast<std::size_t>(written)});
+        }
+    }
     return true;
 }
 
@@ -1211,6 +1283,20 @@ bool initialize(void* module) noexcept {
         ReleaseSRWLockExclusive(&g_lock);
         return false;
     }
+    {
+        // TEMPORARY DIAGNOSTIC (multi-account front): name the exact database file opened,
+        // so a silently-misplaced database cannot masquerade as an empty one.
+        std::array<char, 300> narrow{};
+        const int written = std::snprintf(narrow.data(),
+                                          narrow.size(),
+                                          "ev=persistence stage=open path=%ls",
+                                          path.chars.data());
+        if (written > 0) {
+            core::log::write(core::log::Channel::state,
+                             core::log::Level::info,
+                             {narrow.data(), static_cast<std::size_t>(written)});
+        }
+    }
     if (!exec("PRAGMA journal_mode = WAL;") || !exec("PRAGMA foreign_keys = ON;")
         || !exec("PRAGMA user_version = 1;")) {
         fail("pragma", error_text());
@@ -1365,6 +1451,14 @@ bool initialize(void* module) noexcept {
     if (!account_rows_exist() && !seed_from_settings()) {
         fail("seed", error_text());
         (void)sqlite3_exec(g_database, "ROLLBACK;", nullptr, nullptr, nullptr);
+        close_locked();
+        ReleaseSRWLockExclusive(&g_lock);
+        return false;
+    }
+    // A database written before a second account was provisioned gains exactly the missing
+    // slot's rows; every present account is left untouched.
+    if (!ensure_provisioned_accounts()) {
+        fail("ensure", error_text());
         close_locked();
         ReleaseSRWLockExclusive(&g_lock);
         return false;
