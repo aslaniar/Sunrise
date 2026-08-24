@@ -13,10 +13,15 @@ namespace sunrise::server::bap::encrypted::queuez {
 
 /**
  * Stages publication of one whole Family-4 snapshot.
+ * A full snapshot always goes out at the initial version with the full-snapshot flag, which
+ * replaces the peer's store for the family, so an already-active family adopts the delivered
+ * manifest rather than refusing a frame the caller sends anyway. Only fields family four owns
+ * are rewritten; the account key, the family-zero ladder and the family-three ladder ride
+ * through untouched.
  * @param before Current queuez state owned by the peer.
  * @param family Prepared Family-4 snapshot whose object payloads stay borrowed.
  * @param after Gets the state published once the snapshot frame is copied.
- * @return True for a first snapshot or an identical version-zero replay.
+ * @return True unless the header is malformed or a character change is still mid-flight.
  */
 [[nodiscard]] bool stage_family4_snapshot(const SessionState& before,
                                           const middleware::queuez::Family& family,

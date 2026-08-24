@@ -345,6 +345,48 @@ int run_selection_version_test(void* module) noexcept {
                       "reversed_replay_preserves_family3");
     }
 
+    // THE CARRIED-FIELDS GATE (the P2 cross-account defect, FINDINGS 20.17): family-4 staging
+    // rewrites ONLY family four. The scratch-built candidate this generalises used to reset the
+    // provisioned account key to the legacy slot and drop the family-zero ladder, so every
+    // later snapshot on that session built the LEGACY account's objects for a slot-1 peer
+    // (observed on the wire: one connection served item soids 4100.. and key=1 before its
+    // first family-4 record, then 6000.. and key=0 after it). The boot-G gate above covers the
+    // family-three half of the same lesson.
+    {
+        // The before-image is the live shape: family three subscribed, the family-zero pair
+        // published, family four not yet recorded, and the mirror serving a NON-legacy slot.
+        // That is the exact state the companion stages against on a second peer.
+        SessionState carried{};
+        carried.accountKey = 1;
+        bool carriedRosterPublish = false;
+        harness.check(queuez::stage_family3_subscription(
+                          carried, rosterSub, carriedRosterPublish, carried),
+                      "carried_roster_stages_first");
+        bool carriedBannerPublish = false;
+        bool carriedBannerIncremental = false;
+        harness.check(queuez::stage_family0_subscription(carried,
+                                                        account.characters[0].soid,
+                                                        carriedBannerPublish,
+                                                        carriedBannerIncremental,
+                                                        carried),
+                      "carried_banner_stages_first");
+        harness.check(!carried.family4Active && carried.family0Active && carried.family3Active,
+                      "carried_before_is_first_record");
+        SessionState carriedAfter{};
+        harness.check(queuez::stage_family4_snapshot(carried, replayFamily, carriedAfter),
+                      "carried_staging_stages");
+        harness.check(carriedAfter.accountKey == carried.accountKey,
+                      "carried_staging_keeps_account_key");
+        harness.check(carriedAfter.family0Active == carried.family0Active
+                          && carriedAfter.family0Character == carried.family0Character
+                          && carriedAfter.family0Version == carried.family0Version,
+                      "carried_staging_keeps_family0_ladder");
+        harness.check(carriedAfter.family3Active == carried.family3Active
+                          && carriedAfter.family3RootSoid == carried.family3RootSoid
+                          && carriedAfter.family3Version == carried.family3Version,
+                      "carried_staging_keeps_family3_ladder");
+    }
+
     // THE ACQUIRED-STATE LANE GATE (13.7, the purple diamonds): every item frame's
     // socketEntryStates lanes must ship {acquired, active} on the readyMask-covered entries —
     // the fork used to stamp ready (0x10, the purple state) everywhere. The sign-on
@@ -695,11 +737,54 @@ int run_selection_version_test(void* module) noexcept {
         }
     }
 
-    // THE DEFERRED-REPUSH CASES. (a) The version-zero replay is permitted only while the peer
-    // holds the initial version — after the ladder advanced, the replay staging must refuse.
-    SessionState refusedReplay{};
-    harness.check(!queuez::stage_family4_snapshot(equip.after, replayFamily, refusedReplay),
-                  "replay_refused_after_advance");
+    // THE RE-SUBSCRIBE CASE (a) — the P2 policy, replacing the version-zero-replay-only rule.
+    // A subscription is answered with the full-snapshot flag at the initial version, which
+    // replaces the peer's store, so a re-subscribe after the ladder advanced ADOPTS the
+    // manifest it delivers. Refusing here while the caller still sent the frame is exactly
+    // what desynced the client and server mirrors (FINDINGS 20.16/20.17).
+    {
+        SessionState advanced = equip.after;
+        advanced.accountKey = 1;
+        harness.check(replayCount == 2 && advanced.family4ResidentCount == 2,
+                      "resubscribe_before_holds_two_residents");
+        // The delivered manifest deliberately DIFFERS from the mirror's - the live desync
+        // shape, where the snapshot that went out and the manifest on record disagreed on
+        // their object set. The mirror has to end up holding what was delivered, tail
+        // included.
+        const middleware::queuez::Family changedFamily{
+            queuez::kAccountFamilyType,
+            accountSoid,
+            queuez::kInitialFamilyVersion,
+            middleware::queuez::kFullSnapshotFlag,
+            std::span(replayObjects).first(1),
+        };
+        SessionState adopted{};
+        harness.check(queuez::stage_family4_snapshot(advanced, changedFamily, adopted),
+                      "resubscribe_adopts_after_advance");
+        harness.check(adopted.family4Version == queuez::kInitialFamilyVersion,
+                      "resubscribe_resets_to_initial_version");
+        harness.check(adopted.family4ResidentCount == 1,
+                      "resubscribe_mirror_matches_delivered_count");
+        harness.check(adopted.family4Residents[1].objectSoid == 0
+                          && adopted.family4Residents[1].definitionId == 0,
+                      "resubscribe_mirror_clears_dropped_residents");
+        harness.check(adopted.family4RootSoid == accountSoid
+                          && adopted.family4Residents.front().objectSoid == accountSoid,
+                      "resubscribe_mirror_front_is_root");
+        harness.check(adopted.accountKey == advanced.accountKey,
+                      "resubscribe_keeps_account_key");
+        harness.check(queuez::valid(adopted), "resubscribe_mirror_is_canonical");
+        // The one window that still refuses: a character change mid-flight owes its
+        // family-three publish-once, and the initial version cannot pair with a pending phase.
+        SessionState pending = equip.after;
+        pending.family3Phase = queuez::Family3Phase::publishOnce;
+        SessionState refusedPending{};
+        harness.check(!queuez::stage_family4_snapshot(pending, replayFamily, refusedPending),
+                      "resubscribe_refuses_change_pending");
+        harness.check(refusedPending.family4Version == pending.family4Version
+                          && refusedPending.family4ResidentCount == pending.family4ResidentCount,
+                      "resubscribe_refusal_leaves_mirror");
+    }
     // (b) The owed repush must not deliver a regressed frame: the guard disarms and skips it
     // when the mirror's version advanced past the initial, leaving the mirror untouched.
     {
