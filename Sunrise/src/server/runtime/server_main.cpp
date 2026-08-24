@@ -13,6 +13,7 @@
 #include "../../core/settings/settings.h"
 #include "../../middleware/compression/oodle/runtime.h"
 #include "../../middleware/runtime/middleware_runtime.h"
+#include "../../state/runtime/equipment/configured_equipment_identity.h"
 #include "../../state/account/account_state.h"
 #include "../../state/content_manifest/content_manifest_state_runtime.h"
 #include "../../state/entitlements/definition.h"
@@ -322,10 +323,24 @@ int main(int argc, char** argv) {
     const bool cacheCheck = argc > 1 && std::strcmp(argv[1], "--cache-check") == 0;
     const bool selectionVersionTest =
         argc > 1 && std::strcmp(argv[1], "--selection-version-test") == 0;
+    // P2: prints the provisioned-union equipment hash so the cache's eqHash
+    // field can be stamped OFFLINE whenever the provisioned set changes -
+    // otherwise every post-change pass loads stale (the standalone server
+    // cannot regenerate details) and the catalog boots empty.
+    const bool printProvisionedHash =
+        argc > 1 && std::strcmp(argv[1], "--print-provisioned-hash") == 0;
     const HMODULE module = GetModuleHandleW(nullptr);
     if (!sunrise::core::settings::initialize(module)) {
         // Settings name their own failure; the sinks do not exist yet to carry a second line.
         return 1;
+    }
+    if (printProvisionedHash) {
+        const auto hash = sunrise::state::runtime::equipment::
+            configured_hash_provisioned();
+        std::printf("PROVISIONED_HASH=0x%016llX\n",
+                    static_cast<unsigned long long>(hash));
+        sunrise::core::settings::shutdown();
+        return 0;
     }
     (void)SetConsoleCtrlHandler(&sunrise::server::on_console_signal, TRUE);
     // One stage per step, so a boot failure names the step instead of the whole expression.
