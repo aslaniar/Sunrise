@@ -41,6 +41,39 @@ bool staging::same_state(const SessionState& left, const SessionState& right) no
 namespace {
 
 /**
+ * Names the exact branch that refused one Family-4 staging attempt.
+ * P2-C3 instrument: the dual-client front changed what the Client subscribes with, and
+ * the bare refusal hid which invariant fired. Strip when the dual-account front closes.
+ * @param why Short name of the refusing branch.
+ * @param before Queuez state visible to the peer.
+ * @param family The staged snapshot's family header.
+ */
+void report_family4_refusal(const char* why,
+                            const SessionState& before,
+                            const middleware::queuez::Family& family) noexcept {
+    std::array<char, core::log::kLineCapacity> line{};
+    const int written =
+        std::snprintf(line.data(),
+                      line.size(),
+                      "ev=queuez stage=family4_refusal why=%s root=%016llX objs=%zu "
+                      "front=%016llX ver=%u f4active=%d f3phase=%d",
+                      why,
+                      static_cast<unsigned long long>(family.rootSoid),
+                      family.objects.size(),
+                      family.objects.empty()
+                          ? 0ULL
+                          : static_cast<unsigned long long>(family.objects.front().id),
+                      static_cast<unsigned>(family.version),
+                      before.family4Active ? 1 : 0,
+                      static_cast<int>(before.family3Phase));
+    if (written > 0) {
+        core::log::write(core::log::Channel::server,
+                         core::log::Level::info,
+                         {line.data(), static_cast<std::size_t>(written)});
+    }
+}
+
+/**
  * Compares one active resident manifest with a staged full snapshot.
  * @param state Active Family-4 state owned by the peer.
  * @param candidate Possible version-zero snapshot state.
@@ -78,6 +111,7 @@ bool stage_family4_snapshot(const SessionState& before,
         || family.objects.size() > kResidentCapacity
         || family.objects.size()
                > static_cast<std::size_t>((std::numeric_limits<std::uint8_t>::max)())) {
+        report_family4_refusal("header", before, family);
         return false;
     }
 
@@ -96,22 +130,31 @@ bool stage_family4_snapshot(const SessionState& before,
     for (std::size_t index = 0; index < family.objects.size(); ++index) {
         const middleware::queuez::Object& object = family.objects[index];
         if (object.id == 0 || object.version == 0) {
+            report_family4_refusal("object_zero", before, family);
             return false;
         }
         for (std::size_t prior = 0; prior < index; ++prior) {
             if (family.objects[prior].version == object.version) {
+                report_family4_refusal("duplicate_version", before, family);
                 return false;
             }
         }
         candidate.family4Residents[index] = ResidentObject{object.version, object.id};
     }
     if (candidate.family4Residents.front().objectSoid != family.rootSoid) {
+        report_family4_refusal("front_ne_root", before, family);
         return false;
     }
     if (before.family4Active) {
-        return before.family4Version == kInitialFamilyVersion && same_manifest(before, candidate);
+        const bool replay =
+            before.family4Version == kInitialFamilyVersion && same_manifest(before, candidate);
+        if (!replay) {
+            report_family4_refusal("replay_mismatch", before, family);
+        }
+        return replay;
     }
     if (before.family3Phase != Family3Phase::normal) {
+        report_family4_refusal("family3_phase", before, family);
         return false;
     }
     after = candidate;
