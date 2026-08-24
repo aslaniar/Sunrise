@@ -6,6 +6,7 @@
 
 #include "../../../state/entitlements/definition.h"
 #include "../address_text.h"
+#include "activation/definition.h"
 #include "gameplay/definition.h"
 
 namespace sunrise::core::settings::server {
@@ -27,6 +28,8 @@ struct Settings {
     state::entitlements::Table entitlements{};
     /** Gameplay UDP endpoint topology. Disabled leaves the channel unpublished. */
     gameplay::Settings gameplay{};
+    /** Per-domain gates for the default client-activation work. */
+    activation::Settings activation{};
     /** BAP port. The listener binds it and SignOn publishes it. Zero is the no-relay sentinel. */
     std::uint16_t bapPort{kDefaultBapPort};
     /** HTTPS listener port. 443 is forced by the Client's scheme-preserving URL rewrite. */

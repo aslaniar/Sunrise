@@ -62,8 +62,22 @@ struct SessionRecord {
     std::uint64_t recordRevision{};
     /** Last successful join revision, or the invalid revision before any join. */
     std::uint64_t joinedRevision{};
+    /** Live consumers retaining this exact record generation against release or eviction. */
+    std::uint32_t bindingRetainCount{};
     bool occupied{};
     bool joined{};
+};
+
+/**
+ * One immutable activity-record generation a consumer can hold across lock drops.
+ * The creation revision distinguishes a replacement that reuses the same session id.
+ */
+struct SessionBinding {
+    /** Exact destination committed with the session record. */
+    destination::DestinationSelection destination{};
+    std::uint64_t sessionId{};
+    /** Creation revision distinguishes a replacement that reuses the same session id. */
+    std::uint64_t createdRevision{};
 };
 
 /** Read-only allocation plan validated again under the State write lock. */

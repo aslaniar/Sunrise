@@ -61,6 +61,13 @@ private:
      * @return True when the topology, addresses, port, and slot reserve agree.
      */
     [[nodiscard]] bool gameplay_settings(server::gameplay::Settings& output) noexcept;
+
+    /**
+     * Parses the activation gate block on top of the fixed defaults.
+     * @param output Receives the gates only when the whole block is valid.
+     * @return True when the block parses.
+     */
+    [[nodiscard]] bool activation_settings(server::activation::Settings& output) noexcept;
     /**
      * Parses the authored entitlement array. Array order is the handle order the Client finds
      * definitions by, so entries are kept exactly as configured.

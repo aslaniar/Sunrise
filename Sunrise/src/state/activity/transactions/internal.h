@@ -20,7 +20,7 @@ inline std::size_t find_session(const ActivityState& state, std::uint64_t sessio
 /**
  * Picks the first empty record, or the oldest occupied one.
  * @param state Activity State, guarded by the root State lock.
- * @return Target slot in the fixed session table.
+ * @return Target slot, or kInvalidSessionSlot when every record is retained.
  */
 inline std::size_t select_target(const ActivityState& state) noexcept {
     for (std::size_t index = 0; index < state.sessions.size(); ++index) {
@@ -29,10 +29,16 @@ inline std::size_t select_target(const ActivityState& state) noexcept {
         }
     }
 
-    std::size_t selected{};
-    for (std::size_t index = 1; index < state.sessions.size(); ++index) {
+    // A retained record is held by a live consumer (the gameplay group host), so eviction must
+    // skip it. Every record retained leaves no target at all, which the callers refuse.
+    std::size_t selected = kInvalidSessionSlot;
+    for (std::size_t index = 0; index < state.sessions.size(); ++index) {
+        if (state.sessions[index].bindingRetainCount != 0) {
+            continue;
+        }
         // Strict comparison keeps the lowest slot when creation revisions tie.
-        if (state.sessions[index].createdRevision < state.sessions[selected].createdRevision) {
+        if (selected == kInvalidSessionSlot
+            || state.sessions[index].createdRevision < state.sessions[selected].createdRevision) {
             selected = index;
         }
     }

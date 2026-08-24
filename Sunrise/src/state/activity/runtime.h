@@ -56,6 +56,27 @@ bool release_session(std::uint64_t sessionId) noexcept;
 [[nodiscard]] bool contains(std::uint64_t sessionId) noexcept;
 
 /**
+ * Copies one session's immutable binding identity.
+ * @param sessionId Committed activity session.
+ * @param output Cleared, then receives the immutable binding identity.
+ * @return True when the session is still committed.
+ */
+[[nodiscard]] bool snapshot_binding(std::uint64_t sessionId, SessionBinding& output) noexcept;
+
+/** @return True when the exact bound record generation is still committed. */
+[[nodiscard]] bool binding_matches(const SessionBinding& binding) noexcept;
+
+/**
+ * Retains an exact record generation against release and allocator eviction.
+ * @param binding Immutable identity a consumer intends to hold.
+ * @return True when the binding still matches and its retain count can advance.
+ */
+[[nodiscard]] bool retain_binding(const SessionBinding& binding) noexcept;
+
+/** Releases one retain taken by retain_binding. @param binding The retained identity. */
+void release_binding(const SessionBinding& binding) noexcept;
+
+/**
  * Tests whether a committed activity session id has finished a join.
  * @param sessionId Public activity session id from an earlier allocation.
  * @return True when the current record has a committed join revision.

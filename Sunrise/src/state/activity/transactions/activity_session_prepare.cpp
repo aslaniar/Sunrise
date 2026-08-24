@@ -53,6 +53,10 @@ constexpr std::uint64_t kAccountMask = 0xFFFFFFFF00000000ULL;
     prepared.expectedAllocatorRevision = state.allocatorRevision;
     prepared.expectedNextSessionId = state.nextSessionId;
     prepared.targetSlot = transactions::select_target(state);
+    if (prepared.targetSlot == kInvalidSessionSlot) {
+        // Every record is retained by a live consumer, so there is nothing to evict.
+        return false;
+    }
     prepared.prepared = true;
     sessionId = prepared.sessionId;
     allocation = prepared;

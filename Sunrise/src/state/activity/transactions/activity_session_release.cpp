@@ -12,7 +12,8 @@ bool release_session(std::uint64_t sessionId) noexcept {
     AcquireSRWLockExclusive(&runtime::storage::g_stateLock);
     ActivityState& state = runtime::storage::g_activity;
     const std::size_t slot = transactions::find_session(state, sessionId);
-    const bool released = slot < kSessionCapacity;
+    // A retained record is still named by a live consumer's binding; freeing it would strand it.
+    const bool released = slot < kSessionCapacity && state.sessions[slot].bindingRetainCount == 0;
     if (released) {
         // The revision bump retires every plan prepared against this record.
         state.sessions[slot] = {};
