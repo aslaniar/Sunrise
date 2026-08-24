@@ -2,10 +2,12 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdio>
 #include <cstdint>
 #include <optional>
 
 #include "../../../../state/build_data/runtime.h"
+#include "../../../../core/logging/log.h"
 #include "subclass_socket_selection.h"
 
 namespace sunrise::middleware::datagen::family4::loadout {
@@ -136,17 +138,49 @@ bool resolve_item(const authored_inventory::Item& authored,
     build_details::Definition itemDetail{};
     build_buckets::Descriptor bucket{};
     build_socket_lists::Definition socketList{};
-    if (!state::build_data::find_item_definition_hash(authored.definitionHash, itemDefinition)
-        || !state::build_data::find_configured_item_detail(itemDefinition.definitionIndex,
-                                                           itemDetail)
-        || itemDefinition.bucketId != itemDetail.bucketId || !itemDetail.equipmentSlot.has_value()
-        || *itemDetail.equipmentSlot < 0
-        || !state::build_data::find_inventory_bucket_descriptor(itemDetail.bucketId, bucket)
-        || bucket.arraySelector != build_buckets::ArraySelector::character
-        || !state::build_data::find_socket_entry_list(itemDetail.socketEntryListIndex, socketList)
-        || static_cast<std::size_t>(itemDefinition.definitionIndex) >= itemDefinitionCount
-        || static_cast<std::size_t>(socketList.definitionIndex) >= socketEntryListCount
-        || socketList.definitionIndex != itemDetail.socketEntryListIndex) {
+    // P2 diagnostic: name exactly which catalog lookup or cross-check fails.
+    const char* step = nullptr;
+    if (!authored_inventory::valid(authored)) {
+        step = "authored_valid";
+    } else if (!state::build_data::find_item_definition_hash(authored.definitionHash,
+                                                             itemDefinition)) {
+        step = "definition_hash";
+    } else if (!state::build_data::find_configured_item_detail(itemDefinition.definitionIndex,
+                                                               itemDetail)) {
+        step = "configured_detail";
+    } else if (itemDefinition.bucketId != itemDetail.bucketId) {
+        step = "bucket_mismatch";
+    } else if (!itemDetail.equipmentSlot.has_value() || *itemDetail.equipmentSlot < 0) {
+        step = "equipment_slot";
+    } else if (!state::build_data::find_inventory_bucket_descriptor(itemDetail.bucketId,
+                                                                    bucket)) {
+        step = "bucket_descriptor";
+    } else if (bucket.arraySelector != build_buckets::ArraySelector::character) {
+        step = "array_selector";
+    } else if (!state::build_data::find_socket_entry_list(itemDetail.socketEntryListIndex,
+                                                          socketList)) {
+        step = "socket_list";
+    } else if (static_cast<std::size_t>(itemDefinition.definitionIndex) >= itemDefinitionCount
+               || static_cast<std::size_t>(socketList.definitionIndex) >= socketEntryListCount
+               || socketList.definitionIndex != itemDetail.socketEntryListIndex) {
+        step = "bounds";
+    }
+    if (step != nullptr) {
+        std::array<char, 160> line{};
+        const int written =
+            std::snprintf(line.data(),
+                          line.size(),
+                          "ev=family4 stage=loadout_item result=fail step=%s def=0x%08X "
+                          "defIndex=%u soid=0x%016llX",
+                          step,
+                          authored.definitionHash,
+                          itemDefinition.definitionIndex,
+                          static_cast<unsigned long long>(authored.instanceSoid));
+        if (written > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             {line.data(), static_cast<std::size_t>(written)});
+        }
         return false;
     }
 
@@ -155,11 +189,38 @@ bool resolve_item(const authored_inventory::Item& authored,
     candidate.item.equipmentSlot = static_cast<std::uint8_t>(*itemDetail.equipmentSlot);
     candidate.item.mutationSerial = authored.mutationSerial;
     candidate.item.flags = authored.flags;
-    if (!resolve_quantity(authored, itemDetail, candidate.item.quantity)
-        || !resolve_ordinary_sockets(authored.sockets,
-                                     itemDetail,
-                                     itemDefinitionCount,
-                                     candidate.item.instance.ordinarySockets)) {
+    if (!resolve_quantity(authored, itemDetail, candidate.item.quantity)) {
+        std::array<char, 128> line{};
+        const int written =
+            std::snprintf(line.data(),
+                          line.size(),
+                          "ev=family4 stage=loadout_item result=fail step=quantity def=0x%08X "
+                          "quantity=%d instancedState=%d",
+                          authored.definitionHash,
+                          authored.quantity,
+                          static_cast<int>(itemDetail.instancedDefinitionState));
+        if (written > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             {line.data(), static_cast<std::size_t>(written)});
+        }
+        return false;
+    }
+    if (!resolve_ordinary_sockets(authored.sockets,
+                                  itemDetail,
+                                  itemDefinitionCount,
+                                  candidate.item.instance.ordinarySockets)) {
+        std::array<char, 128> line{};
+        const int written =
+            std::snprintf(line.data(),
+                          line.size(),
+                          "ev=family4 stage=loadout_item result=fail step=sockets def=0x%08X",
+                          authored.definitionHash);
+        if (written > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             {line.data(), static_cast<std::size_t>(written)});
+        }
         return false;
     }
 

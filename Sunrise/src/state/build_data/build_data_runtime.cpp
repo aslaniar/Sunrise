@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "../../core/filesystem/path.h"
+#include "../../core/logging/log.h"
 #include "../content/content_catalog.h"
 #include "abilities/ability_bucket_catalog.h"
 #include "cache/internal.h"
@@ -65,6 +66,28 @@ bool initialize(void* module, std::uint64_t configuredEquipmentHash) noexcept {
                     persistenceState.buildIdentity,
                     runtime::persistence::scratch_domains(persistenceState),
                     counts);
+    {
+        // P2 diagnostic: the boot passes through here once per provisioned slot; a stale or
+        // missing verdict on the LAST pass leaves the configured-detail catalog empty while
+        // every readiness flag still reads true ("empty or not" is a complete loadout).
+        std::array<char, 192> line{};
+        const int written =
+            std::snprintf(line.data(),
+                          line.size(),
+                          "ev=build_data stage=cache_load result=%s hash=0x%016llX "
+                          "itemDetails=%zu",
+                          status == cache::LoadStatus::loaded ? "loaded"
+                          : status == cache::LoadStatus::stale ? "stale"
+                                                               : "missing",
+                          static_cast<unsigned long long>(
+                              persistenceState.buildIdentity.configuredEquipmentHash),
+                          counts.itemDetails);
+        if (written > 0) {
+            core::log::write(core::log::Channel::core,
+                             core::log::Level::warn,
+                             {line.data(), static_cast<std::size_t>(written)});
+        }
+    }
     if (status == cache::LoadStatus::missing) {
         ReleaseSRWLockExclusive(&persistenceState.lock);
         return true;

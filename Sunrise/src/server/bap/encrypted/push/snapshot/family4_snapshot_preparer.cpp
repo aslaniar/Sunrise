@@ -4,6 +4,9 @@
 #include <optional>
 #include <span>
 
+#include "../../../../../state/build_data/items/details/item_detail_catalog.h"
+#include "../../../../../core/logging/log.h"
+#include <cstdio>
 #include "../../../../../middleware/datagen/definitions.h"
 #include "../../../../../middleware/datagen/family4/account/account_encoder.h"
 #include "../../../../../middleware/datagen/family4/account/layout.h"
@@ -130,6 +133,78 @@ bool prepare(Scratch& scratch,
          ++characterIndex) {
         family4_datagen::loadout::ResolvedInstances instances{};
         if (!family4_datagen::loadout::resolve_instances(account, characterIndex, instances)) {
+            std::array<char, 128> line{};
+            const int written =
+                std::snprintf(line.data(), line.size(),
+                              "ev=family4 stage=loadout context detailsCount=%zu "
+                              "char=%zu",
+                              state::build_data::items::details::count(),
+                              characterIndex);
+            if (written > 0) {
+                core::log::write(core::log::Channel::server,
+                                 core::log::Level::warn,
+                                 {line.data(), static_cast<std::size_t>(written)});
+            }
+            // P2 diagnostic: dump the live configured-detail table identity at failure time.
+            namespace bd = state::build_data;
+            std::array<bd::items::details::Definition, 128> dump{};
+            std::size_t dumpedCount = 0;
+            const bool snapshotOk =
+                bd::items::details::snapshot(std::span(dump), dumpedCount);
+            bool hasKineticByIndex = false;
+            bool hasKineticByHash = false;
+            std::array<char, 32> indexList{};
+            std::size_t indexCursor = 0;
+            for (std::size_t i = 0; i < dumpedCount; ++i) {
+                if (dump[i].definitionIndex == 6853) {
+                    hasKineticByIndex = true;
+                }
+                if (dump[i].definitionHash == 0xE516CF40u) {
+                    hasKineticByHash = true;
+                }
+                const int step = std::snprintf(indexList.data() + indexCursor,
+                                               indexList.size() - indexCursor,
+                                               "%s%u",
+                                               indexCursor == 0 ? "" : ",",
+                                               dump[i].definitionIndex);
+                if (step <= 0
+                    || static_cast<std::size_t>(step) >= indexList.size() - indexCursor) {
+                    break;
+                }
+                indexCursor += static_cast<std::size_t>(step);
+            }
+            std::array<char, 320> dumpLine{};
+            const int dumpWritten =
+                std::snprintf(dumpLine.data(),
+                              dumpLine.size(),
+                              "ev=family4 stage=details_dump result=%s count=%zu "
+                              "kineticByIndex=%d kineticByHash=%d indexes=[%s%s]",
+                              snapshotOk ? "ok" : "snapfail",
+                              dumpedCount,
+                              hasKineticByIndex ? 1 : 0,
+                              hasKineticByHash ? 1 : 0,
+                              indexList.data(),
+                              indexCursor >= indexList.size() - 1 ? "..." : "");
+            if (dumpWritten > 0) {
+                core::log::write(core::log::Channel::server,
+                                 core::log::Level::warn,
+                                 {dumpLine.data(), static_cast<std::size_t>(dumpWritten)});
+            }
+            {
+                std::array<char, 128> ctxLine{};
+                const int ctxWritten =
+                    std::snprintf(ctxLine.data(),
+                                  ctxLine.size(),
+                                  "ev=family4 stage=loadout context detailsCount=%zu "
+                                  "char=%zu",
+                                  bd::items::details::count(),
+                                  characterIndex);
+                if (ctxWritten > 0) {
+                    core::log::write(core::log::Channel::server,
+                                     core::log::Level::warn,
+                                     {ctxLine.data(), static_cast<std::size_t>(ctxWritten)});
+                }
+            }
             return report_failure("loadout");
         }
         if (instances.itemCount != 0

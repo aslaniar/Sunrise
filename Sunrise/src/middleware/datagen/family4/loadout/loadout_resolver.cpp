@@ -4,10 +4,12 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <optional>
 
 #include "../../../../state/build_data/inventory/buckets/definition.h"
 #include "../../../../state/build_data/runtime.h"
+#include "../../../../core/logging/log.h"
 #include "loadout_item_resolver.h"
 
 namespace sunrise::middleware::datagen::family4::loadout {
@@ -81,16 +83,49 @@ bool resolve_instances(const state::AccountState& account,
                        std::size_t characterIndex,
                        ResolvedInstances& output) noexcept {
     output = {};
-    if (account.characterCount > account.characters.size()
-        || characterIndex >= account.characterCount || !state::build_data::item_definitions_ready()
-        || !state::build_data::configured_item_details_ready()
-        || !state::build_data::inventory_bucket_descriptors_ready()
-        || !state::build_data::socket_entry_lists_ready()) {
+    // P2 diagnostic: name exactly which precondition fails for this account slot.
+    const bool boundsOk = account.characterCount <= account.characters.size()
+                          && characterIndex < account.characterCount;
+    const bool defsReady = state::build_data::item_definitions_ready();
+    const bool detailsReady = state::build_data::configured_item_details_ready();
+    const bool bucketsReady = state::build_data::inventory_bucket_descriptors_ready();
+    const bool socketsReady = state::build_data::socket_entry_lists_ready();
+    if (!boundsOk || !defsReady || !detailsReady || !bucketsReady || !socketsReady) {
+        std::array<char, 160> line{};
+        const int written = std::snprintf(line.data(),
+                                          line.size(),
+                                          "ev=family4 stage=loadout_resolve result=fail "
+                                          "step=precondition char=%zu count=%zu defs=%d "
+                                          "details=%d buckets=%d sockets=%d",
+                                          characterIndex,
+                                          account.characterCount,
+                                          defsReady ? 1 : 0,
+                                          detailsReady ? 1 : 0,
+                                          bucketsReady ? 1 : 0,
+                                          socketsReady ? 1 : 0);
+        if (written > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             {line.data(), static_cast<std::size_t>(written)});
+        }
         return false;
     }
     const std::size_t itemDefinitionCount = state::build_data::item_definition_count();
     const std::size_t socketEntryListCount = state::build_data::socket_entry_list_count();
     if (itemDefinitionCount == 0 || socketEntryListCount == 0) {
+        std::array<char, 128> line{};
+        const int written =
+            std::snprintf(line.data(),
+                          line.size(),
+                          "ev=family4 stage=loadout_resolve result=fail step=catalog "
+                          "itemDefs=%zu socketLists=%zu",
+                          itemDefinitionCount,
+                          socketEntryListCount);
+        if (written > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             {line.data(), static_cast<std::size_t>(written)});
+        }
         return false;
     }
 
@@ -107,7 +142,21 @@ bool resolve_instances(const state::AccountState& account,
             || !resolve_item(
                 *authored, character, itemDefinitionCount, socketEntryListCount, candidate)
             || !place_item(candidate, occupied, resolved[itemCount])) {
-            return false;
+            {
+                std::array<char, 176> line{};
+                const int written =
+                    std::snprintf(line.data(), line.size(),
+                                  "ev=family4 stage=loadout_resolve result=fail step=item "
+                                  "char=%zu equipped=%d def=0x%08X soid=0x%016llX",
+                                  characterIndex, 1, authored->definitionHash,
+                                  static_cast<unsigned long long>(authored->instanceSoid));
+                if (written > 0) {
+                    core::log::write(core::log::Channel::server,
+                                     core::log::Level::warn,
+                                     {line.data(), static_cast<std::size_t>(written)});
+                }
+                return false;
+            }
         }
         ++itemCount;
     }
@@ -121,7 +170,21 @@ bool resolve_instances(const state::AccountState& account,
             || !resolve_item(
                 authored, character, itemDefinitionCount, socketEntryListCount, candidate)
             || !place_item(candidate, occupied, resolved[itemCount])) {
-            return false;
+            {
+                std::array<char, 176> line{};
+                const int written =
+                    std::snprintf(line.data(), line.size(),
+                                  "ev=family4 stage=loadout_resolve result=fail step=item "
+                                  "char=%zu equipped=%d def=0x%08X soid=0x%016llX",
+                                  characterIndex, 0, authored.definitionHash,
+                                  static_cast<unsigned long long>(authored.instanceSoid));
+                if (written > 0) {
+                    core::log::write(core::log::Channel::server,
+                                     core::log::Level::warn,
+                                     {line.data(), static_cast<std::size_t>(written)});
+                }
+                return false;
+            }
         }
         resolved[itemCount].equipped = false;
         ++itemCount;
@@ -157,6 +220,19 @@ bool resolve(const state::AccountState& account,
     const std::size_t itemDefinitionCount = state::build_data::item_definition_count();
     const std::size_t socketEntryListCount = state::build_data::socket_entry_list_count();
     if (itemDefinitionCount == 0 || socketEntryListCount == 0) {
+        std::array<char, 128> line{};
+        const int written =
+            std::snprintf(line.data(),
+                          line.size(),
+                          "ev=family4 stage=loadout_resolve result=fail step=catalog "
+                          "itemDefs=%zu socketLists=%zu",
+                          itemDefinitionCount,
+                          socketEntryListCount);
+        if (written > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             {line.data(), static_cast<std::size_t>(written)});
+        }
         return false;
     }
 

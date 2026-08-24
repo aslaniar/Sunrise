@@ -150,7 +150,7 @@ bool stage_service_outcome(Scratch& scratch,
         // Persist LAST: only once every frame fit does the DB commit, so a promised
         // revision can never be persisted without its authoritative after-image.
         if (!sunrise::server::persistence::persist_subclass_equip(
-                outcome.subclassEquip.itemSoid, displacedSoid)) {
+                outcome.subclassEquip.itemSoid, displacedSoid, before.accountKey)) {
             revert_swap("persist");
             return false;
         }
@@ -178,13 +178,15 @@ bool stage_service_outcome(Scratch& scratch,
         // The ability change moves only the family-zero banner record (the ability buckets
         // live there), so no Family-4 increment goes out. Persist-before-publish keeps the
         // same convergence contract as the subclass equip.
-        if (!state::apply_ability_change(outcome.abilityChange.definitionHash)) {
+        if (!state::apply_ability_change(outcome.abilityChange.definitionHash,
+                                         before.accountKey)) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::warn,
                              "ev=queuez stage=ability_change result=fail step=mutate");
             return true;
         }
-        if (!sunrise::server::persistence::persist_ability_change()) {
+        if (!sunrise::server::persistence::persist_ability_change(
+                before.accountKey)) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::warn,
                              "ev=queuez stage=ability_change result=fail step=persist");
@@ -250,13 +252,14 @@ bool stage_service_outcome(Scratch& scratch,
         // the new ability buckets — the same shape as the ability-change branch.
         state::PendingSubclassSelection selectionMutation =
             outcome.subclassSelection.mutation;
-        if (!state::commit_subclass_selection(selectionMutation)) {
+        if (!state::commit_subclass_selection(selectionMutation, before.accountKey)) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::warn,
                              "ev=queuez stage=subclass_selection result=fail step=commit");
             return true;
         }
-        if (!sunrise::server::persistence::persist_ability_change()) {
+        if (!sunrise::server::persistence::persist_ability_change(
+                before.accountKey)) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::warn,
                              "ev=queuez stage=subclass_selection result=fail step=persist");
