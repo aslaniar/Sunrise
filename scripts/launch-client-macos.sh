@@ -9,9 +9,11 @@ set -euo pipefail
 
 sunrise_root="${SUNRISE_ROOT:-$HOME/Documents/opencode/sunrise-fork}"
 game_root="${GAME_ROOT:-$HOME/Documents/opencode/sunrise-fork/Game}"
-# This script lives beside the port docs + the wintrust shim, inside the project tree.
+# The wintrust shim lives beside the ORIGINAL launcher in mac-port/, not here -
+# this versioned copy resolves it through the project root instead.
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-wintrust_shim="${WINTRUST_SHIM:-$script_dir/wintrust.dll}"
+sunrise_root="$(cd "$script_dir/../../.." && pwd)"
+wintrust_shim="${WINTRUST_SHIM:-$sunrise_root/mac-port/wintrust.dll}"
 
 # Keep the prefix on APFS in your home directory. Never put it on an exFAT or
 # NTFS external volume - same symlink/filename problems as the Linux setup.
