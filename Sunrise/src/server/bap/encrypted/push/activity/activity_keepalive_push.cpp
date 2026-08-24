@@ -99,7 +99,10 @@ bool consume_activity_keepalive(Session& session,
 
     auto nextSendNonce = session.sendNonce;
     std::size_t framedSize = 0;
-    const auto& key = state::bap().sessionKey;
+    // P2-C1 fix (was state::bap() - the legacy default): the activity-link pushes must
+    // seal under THIS peer's channel keys. A provisioned peer's link arms with its own
+    // slot's keys, so the legacy default sealed a frame the client could not verify.
+    const auto& key = state::bap(session.accountKey).sessionKey;
     bool published = false;
     // Held until the frame reaches the caller. Encoding alone does not spend the region trigger.
     std::int32_t stagedAdvertisedRegion = -1;

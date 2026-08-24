@@ -2,8 +2,10 @@
 
 #include <array>
 #include <bcrypt.h>
+#include <cstdio>
 #include <limits>
 
+#include "../../core/logging/log.h"
 #include "runtime.h"
 
 namespace sunrise::middleware::secure_channel {
@@ -87,6 +89,55 @@ namespace {
 
 } // namespace
 
+/**
+ * Renders bytes as hex into fixed caller storage. P2-B2 instrument helper.
+ * @param bytes Byte range to render.
+ * @param output Receives size()*2 characters plus one terminator.
+ */
+void format_hex_instrument(std::span<const std::byte> bytes, char* output) noexcept {
+    static constexpr char kDigits[] = "0123456789ABCDEF";
+    for (std::size_t index = 0; index < bytes.size(); ++index) {
+        const unsigned value = std::to_integer<unsigned>(bytes[index]);
+        output[index * 2] = kDigits[value >> 4];
+        output[index * 2 + 1] = kDigits[value & 0xF];
+    }
+    output[bytes.size() * 2] = '\0';
+}
+
+/**
+ * Names one frame's key material and exact nonce in the boot record. Diagnostic front:
+ * every sealed or opened frame passes here, so a direction-pairing mismatch between
+ * links is readable without touching any transformed byte. Strip when the conn=2
+ * crypto front closes.
+ * @param direction "seal" or "open".
+ * @param key Connection AES-128 key; the first eight bytes are rendered.
+ * @param nonce The frame's exact direction nonce.
+ * @param bytes Plaintext byte count of the frame body.
+ */
+void report_crypt(const char* direction,
+                  std::span<const std::byte, state::kAesKeySize> key,
+                  std::span<const std::byte, state::kBapNonceSize> nonce,
+                  std::size_t bytes) noexcept {
+    char keyHex[17] = {};
+    char nonceHex[25] = {};
+    format_hex_instrument(key.first(8), keyHex);
+    format_hex_instrument(nonce, nonceHex);
+    std::array<char, core::log::kLineCapacity> line{};
+    const int written =
+        std::snprintf(line.data(),
+                      line.size(),
+                      "ev=bap stage=crypt dir=%s keyfp=%s nonce=%s bytes=%zu",
+                      direction,
+                      keyHex,
+                      nonceHex,
+                      bytes);
+    if (written > 0) {
+        core::log::write(core::log::Channel::server,
+                         core::log::Level::debug,
+                         {line.data(), static_cast<std::size_t>(written)});
+    }
+}
+
 /** Seals one frame payload as tag followed by ciphertext. */
 bool seal_frame(std::span<const std::byte, state::kAesKeySize> key,
                 std::span<const std::byte, state::kBapNonceSize> nonce,
@@ -102,6 +153,7 @@ bool seal_frame(std::span<const std::byte, state::kAesKeySize> key,
         return false;
     }
     written = kFrameTagSize + plaintext.size();
+    report_crypt("seal", key, nonce, plaintext.size());
     return true;
 }
 
@@ -123,6 +175,7 @@ bool open_frame(std::span<const std::byte, state::kAesKeySize> key,
         return false;
     }
     written = payload.size() - kFrameTagSize;
+    report_crypt("open", key, nonce, written);
     return true;
 }
 

@@ -28,6 +28,121 @@ constexpr std::size_t kProtocolVersionOffset = kProtocolTagOffset + 1;
 constexpr std::size_t kServerHelloRequestSize = kProtocolVersionOffset + 1;
 /** Protocol direction bit applied to the final receive-nonce byte. */
 constexpr std::byte kReceiveDirectionMask{0x01};
+/** Hex digits for the diagnostic fingerprints. P2-B2 instrument, strip when closed. */
+constexpr char kHexDigits[] = "0123456789ABCDEF";
+/** Slot prefixes rendered per identity line. */
+constexpr std::size_t kIdentitySlotLimit = 4;
+
+/**
+ * Renders bytes as hex into fixed caller storage.
+ * @param bytes Byte range to render.
+ * @param output Receives size()*2 characters plus one terminator.
+ */
+void format_hex(std::span<const std::byte> bytes, char* output) noexcept {
+    for (std::size_t index = 0; index < bytes.size(); ++index) {
+        const unsigned value = std::to_integer<unsigned>(bytes[index]);
+        output[index * 2] = kHexDigits[value >> 4];
+        output[index * 2 + 1] = kHexDigits[value & 0xF];
+    }
+    output[bytes.size() * 2] = '\0';
+}
+
+/**
+ * Logs one server hello's identity verdict: which provisioned slot's derived token the
+ * echo matched, or none. The boot decision table keys off MATCHED versus FELL BACK,
+ * which warn absence cannot distinguish (a match logs nothing on its own).
+ * @param session Session the hello arrived on.
+ * @param echoed Echoed token bytes, or null when the body carried no readable token.
+ * @param matched The compare verdict: a slot key, or kUnprovisionedAccount.
+ * @param served The slot this connection was stamped with.
+ * @param bodySize Hello body length in bytes.
+ * @param protocolByte The hello's protocol-version byte when present, else zero.
+ */
+void report_identity(const Session& session,
+                     const std::byte* echoed,
+                     core::settings::AccountKey matched,
+                     core::settings::AccountKey served,
+                     std::size_t bodySize,
+                     unsigned protocolByte) noexcept {
+    char echoHex[17] = {};
+    char slotHex[kIdentitySlotLimit][17] = {};
+    if (echoed != nullptr) {
+        format_hex({echoed, 8}, echoHex);
+    }
+    const std::size_t slotCount =
+        state::account_count() < kIdentitySlotLimit ? state::account_count()
+                                                    : kIdentitySlotLimit;
+    for (std::size_t index = 0; index < slotCount; ++index) {
+        // Prefix only: the derived tokens are 32 bytes and the display slots hold eight.
+        const auto& token =
+            state::sign_on(static_cast<core::settings::AccountKey>(index)).sessionToken;
+        format_hex(std::span(token.data(), 8), slotHex[index]);
+    }
+    char matchedText[8];
+    if (matched == state::kUnprovisionedAccount) {
+        std::snprintf(matchedText, sizeof matchedText, "none");
+    } else {
+        std::snprintf(matchedText,
+                      sizeof matchedText,
+                      "slot%u",
+                      static_cast<unsigned>(matched));
+    }
+    std::array<char, core::log::kLineCapacity> line{};
+    int written =
+        std::snprintf(line.data(),
+                      line.size(),
+                      "ev=bap svc=25 stage=identity conn=%u matched=%s served=%u "
+                      "echo=%s len=%zu proto=%02X",
+                      session.id,
+                      matchedText,
+                      static_cast<unsigned>(served),
+                      echoHex,
+                      bodySize,
+                      protocolByte);
+    for (std::size_t index = 0;
+         written > 0 && index < slotCount && static_cast<std::size_t>(written) < line.size();
+         ++index) {
+        const int appended =
+            std::snprintf(line.data() + written,
+                          line.size() - static_cast<std::size_t>(written),
+                          " slot%u=%s",
+                          static_cast<unsigned>(index),
+                          slotHex[index]);
+        if (appended <= 0) {
+            break;
+        }
+        written += appended;
+    }
+    if (written > 0) {
+        core::log::write(core::log::Channel::server,
+                         core::log::Level::info,
+                         {line.data(), static_cast<std::size_t>(written)});
+    }
+}
+
+/**
+ * Logs a server hello's full framing body when its token echo matched no provisioned
+ * slot, so the FAH variant's actual layout is readable in the boot record.
+ * @param session Session the hello arrived on, owned by the connection.
+ * @param body Plaintext service body.
+ */
+void report_hello_bytes(const Session& session, std::span<const std::byte> body) noexcept {
+    char bodyHex[145] = {};
+    const std::size_t dumped = body.size() < 72 ? body.size() : 72;
+    format_hex(body.first(dumped), bodyHex);
+    std::array<char, core::log::kLineCapacity> line{};
+    const int written =
+        std::snprintf(line.data(),
+                      line.size(),
+                      "ev=bap svc=25 stage=hello_body conn=%u hex=%s",
+                      session.id,
+                      bodyHex);
+    if (written > 0) {
+        core::log::write(core::log::Channel::server,
+                         core::log::Level::info,
+                         {line.data(), static_cast<std::size_t>(written)});
+    }
+}
 
 /**
  * Logs one refused plaintext request and names the check that refused it.
@@ -102,6 +217,26 @@ void arm_encryption(Session& session, const state::BapState& bap) noexcept {
     session.receiveNonce = bap.nonce;
     session.receiveNonce.back() ^= kReceiveDirectionMask;
     session.authenticated = true;
+    // P2-B2 crypto instrument: names the key material and nonce bases each link armed
+    // with, so cross-link reuse of one account's channel state is visible in the boot
+    // record without touching any sealed byte.
+    char keyHex[17];
+    char nonceHex[25];
+    format_hex(std::span(bap.sessionKey).first(8), keyHex);
+    format_hex(bap.nonce, nonceHex);
+    std::array<char, core::log::kLineCapacity> line{};
+    const int written =
+        std::snprintf(line.data(),
+                      line.size(),
+                      "ev=bap stage=arm conn=%u keyfp=%s noncebase=%s",
+                      session.id,
+                      keyHex,
+                      nonceHex);
+    if (written > 0) {
+        core::log::write(core::log::Channel::server,
+                         core::log::Level::info,
+                         {line.data(), static_cast<std::size_t>(written)});
+    }
 }
 
 /**
@@ -218,7 +353,18 @@ bool consume(Session& session,
     const state::AccountKey served = matched == state::kUnprovisionedAccount
                                          ? state::kLegacyAccount
                                          : matched;
+    report_identity(session,
+                    echoedPtr,
+                    matched,
+                    served,
+                    frame.body.size(),
+                    frame.body.size() > kProtocolVersionOffset
+                        ? std::to_integer<unsigned>(frame.body[kProtocolVersionOffset])
+                        : 0U);
     if (matched == state::kUnprovisionedAccount) {
+        if (!frame.body.empty()) {
+            report_hello_bytes(session, frame.body);
+        }
         report_refusal(session, frame.messageId, "unprovisioned_token_accepted");
     }
     session.accountKey = served;
