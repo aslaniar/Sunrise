@@ -29,17 +29,6 @@ struct Outcome {
 };
 
 /**
- * Answers one whole supported Web Service request body.
- * @param request Whole decrypted svc-10 body.
- * @param response Svc-11 response-body storage owned by the caller.
- * @param written Gets the encoded response-body size, or zero when the header does not parse.
- * @return False only when the envelope header does not parse.
- */
-[[nodiscard]] bool consume(std::span<const std::byte> request,
-                           std::span<std::byte> response,
-                           std::size_t& written) noexcept;
-
-/**
  * Answers one request and reports any subscription side effect.
  * @param request Whole decrypted svc-10 body.
  * @param response Svc-11 response-body storage owned by the caller.
@@ -51,7 +40,6 @@ struct Outcome {
                            std::span<std::byte> response,
                            std::size_t& written,
                            Outcome& outcome,
-                           core::settings::AccountKey accountKey
-                           = core::settings::kLegacyAccount) noexcept;
+                           core::settings::AccountKey accountKey) noexcept;
 
 } // namespace sunrise::server::web_service

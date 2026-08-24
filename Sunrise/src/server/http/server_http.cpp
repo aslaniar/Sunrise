@@ -1,3 +1,4 @@
+#include "../../core/settings/provisioning.h"
 #include "server_http.h"
 
 #include <chrono>
@@ -28,7 +29,12 @@ bool consume(const client::network::HttpRequest& request,
     const auto now = std::chrono::duration_cast<std::chrono::seconds>(
                          std::chrono::system_clock::now().time_since_epoch())
                          .count();
-    const auto& signOnState = state::sign_on();
+    // KNOWN LIMITATION, made explicit (FINDINGS 20.22): the external HTTP SignOn branch has no
+    // peer context to key from - the request arrives before any BAP session exists - so it can
+    // only answer for the legacy slot. This deployment answers SignOn IN-PROCESS on both
+    // machines, so the branch is unexercised; a second peer reaching it would get slot zero's
+    // token. Keying it needs an identity carried in the request, which is a design change.
+    const auto& signOnState = state::sign_on(core::settings::kLegacyAccount);
     const auto serverTime = static_cast<std::uint64_t>(now);
     const std::uint64_t expiry = serverTime + signOnState.tokenLifetimeSeconds;
     if (!middleware::signon::encode_success(signOnState,

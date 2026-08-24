@@ -111,20 +111,6 @@ bool encode_echo(const middleware::web_service::Message& message,
 }
 
 /**
- * Parses and answers one Web Service request with its whole descriptor layout.
- * @param request Whole decrypted svc-10 body.
- * @param response Svc-11 response-body storage owned by the caller.
- * @param written Gets the encoded response-body size, or zero when the header does not parse.
- * @return False only when the envelope header does not parse.
- */
-bool consume(std::span<const std::byte> request,
-             std::span<std::byte> response,
-             std::size_t& written) noexcept {
-    Outcome outcome;
-    return consume(request, response, written, outcome);
-}
-
-/**
  * Parses one request, encodes its response, and publishes checked side effects last.
  * @param request Whole decrypted svc-10 body.
  * @param response Svc-11 response-body storage owned by the caller.

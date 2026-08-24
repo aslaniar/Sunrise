@@ -18,7 +18,14 @@ constexpr std::uint64_t kAccountMask = 0xFFFFFFFF00000000ULL;
  * @return Account half, or zero while no account is loaded.
  */
 [[nodiscard]] std::uint64_t session_soid_base() noexcept {
-    const AccountState account = account_snapshot();
+    // ARCHITECTURAL, not a keying oversight (FINDINGS 20.22): the activity plane is
+    // SINGLE-ACCOUNT by construction - both prepare_session overloads below read
+    // `g_states[kLegacyAccount].activity` outright, so there is one activity state shared by
+    // every peer. Keying this one read would only make the soid base disagree with the state
+    // it feeds. The slot is named explicitly here so the limitation is visible instead of
+    // implied by a default. Giving each peer its own activity state is the distinct-guardian
+    // front's problem, and it is a design change, not an argument.
+    const AccountState account = account_snapshot(core::settings::kLegacyAccount);
     return account.primarySoid & kAccountMask;
 }
 

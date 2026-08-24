@@ -40,8 +40,7 @@ void shutdown() noexcept;
 [[nodiscard]] bool load_account(state::AccountState& account,
                                 state::unlocks::Table& unlocks,
                                 state::Family5State& family5,
-                                core::settings::AccountKey key
-                                = core::settings::kLegacyAccount) noexcept;
+                                core::settings::AccountKey key) noexcept;
 
 /**
  * Reads the persisted entitlement policy back into native State.
@@ -50,7 +49,7 @@ void shutdown() noexcept;
  */
 [[nodiscard]] bool load_entitlements(
     state::entitlements::Table& output,
-    core::settings::AccountKey key = core::settings::kLegacyAccount) noexcept;
+    core::settings::AccountKey key) noexcept;
 
 /**
  * Writes the current published State back into the state database (spec §4 Stage 5).
@@ -61,7 +60,7 @@ void shutdown() noexcept;
  * @return True when every row is replaced and committed.
  */
 [[nodiscard]] bool write_back(
-    core::settings::AccountKey key = core::settings::kLegacyAccount) noexcept;
+    core::settings::AccountKey key) noexcept;
 
 /**
  * Persists one subclass equip in a single transaction: the picked storage row becomes the
@@ -73,8 +72,7 @@ void shutdown() noexcept;
  */
 [[nodiscard]] bool persist_subclass_equip(std::uint64_t newlyEquippedSoid,
                                           std::uint64_t displacedSoid,
-                                          core::settings::AccountKey key
-                                          = core::settings::kLegacyAccount) noexcept;
+                                          core::settings::AccountKey key) noexcept;
 
 /**
  * Persists the selected character's five ability-entry picks in one transaction, reading
@@ -82,8 +80,7 @@ void shutdown() noexcept;
  * is the selected character's row only.
  * @return True when the update commits.
  */
-[[nodiscard]] bool persist_ability_change(core::settings::AccountKey key
-                                          = core::settings::kLegacyAccount) noexcept;
+[[nodiscard]] bool persist_ability_change(core::settings::AccountKey key) noexcept;
 
 /**
  * Sets one inclusive flag range in the persisted bank — the admin verb's DB half (the

@@ -1,3 +1,4 @@
+#include "../../../../core/settings/provisioning.h"
 #include "spawn_gate_record_dump.h"
 
 #include <Windows.h>
@@ -45,7 +46,11 @@ std::atomic_bool g_dumped{false};
  * @return Record-relative offset of the key, or `kKeyAbsent` when it is not near it.
  */
 [[nodiscard]] std::int32_t find_player_key(const std::uint8_t* record) noexcept {
-    const state::AccountState account = state::account_snapshot();
+    // The CLIENT provisions exactly one slot - its own account IS slot zero (the
+    // single-account init path, FINDINGS 20.14). The slot is named rather than defaulted
+    // so this reads as deliberate, not as one of the unkeyed serving-path calls that cost
+    // three defects (FINDINGS 20.22).
+    const state::AccountState account = state::account_snapshot(core::settings::kLegacyAccount);
     // A backward sweep can leave the allocation on the proxy arm, so a fault ends the sweep, not
     // the process.
     __try {

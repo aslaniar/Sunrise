@@ -21,6 +21,11 @@
 
 namespace sunrise::server::persistence {
 namespace {
+/** The harness drives exactly ONE provisioned slot. Naming it here keeps every call site
+ *  explicit now that the AccountKey defaults are gone (FINDINGS 20.22) - the defaults are what
+ *  let three shipped defects read the legacy slot for a second peer. */
+constexpr core::settings::AccountKey kSlot = core::settings::kLegacyAccount;
+
 
 namespace character = middleware::datagen::family4::character;
 namespace inventory_layout = middleware::datagen::family4::inventory::layout;
@@ -153,7 +158,8 @@ int run_equip_diff_test(void* module) noexcept {
     state::AccountState account{};
     state::unlocks::Table unlocks{};
     state::Family5State family5{};
-    if (!persistence::load_account(account, unlocks, family5) || !state::account::valid(account)) {
+    if (!persistence::load_account(account, unlocks, family5, kSlot)
+        || !state::account::valid(account)) {
         report("ev=equip_diff stage=load result=fail");
         persistence::shutdown();
         return 1;
@@ -170,7 +176,7 @@ int run_equip_diff_test(void* module) noexcept {
     // The runtime State carries no selection from the DB (the schema has no selected
     // column), so publish character 0's selection first — the server's own 504 flow.
     bool selectionChanged = false;
-    if (!state::set_selected_character(account.characters[0].soid, selectionChanged)) {
+    if (!state::set_selected_character(account.characters[0].soid, selectionChanged, kSlot)) {
         report("ev=equip_diff stage=select result=fail");
         persistence::shutdown();
         return 1;
@@ -192,7 +198,7 @@ int run_equip_diff_test(void* module) noexcept {
                definitionHash,
                resolved ? 1 : 0,
                resolved ? static_cast<unsigned>(definition.bucketId) : 0U);
-        if (state::subclass_equip_request_valid(candidate)) {
+        if (state::subclass_equip_request_valid(candidate, kSlot)) {
             pickSoid = candidate;
             break;
         }
@@ -207,7 +213,7 @@ int run_equip_diff_test(void* module) noexcept {
     // PRE: the current character object (the runtime State = the boot account).
     std::array<std::byte, character::layout::kObjectSize> pre{};
     {
-        const state::AccountState snapshot = state::account_snapshot();
+        const state::AccountState snapshot = state::account_snapshot(kSlot);
         state::AccountState selected = snapshot;
         for (std::size_t index = 0; index < selected.characterCount; ++index) {
             selected.characters[index].selected = index == 0;
@@ -239,7 +245,7 @@ int run_equip_diff_test(void* module) noexcept {
 
     // The mutation: the same call the queuez outcome staging runs.
     std::uint64_t displaced = 0;
-    if (!state::equip_subclass_item(pickSoid, displaced)) {
+    if (!state::equip_subclass_item(pickSoid, displaced, kSlot)) {
         report("ev=equip_diff stage=mutate result=fail");
         persistence::shutdown();
         return 1;
@@ -249,7 +255,7 @@ int run_equip_diff_test(void* module) noexcept {
     // THE CLICKED-ROW PLACEMENT PROOF (D4): after a swap the displaced subclass sits at the
     // row the pick occupied; after a first equip the storage compacts over it.
     {
-        const state::AccountState postMutate = state::account_snapshot();
+        const state::AccountState postMutate = state::account_snapshot(kSlot);
         const state::CharacterState& postCharacter = postMutate.characters[0];
         if (displaced != 0) {
             const bool inBounds = pickRowBefore < postCharacter.storageItemCount;
@@ -270,7 +276,7 @@ int run_equip_diff_test(void* module) noexcept {
     // POST: the re-encode from the mutated runtime State (the server's push path).
     std::array<std::byte, character::layout::kObjectSize> post{};
     {
-        const state::AccountState snapshot = state::account_snapshot();
+        const state::AccountState snapshot = state::account_snapshot(kSlot);
         state::AccountState selected = snapshot;
         for (std::size_t index = 0; index < selected.characterCount; ++index) {
             selected.characters[index].selected = index == 0;

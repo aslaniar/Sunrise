@@ -26,6 +26,11 @@
 
 namespace sunrise::server::persistence {
 namespace {
+/** The harness drives exactly ONE provisioned slot. Naming it here keeps every call site
+ *  explicit now that the AccountKey defaults are gone (FINDINGS 20.22) - the defaults are what
+ *  let three shipped defects read the legacy slot for a second peer. */
+constexpr core::settings::AccountKey kSlot = core::settings::kLegacyAccount;
+
 
 namespace family4_datagen = middleware::datagen::family4;
 namespace character = middleware::datagen::family4::character;
@@ -200,7 +205,7 @@ int run_account_memcmp_test(void* module) noexcept {
     state::AccountState databaseAccount{};
     state::unlocks::Table databaseUnlocks{};
     state::Family5State databaseFamily5{};
-    if (!persistence::load_account(databaseAccount, databaseUnlocks, databaseFamily5)
+    if (!persistence::load_account(databaseAccount, databaseUnlocks, databaseFamily5, kSlot)
         || !state::account::valid(databaseAccount)) {
         report("ev=s1_memcmp stage=load result=fail");
         persistence::shutdown();
@@ -255,7 +260,7 @@ int run_account_memcmp_test(void* module) noexcept {
     databaseFamily.contentGateArm = referenceFamily.contentGateArm;
     // The boot chain already published the DB family-5 into State (server_main.cpp); the
     // published object is what ws-503/ws-205 actually serve on the wire.
-    const state::Family5State published = state::investment_snapshot().family5;
+    const state::Family5State published = state::investment_snapshot(kSlot).family5;
     std::array<std::byte, 512> referenceFamilyBytes{};
     std::array<std::byte, 512> databaseFamilyBytes{};
     std::array<std::byte, 512> publishedFamilyBytes{};
@@ -401,7 +406,7 @@ int run_account_memcmp_test(void* module) noexcept {
     // 163 B, selected character 46,928 B.
     bool persistEqual = false;
     if (characterEncoded) {
-        if (!persistence::write_back()) {
+        if (!persistence::write_back(kSlot)) {
             report("ev=s1_persist stage=write_back result=fail");
             persistence::shutdown();
             return 1;
@@ -410,7 +415,7 @@ int run_account_memcmp_test(void* module) noexcept {
         state::AccountState secondAccount{};
         state::unlocks::Table secondUnlocks{};
         state::Family5State secondFamily5{};
-        if (!persistence::load_account(secondAccount, secondUnlocks, secondFamily5)
+        if (!persistence::load_account(secondAccount, secondUnlocks, secondFamily5, kSlot)
             || !state::account::valid(secondAccount)) {
             report("ev=s1_persist stage=second_boot result=fail reason=load");
             persistence::shutdown();

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../../../../../core/settings/provisioning.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -21,7 +23,8 @@ namespace message = middleware::bap::activity_message::sensor_auth_update;
  */
 [[nodiscard]] bool seed_identity(std::uint64_t sessionId,
                                  std::uint64_t memberKey,
-                                 std::uint64_t characterSoid) noexcept;
+                                 std::uint64_t characterSoid,
+                                 core::settings::AccountKey accountKey) noexcept;
 
 /**
  * Seeds the transition token when nothing has published one.

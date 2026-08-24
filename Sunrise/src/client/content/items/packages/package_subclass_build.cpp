@@ -1,3 +1,4 @@
+#include "../../../../core/settings/provisioning.h"
 #include <array>
 
 #include "../../../../state/account/account_state.h"
@@ -75,7 +76,9 @@ bool build_character_abilities(const reader::Source& source,
             std::span<const std::byte>{table}, tables::kTableArrayDescriptor, rows)) {
         return false;
     }
-    const state::AccountState account = state::account_snapshot();
+    // The client provisions exactly one slot - its own account IS slot zero
+    // (FINDINGS 20.14). Named, not defaulted (FINDINGS 20.22).
+    const state::AccountState account = state::account_snapshot(core::settings::kLegacyAccount);
     for (std::size_t character = 0; character < account.characterCount && count < output.size();
          ++character) {
         domain::Definition row{};

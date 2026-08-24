@@ -43,8 +43,10 @@ constexpr std::uint64_t kIdentityLowMask = 0xFFFFFFFFULL;
  * @param joinCharacter Character id the join request carried, or zero when it carried none.
  * @return Authored SOID of the named character, or of the selected character when nothing matches.
  */
-[[nodiscard]] std::uint64_t roster_player_key(std::uint64_t joinCharacter) noexcept {
-    const state::AccountState account = state::account_snapshot();
+[[nodiscard]] std::uint64_t roster_player_key(std::uint64_t joinCharacter,
+                                              core::settings::AccountKey accountKey) noexcept {
+    // The join's character resolves against the CALLING peer's roster (FINDINGS 20.22).
+    const state::AccountState account = state::account_snapshot(accountKey);
     const std::uint64_t selected = state::account::selected_character_soid(account);
     if (joinCharacter == 0) {
         return selected;
@@ -214,7 +216,7 @@ RosterOutcome build_roster_snapshot(Session& session,
     // The character the join named wins, resolved to its authored SOID. The client binds its
     // player by matching this value against the object registry, and the short form the join
     // carries matches nothing.
-    snapshot.playerKey = roster_player_key(session.activityCharacterSoid);
+    snapshot.playerKey = roster_player_key(session.activityCharacterSoid, session.accountKey);
     // The old encoder documents this key as message 12's member record `+16` while its own code
     // sends the character SOID. That field is the membership identity, so this sends it instead.
     if (defaults.rosterKeyFromIdentity) {

@@ -616,7 +616,10 @@ bool seed_from_settings() noexcept {
     // The published State is the seed's source of truth: it carries the runtime-stamped
     // ascending inventory serials (the settings block itself has none), so the fresh database
     // holds the same generations the first boot publishes.
-    const state::AccountState account = state::account_snapshot();
+    // KNOWN LIMITATION, made explicit (FINDINGS 20.22): the fresh-database seed reads the
+    // legacy slot only, so a database created from scratch carries just that account. It runs
+    // once, when no state.db exists. Seeding every provisioned slot is its own change.
+    const state::AccountState account = state::account_snapshot(core::settings::kLegacyAccount);
     const state::unlocks::Table& unlocks = core::settings::get().initialUnlocks;
     bool seeded =
         seed_meta_and_account() && seed_profile_items() && seed_family5() && seed_entitlements()

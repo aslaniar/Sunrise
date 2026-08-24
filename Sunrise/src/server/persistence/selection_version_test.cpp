@@ -33,6 +33,11 @@
 
 namespace sunrise::server::persistence {
 namespace {
+/** The harness drives exactly ONE provisioned slot. Naming it here keeps every call site
+ *  explicit now that the AccountKey defaults are gone (FINDINGS 20.22) - the defaults are what
+ *  let three shipped defects read the legacy slot for a second peer. */
+constexpr core::settings::AccountKey kSlot = core::settings::kLegacyAccount;
+
 
 namespace queuez = sunrise::server::bap::encrypted::queuez;
 namespace push = sunrise::server::bap::encrypted::push;
@@ -81,7 +86,7 @@ std::optional<std::uint8_t> find_changing_entry(std::uint64_t subclassSoid) noex
     for (int entry = 0; entry <= 255; ++entry) {
         state::PendingSubclassSelection probe{};
         if (state::prepare_subclass_selection(
-                subclassSoid, static_cast<std::uint8_t>(entry), probe)) {
+                subclassSoid, static_cast<std::uint8_t>(entry), probe, kSlot)) {
             return static_cast<std::uint8_t>(entry);
         }
     }
@@ -193,7 +198,7 @@ void gate_instance_lanes(
 
 /** Resolves character zero's loadout and gates every item instance under one path name. */
 void gate_loadout_lanes(Harness& harness, const char* path) noexcept {
-    const state::AccountState snapshot = state::account_snapshot();
+    const state::AccountState snapshot = state::account_snapshot(kSlot);
     state::AccountState selected = snapshot;
     for (std::size_t index = 0; index < selected.characterCount; ++index) {
         selected.characters[index].selected = index == 0;
@@ -226,7 +231,8 @@ int run_selection_version_test(void* module) noexcept {
     state::AccountState account{};
     state::unlocks::Table unlocks{};
     state::Family5State family5{};
-    if (!persistence::load_account(account, unlocks, family5) || !state::account::valid(account)) {
+    if (!persistence::load_account(account, unlocks, family5, kSlot)
+        || !state::account::valid(account)) {
         report("ev=selection_version stage=load result=fail");
         persistence::shutdown();
         return 1;
@@ -241,7 +247,7 @@ int run_selection_version_test(void* module) noexcept {
     // The runtime State carries no selection from the DB (the equip-diff pattern), so publish
     // character 0's selection first — the server's own 504 flow.
     bool selectionChanged = false;
-    if (!state::set_selected_character(account.characters[0].soid, selectionChanged)) {
+    if (!state::set_selected_character(account.characters[0].soid, selectionChanged, kSlot)) {
         report("ev=selection_version stage=select result=fail");
         persistence::shutdown();
         return 1;
@@ -250,7 +256,7 @@ int run_selection_version_test(void* module) noexcept {
 
     // The live snapshot after the selection: the account identity, the selected character's
     // equipped subclass, and the equip pick the 403 flow accepts.
-    const state::AccountState live = state::account_snapshot();
+    const state::AccountState live = state::account_snapshot(kSlot);
     const std::uint64_t accountSoid = live.primarySoid;
     harness.check(accountSoid != 0, "account_soid_present");
     const state::CharacterState& character0 = live.characters[0];
@@ -262,7 +268,8 @@ int run_selection_version_test(void* module) noexcept {
 
     std::uint64_t pickSoid = 0;
     for (std::size_t index = 0; index < character0.storageItemCount; ++index) {
-        if (state::subclass_equip_request_valid(character0.storageItems[index].instanceSoid)) {
+        if (state::subclass_equip_request_valid(character0.storageItems[index].instanceSoid,
+                                               kSlot)) {
             pickSoid = character0.storageItems[index].instanceSoid;
             break;
         }
@@ -441,6 +448,38 @@ int run_selection_version_test(void* module) noexcept {
             harness.check(state::account::selected_character_soid(state::account_snapshot(0))
                               == legacyBefore,
                           "second_slot_select_leaves_the_legacy_slot");
+
+            // THE PER-SLOT PREPARE GATE (FINDINGS 20.22). prepare_subclass_selection ACCEPTED a
+            // slot and then ignored it, reading the legacy account while its own
+            // commit_subclass_selection staged against slot_account(key). An opcode-801
+            // selection from any non-legacy peer therefore prepared against another account's
+            // selected character. The mutation must name THIS slot's character.
+            const state::AccountState afterPick = state::account_snapshot(1);
+            std::uint64_t secondSubclass = 0;
+            for (std::size_t index = 0; index < afterPick.characterCount; ++index) {
+                if (!afterPick.characters[index].selected) {
+                    continue;
+                }
+                const auto& slot = afterPick.characters[index].equipment.slots[static_cast<
+                    std::size_t>(state::account::inventory::EquipmentSlot::subclass)];
+                if (slot.has_value()) {
+                    secondSubclass = slot->instanceSoid;
+                }
+            }
+            if (secondSubclass == 0) {
+                report("ev=selection_version stage=check result=skip "
+                       "what=second_slot_prepare reason=no_equipped_subclass");
+            } else {
+                state::PendingSubclassSelection secondMutation{};
+                bool preparedAny = false;
+                for (int entry = 0; entry <= 255 && !preparedAny; ++entry) {
+                    preparedAny = state::prepare_subclass_selection(
+                        secondSubclass, static_cast<std::uint8_t>(entry), secondMutation, 1);
+                }
+                harness.check(preparedAny, "second_slot_prepare_stages");
+                harness.check(preparedAny && secondMutation.characterSoid == pick,
+                              "second_slot_prepare_names_its_own_character");
+            }
         }
     }
 
@@ -461,7 +500,8 @@ int run_selection_version_test(void* module) noexcept {
                                         snapshotSub,
                                         accountObjectId,
                                         reservation,
-                                        prepared),
+                                        prepared,
+                                        kSlot),
                       "full_snapshot_prepares_with_acquired_lanes");
         harness.check(prepared.family.objects.size() >= 2, "full_snapshot_carries_objects");
     }
@@ -473,16 +513,16 @@ int run_selection_version_test(void* module) noexcept {
     queuez::SubclassSelection selection1{};
     state::PendingSubclassSelection mutation1{};
     if (entry1.has_value()) {
-        harness.check(state::prepare_subclass_selection(subclassSoid, *entry1, mutation1),
+        harness.check(state::prepare_subclass_selection(subclassSoid, *entry1, mutation1, kSlot),
                       "entry1_prepares");
         harness.check(queuez::stage_subclass_selection(beforeAll, mutation1, selection1),
                       "selection1_stages");
         harness.check(selection1.after.family4Version == afterReplay.family4Version + 1,
                       "selection1_version_exactly_plus_one");
-        harness.check(state::commit_subclass_selection(mutation1), "selection1_commits");
+        harness.check(state::commit_subclass_selection(mutation1, kSlot), "selection1_commits");
         bap::Scratch scratch{};
         snapshot::Prepared prepared{};
-        harness.check(snapshot::prepare_subclass_selection(scratch, selection1, prepared),
+        harness.check(snapshot::prepare_subclass_selection(scratch, selection1, prepared, kSlot),
                       "selection1_prepares_frame");
         harness.check(prepared.family.version == selection1.after.family4Version,
                       "selection1_frame_versions_match");
@@ -520,16 +560,16 @@ int run_selection_version_test(void* module) noexcept {
     queuez::SubclassSelection selection2{};
     state::PendingSubclassSelection mutation2{};
     if (entry2.has_value()) {
-        harness.check(state::prepare_subclass_selection(subclassSoid, *entry2, mutation2),
+        harness.check(state::prepare_subclass_selection(subclassSoid, *entry2, mutation2, kSlot),
                       "entry2_prepares");
         harness.check(queuez::stage_subclass_selection(selection1.after, mutation2, selection2),
                       "selection2_stages");
         harness.check(selection2.after.family4Version == selection1.after.family4Version + 1,
                       "selection2_version_exactly_plus_one");
-        harness.check(state::commit_subclass_selection(mutation2), "selection2_commits");
+        harness.check(state::commit_subclass_selection(mutation2, kSlot), "selection2_commits");
         bap::Scratch scratch{};
         snapshot::Prepared prepared{};
-        harness.check(snapshot::prepare_subclass_selection(scratch, selection2, prepared),
+        harness.check(snapshot::prepare_subclass_selection(scratch, selection2, prepared, kSlot),
                       "selection2_prepares_frame");
         harness.check(prepared.family.version == selection2.after.family4Version,
                       "selection2_frame_versions_match");
@@ -563,7 +603,7 @@ int run_selection_version_test(void* module) noexcept {
     // counter values.
     std::uint64_t displaced = 0;
     {
-        const state::AccountState preEquip = state::account_snapshot();
+        const state::AccountState preEquip = state::account_snapshot(kSlot);
         const state::CharacterState& preCharacter = preEquip.characters[0];
         const auto& preSubclass =
             preCharacter.equipment
@@ -583,9 +623,9 @@ int run_selection_version_test(void* module) noexcept {
             }
         }
         harness.check(pickSerialFound, "equip_serial_pick_found_before");
-        harness.check(state::equip_subclass_item(pickSoid, displaced), "equip_mutates");
+        harness.check(state::equip_subclass_item(pickSoid, displaced, kSlot), "equip_mutates");
         harness.check(displaced == subclassSoid, "equip_displaces_previous_subclass");
-        const state::AccountState postEquip = state::account_snapshot();
+        const state::AccountState postEquip = state::account_snapshot(kSlot);
         const state::CharacterState& postCharacter = postEquip.characters[0];
         const auto& postSubclass =
             postCharacter.equipment
@@ -624,7 +664,7 @@ int run_selection_version_test(void* module) noexcept {
     {
         bap::Scratch scratch{};
         snapshot::Prepared prepared{};
-        harness.check(snapshot::prepare_subclass_equip(scratch, equip, prepared),
+        harness.check(snapshot::prepare_subclass_equip(scratch, equip, prepared, kSlot),
                       "equip_prepares_frame");
         harness.check(prepared.family.version == equip.after.family4Version,
                       "equip_frame_versions_match");
@@ -673,7 +713,7 @@ int run_selection_version_test(void* module) noexcept {
         std::size_t written = 0;
         sunrise::server::web_service::Outcome webOutcome{};
         harness.check(sunrise::server::web_service::consume(
-                          body, std::span(response), written, webOutcome),
+                          body, std::span(response), written, webOutcome, kSlot),
                       "reply_consume_parses");
         harness.check(webOutcome.hasSubclassEquip && webOutcome.subclassEquipSoid == swapBackSoid,
                       "reply_consume_policy_accepts");
@@ -756,7 +796,8 @@ int run_selection_version_test(void* module) noexcept {
                                                        bannerAfter.family4RootSoid,
                                                        bannerAfter.family0Version,
                                                        equip.characterSoid,
-                                                       bannerPrepared),
+                                                       bannerPrepared,
+                                                       kSlot),
                       "equip_family0_refresh_prepares_frame");
         harness.check(bannerPrepared.family.flags == 0
                           && bannerPrepared.family.objects.size() == 1,
@@ -768,7 +809,7 @@ int run_selection_version_test(void* module) noexcept {
                       "equip_roster_refresh_stages");
         harness.check(rosterRefresh.after.family3Version == bannerAfter.family3Version + 1,
                       "equip_roster_refresh_plus_one");
-        const state::AccountState liveAfter = state::account_snapshot();
+        const state::AccountState liveAfter = state::account_snapshot(kSlot);
         std::size_t characterIndex = liveAfter.characterCount;
         for (std::size_t index = 0; index < liveAfter.characterCount; ++index) {
             if (liveAfter.characters[index].soid == equip.characterSoid) {
@@ -784,7 +825,8 @@ int run_selection_version_test(void* module) noexcept {
                               rosterRefresh,
                               liveAfter.characters[characterIndex],
                               characterIndex,
-                              rosterPrepared),
+                              rosterPrepared,
+                              kSlot),
                           "equip_roster_refresh_prepares_frame");
             harness.check(rosterPrepared.family.type == queuez::kRosterFamilyType
                               && rosterPrepared.family.version
@@ -876,11 +918,11 @@ int run_selection_version_test(void* module) noexcept {
         state::AccountState dbBefore{};
         state::unlocks::Table dbBeforeUnlocks{};
         state::Family5State dbBeforeFamily5{};
-        harness.check(persistence::load_account(dbBefore, dbBeforeUnlocks, dbBeforeFamily5),
+        harness.check(persistence::load_account(dbBefore, dbBeforeUnlocks, dbBeforeFamily5, kSlot),
                       "refusal_db_capture_loads");
         const std::uint64_t dbSlotBefore = equipped_subclass_soid(dbBefore);
         harness.check(dbSlotBefore != 0, "refusal_db_slot_occupied");
-        const std::uint64_t beforeSoid = equipped_subclass_soid(state::account_snapshot());
+        const std::uint64_t beforeSoid = equipped_subclass_soid(state::account_snapshot(kSlot));
         harness.check(beforeSoid == pickSoid, "refusal_memory_slot_is_the_equip");
         queuez::SubclassEquip refuseEquip{};
         harness.check(queuez::stage_subclass_equip(equip.after, subclassSoid, refuseEquip),
@@ -907,7 +949,7 @@ int run_selection_version_test(void* module) noexcept {
                 written,
                 publication),
             "refusal_push_failure_refuses");
-        harness.check(equipped_subclass_soid(state::account_snapshot()) == beforeSoid,
+        harness.check(equipped_subclass_soid(state::account_snapshot(kSlot)) == beforeSoid,
                       "refusal_reverts_memory_swap");
         harness.check(written == 0, "refusal_ships_no_partial_frames");
         harness.check(!publication.hasState, "refusal_publishes_no_ladder");
@@ -915,7 +957,7 @@ int run_selection_version_test(void* module) noexcept {
         state::AccountState reloaded{};
         state::unlocks::Table reloadedUnlocks{};
         state::Family5State reloadedFamily5{};
-        harness.check(persistence::load_account(reloaded, reloadedUnlocks, reloadedFamily5)
+        harness.check(persistence::load_account(reloaded, reloadedUnlocks, reloadedFamily5, kSlot)
                           && equipped_subclass_soid(reloaded) == dbSlotBefore,
                       "refusal_persists_nothing");
     }
@@ -952,12 +994,12 @@ int run_selection_version_test(void* module) noexcept {
                       "success_publishes_plus_one");
         harness.check(publication.armsAbilityRefresh, "success_arms_ability_refresh");
         harness.check(written > 0, "success_appends_frames");
-        harness.check(equipped_subclass_soid(state::account_snapshot()) == subclassSoid,
+        harness.check(equipped_subclass_soid(state::account_snapshot(kSlot)) == subclassSoid,
                       "success_mutates_slot");
         state::AccountState reloaded{};
         state::unlocks::Table reloadedUnlocks{};
         state::Family5State reloadedFamily5{};
-        harness.check(persistence::load_account(reloaded, reloadedUnlocks, reloadedFamily5)
+        harness.check(persistence::load_account(reloaded, reloadedUnlocks, reloadedFamily5, kSlot)
                           && equipped_subclass_soid(reloaded) == subclassSoid,
                       "success_persists_after_frames");
     }

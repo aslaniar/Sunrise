@@ -68,7 +68,8 @@ bool append_ability_change_notification(Scratch& scratch,
                                         std::span<std::byte> response,
                                         std::size_t& written) noexcept {
     snapshot::Prepared prepared{};
-    if (!snapshot::prepare_ability_change(scratch, change, prepared)) {
+    if (!snapshot::prepare_ability_change(scratch, change, prepared,
+                                          change.after.accountKey)) {
         return false;
     }
     const std::size_t objectCount = prepared.family.objects.size();

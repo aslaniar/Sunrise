@@ -1,3 +1,4 @@
+#include "../../../../core/settings/provisioning.h"
 #include <Windows.h>
 
 #include <array>
@@ -31,7 +32,9 @@ bool readable() noexcept {
 /** Copies the block key material this pass borrows. */
 bool collect_keys(reader::BlockKeys& keys) noexcept {
     keys = {};
-    const state::SignOnState& signOn = state::sign_on();
+    // The client provisions exactly one slot - its own account IS slot zero
+    // (FINDINGS 20.14). Named, not defaulted (FINDINGS 20.22).
+    const state::SignOnState& signOn = state::sign_on(core::settings::kLegacyAccount);
     targets::game::packages::KeyTable table{};
     if (!signOn.bootstrapTokenPresent) {
         return false;

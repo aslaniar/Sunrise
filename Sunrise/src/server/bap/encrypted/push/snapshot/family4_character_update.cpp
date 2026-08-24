@@ -134,11 +134,17 @@ bool prepare_subclass_selection(Scratch& scratch,
                                 const queuez::SubclassSelection& selection,
                                 Prepared& prepared,
             core::settings::AccountKey accountKey) noexcept {
+    // Both trailing arguments are named explicitly. `accountKey` used to be passed in the
+    // clearedSockets POSITION: AccountKey is a std::uint8_t, so it converted to bool and the
+    // real accountKey fell back to its default. Slot 0 read false and worked by accident;
+    // slot 1 read TRUE and published the synthetic socket-reset frame, built from the legacy
+    // account (FINDINGS 20.22). Removing the defaults is what surfaced it.
     return prepare_item_republish(scratch,
                                   selection.mutation.subclassInstanceSoid,
                                   selection.characterSoid,
                                   selection.after,
                                   prepared,
+                                  /*clearedSockets=*/false,
                                   selection.after.accountKey);
 }
 
@@ -160,8 +166,13 @@ bool prepare_ability_change(Scratch& scratch,
     if (!slot.has_value()) {
         return report_failure("ability_change_subclass");
     }
-    return prepare_item_republish(scratch, slot->instanceSoid, change.characterSoid,
-                                  change.after, prepared, change.after.accountKey);
+    return prepare_item_republish(scratch,
+                                  slot->instanceSoid,
+                                  change.characterSoid,
+                                  change.after,
+                                  prepared,
+                                  /*clearedSockets=*/false,
+                                  change.after.accountKey);
 }
 
 } // namespace sunrise::server::bap::encrypted::push::snapshot

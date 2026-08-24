@@ -27,11 +27,14 @@ constexpr std::uint8_t kDefaultTransitionToken = 1;
 /** Seeds the membership identity from the join when no identity message has arrived. */
 bool seed_identity(std::uint64_t sessionId,
                    std::uint64_t memberKey,
-                   std::uint64_t characterSoid) noexcept {
+                   std::uint64_t characterSoid,
+                   const core::settings::AccountKey accountKey) noexcept {
     if (memberKey == 0) {
         return false;
     }
-    const state::AccountState account = state::account_snapshot();
+    // This is the message that CREATES the player on the activity plane, so the account it
+    // stamps has to be the calling peer's own (FINDINGS 20.22).
+    const state::AccountState account = state::account_snapshot(accountKey);
     state::activity::membership::Identity identity{};
     identity.memberKey = memberKey;
     identity.smallOpaque = kMemberSkipTest;

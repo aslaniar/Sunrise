@@ -144,8 +144,10 @@ bool consume_activity_keepalive(Session& session,
                              session.activitySessionId, kCurrentRevision, kNoBubble, refresh)
                          && refresh.hasSnapshot;
     if (!hasMembership
-        && seed_identity(
-            session.activitySessionId, session.activityMemberKey, session.activityCharacterSoid)) {
+        && seed_identity(session.activitySessionId,
+                         session.activityMemberKey,
+                         session.activityCharacterSoid,
+                         session.accountKey)) {
         SecureZeroMemory(&refresh, sizeof refresh);
         hasMembership = state::activity::membership::prepare_refresh(
                             session.activitySessionId, kCurrentRevision, kNoBubble, refresh)

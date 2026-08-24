@@ -39,7 +39,7 @@ initialize(void* module,
 void shutdown() noexcept;
 
 /** @return Immutable generated SignOn session fields for one provisioned account. */
-[[nodiscard]] const SignOnState& sign_on(AccountKey key = kLegacyAccount) noexcept;
+[[nodiscard]] const SignOnState& sign_on(AccountKey key) noexcept;
 
 /** @return How many accounts this process serves (>= 1 after initialize). */
 [[nodiscard]] std::size_t account_count() noexcept;
@@ -55,7 +55,7 @@ match_session_token(std::span<const std::byte, kSessionTokenSize> echoed) noexce
 [[nodiscard]] bool publish_bootstrap_token(std::span<const std::byte> token) noexcept;
 
 /** @return Immutable generated BAP session fields for one provisioned account. */
-[[nodiscard]] const BapState& bap(AccountKey key = kLegacyAccount) noexcept;
+[[nodiscard]] const BapState& bap(AccountKey key) noexcept;
 
 /**
  * Stores the active nonzero account key when the account remains complete.
@@ -64,7 +64,7 @@ match_session_token(std::span<const std::byte, kSessionTokenSize> echoed) noexce
  * @return False when the key or resulting account State is invalid.
  */
 [[nodiscard]] bool set_primary_soid(std::uint64_t primarySoid,
-                                    AccountKey key = kLegacyAccount) noexcept;
+                                    AccountKey key) noexcept;
 
 /**
  * Moves the selection to one authored character.
@@ -77,12 +77,12 @@ match_session_token(std::span<const std::byte, kSessionTokenSize> echoed) noexce
  */
 [[nodiscard]] bool set_selected_character(std::uint64_t characterSoid,
                                           bool& changed,
-                                          AccountKey key = kLegacyAccount) noexcept;
+                                          AccountKey key) noexcept;
 
 /** @return A copy of the active account state, read under the lock. */
-[[nodiscard]] AccountState account_snapshot(AccountKey key = kLegacyAccount) noexcept;
+[[nodiscard]] AccountState account_snapshot(AccountKey key) noexcept;
 /** @return A copy of the evaluated content state, read under the lock. */
-[[nodiscard]] InvestmentState investment_snapshot(AccountKey key = kLegacyAccount) noexcept;
+[[nodiscard]] InvestmentState investment_snapshot(AccountKey key) noexcept;
 
 /**
  * Applies one opcode-2100 ability change to the selected character. The definition
@@ -95,7 +95,7 @@ match_session_token(std::span<const std::byte, kSessionTokenSize> echoed) noexce
  *         and the whole account stayed valid after the move.
  */
 [[nodiscard]] bool apply_ability_change(std::uint32_t definitionHash,
-                                        AccountKey key = kLegacyAccount) noexcept;
+                                        AccountKey key) noexcept;
 
 /** One prepared opcode-801 subclass socket-entry selection, ready to commit. */
 struct PendingSubclassSelection {
@@ -121,7 +121,7 @@ struct PendingSubclassSelection {
 [[nodiscard]] bool prepare_subclass_selection(std::uint64_t subclassInstanceSoid,
                                               std::uint8_t requestedEntry,
                                               PendingSubclassSelection& mutation,
-                                              AccountKey key = kLegacyAccount) noexcept;
+                                              AccountKey key) noexcept;
 
 /**
  * Commits one prepared subclass selection behind an exact character staleness guard.
@@ -130,7 +130,7 @@ struct PendingSubclassSelection {
  * @return True when the whole account stayed valid and the selection published.
  */
 [[nodiscard]] bool commit_subclass_selection(PendingSubclassSelection& mutation,
-                                             AccountKey key = kLegacyAccount) noexcept;
+                                             AccountKey key) noexcept;
 
 /**
  * Equips one storage item onto the selected character's subclass slot, returning the
@@ -144,7 +144,7 @@ struct PendingSubclassSelection {
  */
 [[nodiscard]] bool equip_subclass_item(std::uint64_t itemSoid,
                                        std::uint64_t& displacedSoid,
-                                       AccountKey key = kLegacyAccount) noexcept;
+                                       AccountKey key) noexcept;
 
 /**
  * Checks the subclass-equip request policy without touching State.
@@ -154,7 +154,7 @@ struct PendingSubclassSelection {
  *         bucket-16 (subclass) item.
  */
 [[nodiscard]] bool subclass_equip_request_valid(std::uint64_t itemSoid,
-                                                AccountKey key = kLegacyAccount) noexcept;
+                                                AccountKey key) noexcept;
 
 /**
  * Replaces the published family-5 override lists with the persisted rows.
@@ -164,7 +164,7 @@ struct PendingSubclassSelection {
  * @return False when the counts exceed the fixed capacities.
  */
 [[nodiscard]] bool publish_family5(const Family5State& family,
-                                   AccountKey key = kLegacyAccount) noexcept;
+                                   AccountKey key) noexcept;
 
 /**
  * Provisions every settings-authored account into its own State slot. With no state.accounts

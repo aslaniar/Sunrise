@@ -4,6 +4,7 @@
  * position, so writing the object placement would move the camera alone.
  */
 
+#include "../../../core/settings/provisioning.h"
 #include <Windows.h>
 
 #include <array>
@@ -142,7 +143,11 @@ void report_skip(const char* reason) noexcept;
  * driving the player's own forward action rather than by writing what it would have produced.
  */
 void begin_press() noexcept {
-    const state::AccountState account = state::account_snapshot();
+    // The CLIENT provisions exactly one slot - its own account IS slot zero (the
+    // single-account init path, FINDINGS 20.14). The slot is named rather than defaulted
+    // so this reads as deliberate, not as one of the unkeyed serving-path calls that cost
+    // three defects (FINDINGS 20.22).
+    const state::AccountState account = state::account_snapshot(core::settings::kLegacyAccount);
     const auto& binding = account.settings.keyBindings.values[kForwardAction];
     if (!binding.primary.has_value()) {
         return;

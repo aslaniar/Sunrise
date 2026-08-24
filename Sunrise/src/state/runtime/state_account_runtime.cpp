@@ -475,7 +475,12 @@ bool prepare_subclass_selection(std::uint64_t subclassInstanceSoid,
                                 PendingSubclassSelection& mutation,
                                 const AccountKey key) noexcept {
     mutation = {};
-    const AccountState snapshot = account_snapshot();
+    // The slot is LOAD-BEARING and was being ignored here (FINDINGS 20.22): this read the
+    // legacy slot while commit_subclass_selection stages against slot_account(key), so an
+    // opcode-801 selection from any non-legacy peer prepared against another account's
+    // selected character and its commit guard then refused it. Silent, and only ever for the
+    // second peer.
+    const AccountState snapshot = account_snapshot(key);
     std::size_t characterIndex = snapshot.characterCount;
     if (account::valid(snapshot)) {
         for (std::size_t index = 0; index < snapshot.characterCount; ++index) {

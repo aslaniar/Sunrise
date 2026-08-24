@@ -49,7 +49,7 @@ struct Prepared {
 [[nodiscard]] bool prepare_initial(Scratch& scratch,
                                    const middleware::queuez::Subscription& subscription,
                                    Prepared& prepared,
-                                   core::settings::AccountKey accountKey = core::settings::kLegacyAccount) noexcept;
+                                   core::settings::AccountKey accountKey) noexcept;
 
 /**
  * Builds the family-zero banner anchor and the record for the character it names.
@@ -66,7 +66,7 @@ struct Prepared {
                                   std::int32_t version,
                                   std::uint64_t previousCharacter,
                                   Prepared& prepared,
-                            core::settings::AccountKey accountKey = core::settings::kLegacyAccount) noexcept;
+                            core::settings::AccountKey accountKey) noexcept;
 
 /**
  * Builds the family-zero in-place character-record upsert a subclass mutation owes: the
@@ -78,7 +78,7 @@ struct Prepared {
                                           std::int32_t version,
                                           std::uint64_t characterSoid,
                                           Prepared& prepared,
-                            core::settings::AccountKey accountKey = core::settings::kLegacyAccount) noexcept;
+                            core::settings::AccountKey accountKey) noexcept;
 
 /**
  * Builds one incremental Family-3 character record and its optional changed account roster
@@ -95,6 +95,6 @@ struct Prepared {
                                                      const state::CharacterState& afterCharacter,
                                                      std::size_t characterIndex,
                                                      Prepared& prepared,
-                                                     core::settings::AccountKey accountKey = core::settings::kLegacyAccount) noexcept;
+                                                     core::settings::AccountKey accountKey) noexcept;
 
 } // namespace sunrise::server::bap::encrypted::push::snapshot
