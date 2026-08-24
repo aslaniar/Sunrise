@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <span>
 
+#include "../../../../core/settings/provisioning.h"
 #include "../../../../state/activity/definition.h"
 
 namespace sunrise::server::bap::encrypted::activity_host_manager {
@@ -15,12 +16,14 @@ namespace sunrise::server::bap::encrypted::activity_host_manager {
  * @param written Receives the exact encoded body size.
  * @param allocation Receives a deferred State allocation consumed after frame staging.
  * @param hasAllocation Receives true only when allocation must be committed.
+ * @param accountKey Provisioned slot whose account band roots the allocated session soid.
  * @return True when the request, State preparation, and response encoding all succeed.
  */
 [[nodiscard]] bool encode_response(std::span<const std::byte> requestBody,
                                    std::span<std::byte> output,
                                    std::size_t& written,
                                    state::activity::PendingAllocation& allocation,
-                                   bool& hasAllocation) noexcept;
+                                   bool& hasAllocation,
+                                   core::settings::AccountKey accountKey) noexcept;
 
 } // namespace sunrise::server::bap::encrypted::activity_host_manager

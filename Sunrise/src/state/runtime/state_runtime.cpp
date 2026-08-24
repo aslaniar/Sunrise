@@ -26,6 +26,12 @@ namespace runtime::storage {
 
 /** One State per provisioned account; slot 0 is the historical sole account. */
 std::array<State, kAccountCapacity> g_states{};
+/**
+ * The process's activity-session registry. World instances are not account-scoped, so
+ * session records live here instead of inside any one account's State block; every peer
+ * allocates from and is recorded in the same table.
+ */
+activity::ActivityState g_activity{};
 /** How many slots are live (>=1 after any successful initialize). */
 std::size_t g_accountCount = 1;
 SRWLOCK g_stateLock{SRWLOCK_INIT};
@@ -206,9 +212,7 @@ decode_hex_token(std::string_view text,
  * @return True when every secret derives and the account passes its checks.
  */
 [[nodiscard]] bool
-build_account_state(const ProvisionedAccountInput& input,
-                    const activity::defaults::ActivityDefaults& activityDefaults,
-                    State& initialized) noexcept {
+build_account_state(const ProvisionedAccountInput& input, State& initialized) noexcept {
     initialized = {};
     if (input.account == nullptr) {
         return false;
@@ -235,7 +239,8 @@ build_account_state(const ProvisionedAccountInput& input,
     initialized.signOn.relayPort = core::settings::get().server.bapPort;
     initialized.signOn.tokenLifetimeSeconds = kDefaultTokenLifetimeSeconds;
     initialized.account = runtimeAccount;
-    initialized.activity.defaults = activityDefaults;
+    // The activity defaults are NOT account state: they publish once into the process-wide
+    // session registry (initialize_accounts), not per built slot.
     initialized.investment.family5.objectSoid = kGlobalFamily5Soid;
     // Only the override lists come from settings. Identity and gate stay owned by State.
     const Family5State& authored = core::settings::get().initialFamily5;
@@ -288,7 +293,7 @@ bool initialize_accounts(void* module,
     }
     std::array<State, kAccountCapacity> built{};
     for (std::size_t index = 0; index < accounts.size(); ++index) {
-        if (!build_account_state(accounts[index], activityDefaults, built[index])) {
+        if (!build_account_state(accounts[index], built[index])) {
             SecureZeroMemory(built.data(), sizeof built);
             build_data::shutdown();
             return false;
@@ -308,11 +313,15 @@ bool initialize_accounts(void* module,
         }
     }
 
-    // Publish the whole provisioned set only after every secret is valid.
+    // Publish the whole provisioned set only after every secret is valid. The activity
+    // registry publishes once here, not per slot: sessions are world-owned, and a later
+    // per-slot reload (reload_account_from_database) must not drop live session records.
     AcquireSRWLockExclusive(&runtime::storage::g_stateLock);
     for (std::size_t index = 0; index < accounts.size(); ++index) {
         runtime::storage::g_states[index] = built[index];
     }
+    runtime::storage::g_activity = {};
+    runtime::storage::g_activity.defaults = activityDefaults;
     runtime::storage::g_accountCount = accounts.size();
     ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
     SecureZeroMemory(built.data(), sizeof built);
@@ -403,7 +412,6 @@ bool reload_account_from_database(
                                  &account,
                                  std::string_view(settings.accounts[index]
                                                       .bootstrapToken.data())},
-                             activityDefaults,
                              built)) {
         return false;
     }
@@ -421,6 +429,7 @@ bool reload_account_from_database(
 void shutdown() noexcept {
     AcquireSRWLockExclusive(&runtime::storage::g_stateLock);
     SecureZeroMemory(runtime::storage::g_states.data(), sizeof runtime::storage::g_states);
+    SecureZeroMemory(&runtime::storage::g_activity, sizeof runtime::storage::g_activity);
     runtime::storage::g_accountCount = 1;
     ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
     build_data::shutdown();

@@ -11,7 +11,7 @@ bool contains(std::uint64_t sessionId) noexcept {
         return false;
     }
     AcquireSRWLockShared(&runtime::storage::g_stateLock);
-    const ActivityState& state = runtime::storage::g_states[core::settings::kLegacyAccount].activity;
+    const ActivityState& state = runtime::storage::g_activity;
     bool found = false;
     for (const SessionRecord& record : state.sessions) {
         if (record.occupied && record.sessionId == sessionId) {
@@ -29,7 +29,7 @@ bool is_joined(std::uint64_t sessionId) noexcept {
         return false;
     }
     AcquireSRWLockShared(&runtime::storage::g_stateLock);
-    const ActivityState& state = runtime::storage::g_states[core::settings::kLegacyAccount].activity;
+    const ActivityState& state = runtime::storage::g_activity;
     bool joined = false;
     for (const SessionRecord& record : state.sessions) {
         if (record.occupied && record.sessionId == sessionId) {

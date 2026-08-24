@@ -10,7 +10,7 @@ bool release_session(std::uint64_t sessionId) noexcept {
         return false;
     }
     AcquireSRWLockExclusive(&runtime::storage::g_stateLock);
-    ActivityState& state = runtime::storage::g_states[core::settings::kLegacyAccount].activity;
+    ActivityState& state = runtime::storage::g_activity;
     const std::size_t slot = transactions::find_session(state, sessionId);
     const bool released = slot < kSessionCapacity;
     if (released) {

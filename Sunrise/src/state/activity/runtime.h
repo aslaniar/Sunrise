@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "../../core/settings/provisioning.h"
 #include "definition.h"
 #include "entity_slots/runtime.h"
 
@@ -9,21 +10,25 @@ namespace sunrise::state::activity {
 
 /**
  * Prepares one allocation with State's fixed default destination, without changing State.
+ * @param key Provisioned slot whose account band roots the published session soid.
  * @param sessionId Cleared, then receives the picked nonzero id.
  * @param allocation Cleared, then receives the captured allocation data.
  * @return True when the picked record and allocator revisions can be committed.
  */
-[[nodiscard]] bool prepare_session(std::uint64_t& sessionId,
+[[nodiscard]] bool prepare_session(core::settings::AccountKey key,
+                                   std::uint64_t& sessionId,
                                    PendingAllocation& allocation) noexcept;
 
 /**
  * Prepares one allocation with an explicit checked scalar destination.
+ * @param key Provisioned slot whose account band roots the published session soid.
  * @param selection Caller-owned destination, copied into the read-only allocation plan.
  * @param sessionId Cleared, then receives the picked nonzero id.
  * @param allocation Cleared, then receives the captured allocation data.
  * @return True when the destination and allocator snapshot can be committed together.
  */
-[[nodiscard]] bool prepare_session(const destination::DestinationSelection& selection,
+[[nodiscard]] bool prepare_session(core::settings::AccountKey key,
+                                   const destination::DestinationSelection& selection,
                                    std::uint64_t& sessionId,
                                    PendingAllocation& allocation) noexcept;
 

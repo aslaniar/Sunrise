@@ -14,7 +14,7 @@ bool acknowledged(std::uint64_t sessionId) noexcept {
     }
     bool applied = false;
     AcquireSRWLockShared(&runtime::storage::g_stateLock);
-    const ActivityState& state = runtime::storage::g_states[core::settings::kLegacyAccount].activity;
+    const ActivityState& state = runtime::storage::g_activity;
     const std::size_t target = activity::transactions::find_session(state, sessionId);
     if (target != kInvalidSessionSlot) {
         const MembershipState& membership = state.sessions[target].membership;
@@ -32,7 +32,7 @@ std::int32_t reported_region(std::uint64_t sessionId) noexcept {
     }
     std::int32_t region = kAbsentRegionIndex;
     AcquireSRWLockShared(&runtime::storage::g_stateLock);
-    const ActivityState& state = runtime::storage::g_states[core::settings::kLegacyAccount].activity;
+    const ActivityState& state = runtime::storage::g_activity;
     const std::size_t target = activity::transactions::find_session(state, sessionId);
     if (target != kInvalidSessionSlot) {
         region = state.sessions[target].membership.region.index;
@@ -45,7 +45,7 @@ std::int32_t reported_region(std::uint64_t sessionId) noexcept {
 std::uint64_t live_region_session(std::uint64_t fallback) noexcept {
     std::uint64_t newest = kAbsentSessionId;
     AcquireSRWLockShared(&runtime::storage::g_stateLock);
-    for (const SessionRecord& record : runtime::storage::g_states[core::settings::kLegacyAccount].activity.sessions) {
+    for (const SessionRecord& record : runtime::storage::g_activity.sessions) {
         if (record.occupied && record.sessionId > newest
             && record.membership.region.index > kAbsentRegionIndex) {
             newest = record.sessionId;
@@ -62,7 +62,7 @@ std::uint64_t join_identity(std::uint64_t sessionId) noexcept {
     }
     std::uint64_t identity = 0;
     AcquireSRWLockShared(&runtime::storage::g_stateLock);
-    const ActivityState& state = runtime::storage::g_states[core::settings::kLegacyAccount].activity;
+    const ActivityState& state = runtime::storage::g_activity;
     const std::size_t target = activity::transactions::find_session(state, sessionId);
     if (target != kInvalidSessionSlot && state.sessions[target].membership.hasIdentity) {
         identity = state.sessions[target].membership.identity.joinIdentity;

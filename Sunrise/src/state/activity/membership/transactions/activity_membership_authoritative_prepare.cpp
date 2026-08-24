@@ -19,13 +19,13 @@ bool prepare_authoritative(std::uint64_t sessionId,
     const auto& root = runtime::storage::g_states[core::settings::kLegacyAccount];
     PendingMutation prepared{};
     const SessionRecord* record =
-        transactions::prepare_base(root.activity, root.account.primarySoid, sessionId, prepared);
+        transactions::prepare_base(runtime::storage::g_activity, root.account.primarySoid, sessionId, prepared);
     bool ready = record != nullptr;
     if (ready) {
         const MembershipState merged = transactions::merge(record->membership, update);
         const bool changed = !transactions::equal_authoritative(record->membership, merged);
         const bool revisionExhausted =
-            root.activity.stateRevision == activity::kMaximumRevision
+            runtime::storage::g_activity.stateRevision == activity::kMaximumRevision
             || (record->membership.hasIdentity
                 && record->membership.revision == kMaximumMembershipRevision);
         if (changed && revisionExhausted) {

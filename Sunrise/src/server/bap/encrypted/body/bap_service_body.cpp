@@ -53,7 +53,8 @@ bool process(const ServiceRoute& route,
                                                       output,
                                                       written,
                                                       outcome.activitySessionAllocation,
-                                                      outcome.hasActivitySessionAllocation);
+                                                      outcome.hasActivitySessionAllocation,
+                                                      accountKey);
     case BodyCodec::activityMessageRequest:
         written = 0;
         return activity_message::process(

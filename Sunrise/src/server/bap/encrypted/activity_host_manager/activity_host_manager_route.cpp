@@ -111,6 +111,7 @@ void report_forced(const state::activity::destination::DestinationSelection& for
  */
 [[nodiscard]] bool
 prepare_allocation(const request_selection::ActivityManagerSelectionResult& parsed,
+                   core::settings::AccountKey accountKey,
                    std::uint64_t& sessionId,
                    state::activity::PendingAllocation& allocation) noexcept {
     const bool hasCopy = parsed.hasSelection || parsed.hasSecondary;
@@ -130,9 +131,10 @@ prepare_allocation(const request_selection::ActivityManagerSelectionResult& pars
         state::activity::destination::DestinationSelection forced{};
         if (state::activity::forced::apply(forced)) {
             report_forced(forced);
-            return state::activity::prepare_session(forced, sessionId, allocation);
+            return state::activity::prepare_session(
+                accountKey, forced, sessionId, allocation);
         }
-        return state::activity::prepare_session(sessionId, allocation);
+        return state::activity::prepare_session(accountKey, sessionId, allocation);
     }
     report_selection(source);
     state::activity::destination::DestinationSelection destination{};
@@ -168,7 +170,8 @@ prepare_allocation(const request_selection::ActivityManagerSelectionResult& pars
     if (state::activity::forced::apply(destination)) {
         report_forced(destination);
     }
-    return state::activity::prepare_session(destination, sessionId, allocation);
+    return state::activity::prepare_session(
+        accountKey, destination, sessionId, allocation);
 }
 
 } // namespace
@@ -178,7 +181,8 @@ bool encode_response(std::span<const std::byte> requestBody,
                      std::span<std::byte> output,
                      std::size_t& written,
                      state::activity::PendingAllocation& allocation,
-                     bool& hasAllocation) noexcept {
+                     bool& hasAllocation,
+                     core::settings::AccountKey accountKey) noexcept {
     written = 0;
     allocation = {};
     hasAllocation = false;
@@ -199,7 +203,7 @@ bool encode_response(std::span<const std::byte> requestBody,
     }
     std::uint64_t sessionId = state::activity::kAbsentSessionId;
     state::activity::PendingAllocation prepared{};
-    if (!prepare_allocation(selection, sessionId, prepared)) {
+    if (!prepare_allocation(selection, accountKey, sessionId, prepared)) {
         core::log::write(core::log::Channel::server,
                          core::log::Level::warn,
                          "ev=bap svc=6 stage=allocation result=fail");

@@ -54,7 +54,7 @@ bool prepare_join(std::uint64_t sessionId,
     }
 
     AcquireSRWLockShared(&runtime::storage::g_stateLock);
-    const ActivityState& state = runtime::storage::g_states[core::settings::kLegacyAccount].activity;
+    const ActivityState& state = runtime::storage::g_activity;
     PendingMutation prepared{};
     const SessionRecord* record = prepare_base(state, sessionId, false, prepared);
     if (record != nullptr) {
@@ -86,7 +86,7 @@ bool prepare_grant(std::uint64_t sessionId,
     }
 
     AcquireSRWLockShared(&runtime::storage::g_stateLock);
-    const ActivityState& state = runtime::storage::g_states[core::settings::kLegacyAccount].activity;
+    const ActivityState& state = runtime::storage::g_activity;
     PendingMutation prepared{};
     const SessionRecord* record = prepare_base(state, sessionId, true, prepared);
     if (record != nullptr) {
@@ -115,7 +115,7 @@ bool prepare_release(std::uint64_t sessionId,
     }
 
     AcquireSRWLockShared(&runtime::storage::g_stateLock);
-    const ActivityState& state = runtime::storage::g_states[core::settings::kLegacyAccount].activity;
+    const ActivityState& state = runtime::storage::g_activity;
     PendingMutation prepared{};
     const SessionRecord* record = prepare_base(state, sessionId, true, prepared);
     if (record != nullptr) {

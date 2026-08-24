@@ -21,13 +21,13 @@ bool prepare_identity(std::uint64_t sessionId,
     const auto& root = runtime::storage::g_states[core::settings::kLegacyAccount];
     PendingMutation prepared{};
     const SessionRecord* record =
-        transactions::prepare_base(root.activity, root.account.primarySoid, sessionId, prepared);
+        transactions::prepare_base(runtime::storage::g_activity, root.account.primarySoid, sessionId, prepared);
     bool ready = record != nullptr && transactions::valid_identity(identity, record->memberKey);
     if (ready) {
         const bool changed = !record->membership.hasIdentity
                              || !transactions::equal(record->membership.identity, identity);
         if (changed
-            && (root.activity.stateRevision == activity::kMaximumRevision
+            && (runtime::storage::g_activity.stateRevision == activity::kMaximumRevision
                 || record->membership.revision == kMaximumMembershipRevision)) {
             ready = false;
         } else {
@@ -64,7 +64,7 @@ bool prepare_refresh(std::uint64_t sessionId,
     const auto& root = runtime::storage::g_states[core::settings::kLegacyAccount];
     PendingMutation prepared{};
     const SessionRecord* record =
-        transactions::prepare_base(root.activity, root.account.primarySoid, sessionId, prepared);
+        transactions::prepare_base(runtime::storage::g_activity, root.account.primarySoid, sessionId, prepared);
     if (record != nullptr) {
         if (record->membership.hasIdentity) {
             prepared.snapshot = transactions::make_snapshot(
@@ -97,13 +97,13 @@ bool prepare_acknowledgement(std::uint64_t sessionId,
     const auto& root = runtime::storage::g_states[core::settings::kLegacyAccount];
     PendingMutation prepared{};
     const SessionRecord* record =
-        transactions::prepare_base(root.activity, root.account.primarySoid, sessionId, prepared);
+        transactions::prepare_base(runtime::storage::g_activity, root.account.primarySoid, sessionId, prepared);
     bool ready = record != nullptr;
     if (ready) {
         const bool changed = record->membership.hasIdentity
                              && revision == record->membership.revision
                              && revision != record->membership.acknowledgedRevision;
-        if (changed && root.activity.stateRevision == activity::kMaximumRevision) {
+        if (changed && runtime::storage::g_activity.stateRevision == activity::kMaximumRevision) {
             ready = false;
         } else {
             prepared.acknowledgement = revision;

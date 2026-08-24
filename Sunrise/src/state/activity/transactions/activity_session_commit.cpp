@@ -21,7 +21,7 @@ bool commit(PendingAllocation& allocation) noexcept {
     }
 
     AcquireSRWLockExclusive(&runtime::storage::g_stateLock);
-    ActivityState& state = runtime::storage::g_states[core::settings::kLegacyAccount].activity;
+    ActivityState& state = runtime::storage::g_activity;
     if (!transactions::allocation_available(state)
         || state.stateRevision != prepared.expectedStateRevision
         || state.allocatorRevision != prepared.expectedAllocatorRevision

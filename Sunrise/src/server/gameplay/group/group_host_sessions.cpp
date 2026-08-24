@@ -183,7 +183,11 @@ void allocate_claimed_host_sessions() noexcept {
         // Outside the table lock: the allocation takes the State lock and the two may not nest.
         std::uint64_t sessionId = state::activity::kAbsentSessionId;
         state::activity::PendingAllocation allocation{};
-        if (!state::activity::prepare_session(sessionId, allocation)
+        // NAMED, not defaulted: the gameplay group host has no per-peer context yet (the
+        // plane is unwired in server_main), so it allocates from the legacy slot's band.
+        if (!state::activity::prepare_session(core::settings::kLegacyAccount,
+                                              sessionId,
+                                              allocation)
             || !state::activity::commit(allocation)) {
             // The account half is not loaded yet on an early slice, so this retries next slice.
             return;

@@ -88,7 +88,7 @@ bool commit(PendingMutation& mutation) noexcept {
     }
 
     AcquireSRWLockExclusive(&runtime::storage::g_stateLock);
-    ActivityState& state = runtime::storage::g_states[core::settings::kLegacyAccount].activity;
+    ActivityState& state = runtime::storage::g_activity;
     SessionRecord& record = state.sessions[prepared.targetSlot];
     if (state.stateRevision == kMaximumRevision
         || state.stateRevision != prepared.expectedStateRevision || !record.occupied

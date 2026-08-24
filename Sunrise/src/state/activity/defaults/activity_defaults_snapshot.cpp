@@ -20,7 +20,7 @@ namespace {
 /** Copies the immutable activity defaults published with the root State. */
 void snapshot(ActivityDefaults& output) noexcept {
     AcquireSRWLockShared(&runtime::storage::g_stateLock);
-    output = runtime::storage::g_states[core::settings::kLegacyAccount].activity.defaults;
+    output = runtime::storage::g_activity.defaults;
     ReleaseSRWLockShared(&runtime::storage::g_stateLock);
 }
 

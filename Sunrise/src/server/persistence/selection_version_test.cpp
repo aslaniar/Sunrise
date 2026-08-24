@@ -12,6 +12,7 @@
 #include <span>
 
 #include "../../core/logging/log.h"
+#include "../../core/settings/settings.h"
 #include "../../middleware/datagen/definitions.h"
 #include "../../middleware/datagen/family4/instance/instance_encoder.h"
 #include "../../middleware/datagen/family4/instance/layout.h"
@@ -21,6 +22,7 @@
 #include "../../middleware/web_service/messages/opcode504.h"
 #include "../../state/account/account_state.h"
 #include "../../state/account/inventory/inventory_state.h"
+#include "../../state/activity/runtime.h"
 #include "../../state/build_data/runtime.h"
 #include "../../state/runtime/runtime.h"
 #include "../web_service/web_service_runtime.h"
@@ -1002,6 +1004,106 @@ int run_selection_version_test(void* module) noexcept {
         harness.check(persistence::load_account(reloaded, reloadedUnlocks, reloadedFamily5, kSlot)
                           && equipped_subclass_soid(reloaded) == subclassSoid,
                       "success_persists_after_frames");
+    }
+
+    // THE MULTI-ACCOUNT PERSISTENCE GATES (the P2 different-account front): slot 1 is a
+    // first-class account - present in this database (fresh-seeded or ensured), loadable,
+    // carrying its authored spare subclasses, and writable by its own keyed persist flow
+    // without touching slot 0's rows.
+    {
+        state::AccountState slot0Before{};
+        state::unlocks::Table slot0UnlocksBefore{};
+        state::Family5State slot0Family5Before{};
+        harness.check(persistence::load_account(
+                          slot0Before, slot0UnlocksBefore, slot0Family5Before, kSlot),
+                      "slot0_baseline_loads");
+
+        const std::uint64_t authoredBand =
+            core::settings::get().accounts[1].account.primarySoid;
+        state::AccountState slot1{};
+        state::unlocks::Table slot1Unlocks{};
+        state::Family5State slot1Family5{};
+        harness.check(persistence::load_account(slot1, slot1Unlocks, slot1Family5, 1)
+                          && slot1.primarySoid != 0,
+                      "slot1_loads_from_database");
+        harness.check(slot1.primarySoid == authoredBand,
+                      "slot1_identity_is_the_authored_band");
+        harness.check(slot1.characterCount == 3, "slot1_carries_three_characters");
+
+        bool selectionChanged = false;
+        harness.check(state::set_selected_character(slot1.characters[0].soid,
+                                                    selectionChanged,
+                                                    1),
+                      "slot1_selects_its_character");
+        std::size_t equipableSubclasses = 0;
+        for (std::size_t index = 0; index < slot1.characters[0].storageItemCount; ++index) {
+            if (state::subclass_equip_request_valid(
+                    slot1.characters[0].storageItems[index].instanceSoid, 1)) {
+                ++equipableSubclasses;
+            }
+        }
+        harness.check(equipableSubclasses >= 2,
+                      "slot1_storage_holds_equipable_subclasses");
+
+        // The keyed ability persist: an opcode-2100/801 write for slot 1 lands on slot 1's
+        // row and leaves slot 0's row untouched. Both slots' published picks start from
+        // their loaded rows, so the compare is exact.
+        const state::CharacterState& slot0BeforeRow = slot0Before.characters[0];
+        harness.check(persistence::persist_ability_change(1), "slot1_ability_persists");
+        state::AccountState slot1After{};
+        state::unlocks::Table slot1AfterUnlocks{};
+        state::Family5State slot1AfterFamily5{};
+        harness.check(
+            persistence::load_account(slot1After, slot1AfterUnlocks, slot1AfterFamily5, 1),
+            "slot1_reload_after_persist");
+        const state::CharacterState& slot1Selected =
+            state::account_snapshot(1).characters[0];
+        const state::CharacterState& slot1AfterRow = slot1After.characters[0];
+        harness.check(
+            slot1AfterRow.movementAbilityEntry == slot1Selected.movementAbilityEntry
+                && slot1AfterRow.grenadeAbilityEntry == slot1Selected.grenadeAbilityEntry
+                && slot1AfterRow.superAbilityEntry == slot1Selected.superAbilityEntry
+                && slot1AfterRow.meleeAbilityEntry == slot1Selected.meleeAbilityEntry
+                && slot1AfterRow.classAbilityEntry == slot1Selected.classAbilityEntry,
+            "slot1_persist_roundtrips_its_picks");
+        state::AccountState slot0After{};
+        state::unlocks::Table slot0AfterUnlocks{};
+        state::Family5State slot0AfterFamily5{};
+        harness.check(persistence::load_account(
+                          slot0After, slot0AfterUnlocks, slot0AfterFamily5, kSlot),
+                      "slot0_reload_after_slot1_persist");
+        const state::CharacterState& slot0AfterRow = slot0After.characters[0];
+        harness.check(
+            slot0AfterRow.movementAbilityEntry == slot0BeforeRow.movementAbilityEntry
+                && slot0AfterRow.grenadeAbilityEntry == slot0BeforeRow.grenadeAbilityEntry
+                && slot0AfterRow.superAbilityEntry == slot0BeforeRow.superAbilityEntry
+                && slot0AfterRow.meleeAbilityEntry == slot0BeforeRow.meleeAbilityEntry
+                && slot0AfterRow.classAbilityEntry == slot0BeforeRow.classAbilityEntry,
+            "slot1_persist_leaves_slot0_rows");
+    }
+
+    // THE ACTIVITY REGISTRY GATES (the relocation): session records live in the process-wide
+    // registry, allocations name their owning account band explicitly, and releases free
+    // exactly the records committed.
+    {
+        std::uint64_t sessionA = 0;
+        std::uint64_t sessionB = 0;
+        state::activity::PendingAllocation allocationA{};
+        state::activity::PendingAllocation allocationB{};
+        harness.check(state::activity::prepare_session(kSlot, sessionA, allocationA),
+                      "activity_prepares_for_slot0");
+        harness.check(state::activity::commit(allocationA), "activity_commits_slot0_session");
+        harness.check(state::activity::prepare_session(1, sessionB, allocationB),
+                      "activity_prepares_for_slot1");
+        harness.check(state::activity::commit(allocationB), "activity_commits_slot1_session");
+        harness.check(sessionA != 0 && sessionB != 0 && sessionA != sessionB,
+                      "activity_sessions_are_distinct");
+        harness.check(state::activity::contains(sessionA) && state::activity::contains(sessionB),
+                      "activity_registry_holds_both_sessions");
+        state::activity::release_session(sessionA);
+        state::activity::release_session(sessionB);
+        harness.check(!state::activity::contains(sessionA) && !state::activity::contains(sessionB),
+                      "activity_release_frees_both_sessions");
     }
 
     persistence::shutdown();
