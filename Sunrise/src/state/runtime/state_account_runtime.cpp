@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <limits>
 
+#include "../../core/logging/log.h"
 #include "../../core/settings/provisioning.h"
 #include "../build_data/runtime.h"
 #include "runtime.h"
@@ -255,6 +256,43 @@ bool apply_ability_change(std::uint32_t definitionHash, const AccountKey key) no
         }
     }
     if (targetEntry == 0xFF) {
+        // TEMPORARY DIAGNOSTIC (the 2100 mutate front): name exactly what the equipped
+        // subclass offers, so the client-hash -> entry mapping can be built from evidence.
+        std::array<char, 512> line{};
+        const bool knownAsItem =
+            state::build_data::find_item_definition_hash(definitionHash, item);
+        int written = std::snprintf(line.data(),
+                                    line.size(),
+                                    "ev=ability_change stage=diag result=unmatched "
+                                    "hash=0x%08X list=%u entries=%u equippedDef=0x%08X "
+                                    "hashIsKnownItem=%d knownBucket=%u",
+                                    definitionHash,
+                                    detail.socketEntryListIndex,
+                                    list.entryCount,
+                                    slot->definitionHash,
+                                    knownAsItem ? 1 : 0,
+                                    knownAsItem ? item.bucketId : 0U);
+        for (std::uint8_t index = 0;
+             written > 0 && index < list.entryCount && index < 24;
+             ++index) {
+            const int part = std::snprintf(line.data() + written,
+                                           static_cast<std::size_t>(line.size()) -
+                                               static_cast<std::size_t>(written),
+                                            "|%u:p=0x%08X,g=%u,k=%u",
+                                            index,
+                                            entries.entries[index].plugSource,
+                                            entries.entries[index].group,
+                                            entries.entries[index].kind);
+            if (part <= 0) {
+                break;
+            }
+            written += part;
+        }
+        if (written > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             {line.data(), static_cast<std::size_t>(written)});
+        }
         ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
         return false;
     }
