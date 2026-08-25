@@ -48,17 +48,26 @@ bool process(const ServiceRoute& route,
         return middleware::bap::account_translation::encode_response(
             requestBody, account.primarySoid, output, written);
     }
-    case BodyCodec::activityHostManagerResponse:
-        return activity_host_manager::encode_response(requestBody,
-                                                      output,
-                                                      written,
-                                                      outcome.activitySessionAllocation,
-                                                      outcome.hasActivitySessionAllocation,
-                                                      accountKey);
-    case BodyCodec::activityMessageRequest:
+    case BodyCodec::activityHostManagerResponse: {
+        state::activity::PendingAllocation allocation{};
+        bool hasAllocation = false;
+        const bool encoded = activity_host_manager::encode_response(
+            requestBody, output, written, allocation, hasAllocation, accountKey);
+        if (hasAllocation) {
+            outcome.transaction = allocation;
+        }
+        return encoded;
+    }
+    case BodyCodec::activityMessageRequest: {
         written = 0;
-        return activity_message::process(
-            activitySessionId, requestBody, outcome.activityPlan, outcome.hasActivityTransaction);
+        activity_message::ActivityPlan plan{};
+        bool hasPlan = false;
+        const bool parsed = activity_message::process(activitySessionId, requestBody, plan, hasPlan);
+        if (hasPlan) {
+            outcome.transaction = plan;
+        }
+        return parsed;
+    }
     case BodyCodec::activityHostResponse: {
         const state::SignOnState& signOn = state::sign_on(accountKey);
         return middleware::bap::activity_host::encode_response(
@@ -77,13 +86,16 @@ bool process(const ServiceRoute& route,
             middleware::bap::family_unsubscription::parse(requestBody, outcome.unsubscription);
         return outcome.hasUnsubscription;
     }
-    case BodyCodec::matchmakingResponse:
-        return matchmaking::encode_response(matchmakingContext,
-                                            requestBody,
-                                            output,
-                                            written,
-                                            outcome.matchmakingMutation,
-                                            outcome.hasMatchmakingMutation);
+    case BodyCodec::matchmakingResponse: {
+        state::matchmaking::PendingMutation mutation{};
+        bool hasMutation = false;
+        const bool encoded = matchmaking::encode_response(
+            matchmakingContext, requestBody, output, written, mutation, hasMutation);
+        if (hasMutation) {
+            outcome.transaction = mutation;
+        }
+        return encoded;
+    }
     case BodyCodec::steamCertificate:
         return middleware::bap::certificate::encode_response(requestBody, output, written);
     case BodyCodec::userMessageResponse:
@@ -134,17 +146,18 @@ bool process(const ServiceRoute& route,
         // A subclass equip whose resident character object cannot be found leaves the plain
         // reply; the mutation and the delta run together in the outcome staging.
         if (message.opcode == 403) {
+            queuez::SubclassEquip equip{};
             if (webOutcome.hasSubclassEquip
                 && queuez::stage_subclass_equip(
-                    queuezState, webOutcome.subclassEquipSoid, outcome.subclassEquip)) {
-                outcome.hasSubclassEquip = true;
+                    queuezState, webOutcome.subclassEquipSoid, equip)) {
+                outcome.transaction = equip;
                 // THE PROMISED REPLY (the upstream 403 contract): the status-pair value names
                 // the exact staged Family-4 revision whose following Queuez frame makes it
                 // authoritative — the Client completes the optimistic equip against the store
                 // this value names (upstream: "Stage that revision before encoding the reply,
                 // or the Client completes against the old store").
                 middleware::web_service::StatusResponse status{};
-                status.value = outcome.subclassEquip.after.family4Version;
+                status.value = equip.after.family4Version;
                 if (!middleware::web_service::encode_response(
                         message,
                         middleware::web_service::ResponseShape::statusPair,
@@ -157,7 +170,6 @@ bool process(const ServiceRoute& route,
                     return false;
                 }
             } else {
-                outcome.subclassEquip = {};
                 // consume() left the 403 reply unencoded so the stage could promise its
                 // revision; a refused equip still answers with the plain status pair (the 505
                 // failure contract — the Client waits on the echoed transaction id).
@@ -173,26 +185,22 @@ bool process(const ServiceRoute& route,
                     return false;
                 }
             }
-        } else {
-            outcome.subclassEquip = {};
         }
         // An ability change stages the same way: the banner record is the moving object, and a
         // missing resident character leaves the reply on its own.
+        queuez::AbilityChange abilityChange{};
         if (webOutcome.hasAbilityChange
             && queuez::stage_ability_change(
-                queuezState, webOutcome.abilityChangeHash, outcome.abilityChange)) {
-            outcome.hasAbilityChange = true;
-        } else {
-            outcome.abilityChange = {};
+                queuezState, webOutcome.abilityChangeHash, abilityChange)) {
+            outcome.transaction = abilityChange;
         }
         // A subclass socket-entry selection stages the same way: the mutation commits in the
         // outcome staging, and the banner record carries the new ability buckets.
+        queuez::SubclassSelection subclassSelection{};
         if (webOutcome.hasSubclassSelection
             && queuez::stage_subclass_selection(
-                queuezState, webOutcome.subclassSelection, outcome.subclassSelection)) {
-            outcome.hasSubclassSelection = true;
-        } else {
-            outcome.subclassSelection = {};
+                queuezState, webOutcome.subclassSelection, subclassSelection)) {
+            outcome.transaction = subclassSelection;
         }
         return true;
     }

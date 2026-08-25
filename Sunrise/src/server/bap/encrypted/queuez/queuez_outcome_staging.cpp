@@ -72,7 +72,7 @@ bool stage_service_outcome(Scratch& scratch,
                                                   bannerAfter)) {
             after = bannerAfter;
         }
-    } else if (outcome.hasSubclassEquip) {
+    } else if (const auto* equip = transaction_if<queuez::SubclassEquip>(outcome)) {
         // THE UPSTREAM D5 DELIVERY ORDER (the 13.8 fix): stage every after-image frame
         // FIRST, persist LAST, and refuse the whole transaction on any failure — upstream
         // queuez_outcome_staging.cpp: "The State transaction must not commit when the
@@ -83,7 +83,7 @@ bool stage_service_outcome(Scratch& scratch,
         // reverts it. A crash mid-flow can lose at most an unpersisted in-memory swap.
         std::uint64_t displacedSoid = 0;
         if (!state::equip_subclass_item(
-                outcome.subclassEquip.itemSoid, displacedSoid, before.accountKey)) {
+                equip->itemSoid, displacedSoid, before.accountKey)) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::warn,
                              "ev=queuez stage=subclass_equip result=fail step=mutate");
@@ -106,12 +106,12 @@ bool stage_service_outcome(Scratch& scratch,
             }
         };
         if (!push::append_subclass_equip_notification(
-                scratch, outcome.subclassEquip, key, nonce, response, written)) {
+                scratch, *equip, key, nonce, response, written)) {
             revert_swap("push");
             return false;
         }
         middleware::secure_channel::advance_nonce(nonce);
-        after = outcome.subclassEquip.after;
+        after = equip->after;
         // The banner record re-encodes from the mutated account (the subclass list changed),
         // so the family-zero pair follows the family-four increment as a same-key refresh.
         // A pair that cannot be built refuses the transaction — the upstream's paired
@@ -122,7 +122,7 @@ bool stage_service_outcome(Scratch& scratch,
         SessionState bannerAfter{};
         if (!push::append_banner_refresh_notification(scratch,
                                                       bannerBefore,
-                                                      outcome.subclassEquip.characterSoid,
+                                                      equip->characterSoid,
                                                       key,
                                                       nonce,
                                                       response,
@@ -139,7 +139,7 @@ bool stage_service_outcome(Scratch& scratch,
         SessionState rosterAfter{};
         if (!push::append_roster_refresh_notification(scratch,
                                                       rosterBefore,
-                                                      outcome.subclassEquip.characterSoid,
+                                                      equip->characterSoid,
                                                       key,
                                                       nonce,
                                                       response,
@@ -152,7 +152,7 @@ bool stage_service_outcome(Scratch& scratch,
         // Persist LAST: only once every frame fit does the DB commit, so a promised
         // revision can never be persisted without its authoritative after-image.
         if (!sunrise::server::persistence::persist_subclass_equip(
-                outcome.subclassEquip.itemSoid, displacedSoid, before.accountKey)) {
+                equip->itemSoid, displacedSoid, before.accountKey)) {
             revert_swap("persist");
             return false;
         }
@@ -177,11 +177,11 @@ bool stage_service_outcome(Scratch& scratch,
         // owes a delayed re-send once the resolution settles (the fork's deferral — the
         // inline rebuild races the client's refresh).
         publication.armsAbilityRefresh = true;
-    } else if (outcome.hasAbilityChange) {
+    } else if (const auto* abilityChange = transaction_if<queuez::AbilityChange>(outcome)) {
         // The ability change moves only the family-zero banner record (the ability buckets
         // live there), so no Family-4 increment goes out. Persist-before-publish keeps the
         // same convergence contract as the subclass equip.
-        if (!state::apply_ability_change(outcome.abilityChange.definitionHash,
+        if (!state::apply_ability_change(abilityChange->definitionHash,
                                          before.accountKey)) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::warn,
@@ -209,7 +209,7 @@ bool stage_service_outcome(Scratch& scratch,
         // after-image goes out exactly like the subclass equip: one frame, flags 0, one object,
         // at exactly one above the peer's held version — before the family-zero banner refresh.
         if (!push::append_ability_change_notification(scratch,
-                                                      outcome.abilityChange,
+                                                      *abilityChange,
                                                       key,
                                                       nonce,
                                                       response,
@@ -220,14 +220,14 @@ bool stage_service_outcome(Scratch& scratch,
             return true;
         }
         middleware::secure_channel::advance_nonce(nonce);
-        after = outcome.abilityChange.after;
+        after = abilityChange->after;
         // The banner record re-encodes from the mutated account, so the family-zero pair
         // follows the family-four increment as a same-key refresh.
         const SessionState& bannerBefore = after;
         SessionState bannerAfter{};
         if (!push::append_banner_refresh_notification(scratch,
                                                       bannerBefore,
-                                                      outcome.abilityChange.characterSoid,
+                                                      abilityChange->characterSoid,
                                                       key,
                                                       nonce,
                                                       response,
@@ -244,18 +244,18 @@ bool stage_service_outcome(Scratch& scratch,
         const int lineWritten = std::snprintf(line.data(),
                                               line.size(),
                                               "ev=queuez stage=ability_change result=ok hash=0x%08X",
-                                              outcome.abilityChange.definitionHash);
+                                              abilityChange->definitionHash);
         if (lineWritten > 0) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::info,
                              {line.data(), static_cast<std::size_t>(lineWritten)});
         }
-    } else if (outcome.hasSubclassSelection) {
+    } else if (const auto* selection = transaction_if<queuez::SubclassSelection>(outcome)) {
         // The opcode-801 selection: commit the ability picks, persist them, re-stamp the
         // equipment hash (the picks mix into it), and refresh the banner record that carries
         // the new ability buckets — the same shape as the ability-change branch.
         state::PendingSubclassSelection selectionMutation =
-            outcome.subclassSelection.mutation;
+            selection->mutation;
         if (!state::commit_subclass_selection(selectionMutation, before.accountKey)) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::warn,
@@ -284,7 +284,7 @@ bool stage_service_outcome(Scratch& scratch,
         // mirror advanced with nothing delivered, so the next delivered frame skipped versions
         // and drew the client's out-of-order kick.)
         if (!push::append_subclass_selection_notification(scratch,
-                                                          outcome.subclassSelection,
+                                                          *selection,
                                                           key,
                                                           nonce,
                                                           response,
@@ -295,14 +295,14 @@ bool stage_service_outcome(Scratch& scratch,
             return true;
         }
         middleware::secure_channel::advance_nonce(nonce);
-        after = outcome.subclassSelection.after;
+        after = selection->after;
         // The banner record re-encodes from the mutated account, so the family-zero pair
         // follows the family-four increment as a same-key refresh.
         const SessionState& bannerBefore = after;
         SessionState bannerAfter{};
         if (!push::append_banner_refresh_notification(scratch,
                                                       bannerBefore,
-                                                      outcome.subclassSelection.characterSoid,
+                                                      selection->characterSoid,
                                                       key,
                                                       nonce,
                                                       response,
@@ -320,7 +320,7 @@ bool stage_service_outcome(Scratch& scratch,
             line.data(),
             line.size(),
             "ev=queuez stage=subclass_selection result=ok entry=%u",
-            outcome.subclassSelection.mutation.requestedEntry);
+            selection->mutation.requestedEntry);
         if (lineWritten > 0) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::info,

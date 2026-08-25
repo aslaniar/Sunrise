@@ -14,36 +14,32 @@ namespace sunrise::server::bap::encrypted::transactions {
  */
 bool commit(ServiceOutcome& outcome, Publication& publication) noexcept {
     publication = {};
-    const unsigned mutationCount = static_cast<unsigned>(outcome.hasActivitySessionAllocation)
-                                   + static_cast<unsigned>(outcome.hasActivityTransaction)
-                                   + static_cast<unsigned>(outcome.hasMatchmakingMutation);
-    // A service route may never combine independently versioned State transactions.
-    if (mutationCount > 1U) {
-        return false;
-    }
-    if (outcome.hasActivitySessionAllocation) {
-        const std::uint64_t sessionId = outcome.activitySessionAllocation.sessionId;
+    // No exclusivity guard: ServiceOutcome::Transaction is a variant, so "a service route may
+    // never combine independently versioned State transactions" is now a property of the type.
+    if (auto* allocation = transaction_if<state::activity::PendingAllocation>(outcome)) {
+        const std::uint64_t sessionId = allocation->sessionId;
         if (sessionId == state::activity::kAbsentSessionId
-            || !state::activity::commit(outcome.activitySessionAllocation)) {
+            || !state::activity::commit(*allocation)) {
             return false;
         }
         publication.activitySessionId = sessionId;
         publication.hasActivitySessionBinding = true;
         return true;
     }
-    if (outcome.hasActivityTransaction) {
-        if (outcome.activityPlan.mutationDomain == activity_message::MutationDomain::entitySlots) {
-            return state::activity::entity_slots::commit(outcome.activityPlan.entitySlotMutation);
+    if (auto* plan = transaction_if<activity_message::ActivityPlan>(outcome)) {
+        if (plan->mutationDomain == activity_message::MutationDomain::entitySlots) {
+            return state::activity::entity_slots::commit(plan->entitySlotMutation);
         }
-        if (outcome.activityPlan.mutationDomain == activity_message::MutationDomain::membership) {
-            return state::activity::membership::commit(outcome.activityPlan.membershipMutation);
+        if (plan->mutationDomain == activity_message::MutationDomain::membership) {
+            return state::activity::membership::commit(plan->membershipMutation);
         }
         // The retained patch epoch is connection state, so it commits nothing here.
-        return outcome.activityPlan.mutationDomain == activity_message::MutationDomain::patchEpoch;
+        return plan->mutationDomain == activity_message::MutationDomain::patchEpoch;
     }
-    if (outcome.hasMatchmakingMutation) {
-        return state::matchmaking::commit(outcome.matchmakingMutation);
+    if (auto* matchmaking = transaction_if<state::matchmaking::PendingMutation>(outcome)) {
+        return state::matchmaking::commit(*matchmaking);
     }
+    // The queuez transactions commit on the staging path, not here.
     return true;
 }
 

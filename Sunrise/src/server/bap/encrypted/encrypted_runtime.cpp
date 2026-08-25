@@ -155,7 +155,7 @@ bool consume(Session& session,
     // against the old store. No State commit, no queuez publish; the send nonce recomputes
     // from the un-advanced reply nonce (any partial push advances die with the discarded
     // frames).
-    if (!handled && outcome.hasSubclassEquip && sendsReply) {
+    if (!handled && transaction_if<queuez::SubclassEquip>(outcome) != nullptr && sendsReply) {
         middleware::web_service::Message refusalMessage{};
         if (middleware::web_service::parse_request(frame.body, refusalMessage)
             && middleware::web_service::encode_response(
@@ -191,8 +191,9 @@ bool consume(Session& session,
         // The refusal envelope itself could not be rebuilt; fall through and drop the
         // response like the upstream's silent refusal.
     }
-    if (handled && outcome.hasActivityTransaction) {
-        const auto& activityPlan = outcome.activityPlan;
+    const auto* activityPlanPtr = transaction_if<activity_message::ActivityPlan>(outcome);
+    if (handled && activityPlanPtr != nullptr) {
+        const auto& activityPlan = *activityPlanPtr;
         handled = route.responseMode == ResponseMode::uncorrelatedPush
                   && activity_transaction::stage_notifications(session,
                                                                scratch,

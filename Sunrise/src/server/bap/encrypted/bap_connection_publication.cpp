@@ -22,10 +22,11 @@ constexpr std::uint64_t kTransitionWindowMs = 15'000;
 /** Captures the connection fields one service outcome carries. */
 ConnectionFields connection_fields(const ServiceOutcome& outcome) noexcept {
     ConnectionFields fields{};
-    if (!outcome.hasActivityTransaction) {
+    const auto* planPtr = transaction_if<activity_message::ActivityPlan>(outcome);
+    if (planPtr == nullptr) {
         return fields;
     }
-    const auto& plan = outcome.activityPlan;
+    const auto& plan = *planPtr;
     if (plan.delivery == activity_message::Delivery::joinNotifications) {
         fields.joinMemberKey = plan.entitySlotMutation.memberKey;
         fields.joinCharacterSoid = plan.joinCharacterSoid;

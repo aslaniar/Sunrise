@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <span>
 #include <string_view>
+#include <variant>
 
 #include "../../../middleware/bap/family_unsubscription.h"
 #include "../../../middleware/bap/frame.h"
@@ -44,19 +45,33 @@ struct ServiceOutcome {
     queuez::ChangeCharacter changeCharacter{};
     bool hasSelectCharacter{};
     queuez::SelectCharacter selectCharacter{};
-    bool hasSubclassEquip{};
-    queuez::SubclassEquip subclassEquip{};
-    bool hasAbilityChange{};
-    queuez::AbilityChange abilityChange{};
-    bool hasSubclassSelection{};
-    queuez::SubclassSelection subclassSelection{};
-    bool hasActivitySessionAllocation{};
-    state::activity::PendingAllocation activitySessionAllocation{};
-    bool hasActivityTransaction{};
-    activity_message::ActivityPlan activityPlan{};
-    bool hasMatchmakingMutation{};
-    state::matchmaking::PendingMutation matchmakingMutation{};
+    /**
+     * One service owns at most one independently versioned transaction.
+     * This was a runtime count in `transactions::commit` that only summed THREE of the six
+     * kinds, so an equipment swap combined with an activity transaction passed unnoticed. The
+     * variant makes the combination unrepresentable, and the guard is gone with it.
+     */
+    using Transaction = std::variant<std::monostate,
+                                     state::activity::PendingAllocation,
+                                     activity_message::ActivityPlan,
+                                     state::matchmaking::PendingMutation,
+                                     queuez::SubclassEquip,
+                                     queuez::AbilityChange,
+                                     queuez::SubclassSelection>;
+    Transaction transaction{};
 };
+
+/** @return The service transaction of the requested type, or null for another route. */
+template <typename Transaction>
+[[nodiscard]] Transaction* transaction_if(ServiceOutcome& outcome) noexcept {
+    return std::get_if<Transaction>(&outcome.transaction);
+}
+
+/** @return The service transaction of the requested type, or null for another route. */
+template <typename Transaction>
+[[nodiscard]] const Transaction* transaction_if(const ServiceOutcome& outcome) noexcept {
+    return std::get_if<Transaction>(&outcome.transaction);
+}
 
 /** Outbound delivery behavior picked for one authenticated request service. */
 enum class ResponseMode : std::uint8_t {

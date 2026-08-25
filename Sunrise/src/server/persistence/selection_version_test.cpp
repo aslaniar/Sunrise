@@ -932,8 +932,7 @@ int run_selection_version_test(void* module) noexcept {
         harness.check(refuseEquip.after.family4Version == equip.after.family4Version + 1,
                       "refusal_version_exactly_plus_one");
         bap::encrypted::ServiceOutcome outcome{};
-        outcome.hasSubclassEquip = true;
-        outcome.subclassEquip = refuseEquip;
+        outcome.transaction = refuseEquip;
         bap::Scratch scratch{};
         std::array<std::byte, state::kAesKeySize> key{};
         std::array<std::byte, state::kBapNonceSize> nonce{};
@@ -974,8 +973,7 @@ int run_selection_version_test(void* module) noexcept {
         harness.check(queuez::stage_subclass_equip(equip.after, subclassSoid, okEquip),
                       "success_stages_at_plus_one");
         bap::encrypted::ServiceOutcome outcome{};
-        outcome.hasSubclassEquip = true;
-        outcome.subclassEquip = okEquip;
+        outcome.transaction = okEquip;
         bap::Scratch scratch{};
         std::array<std::byte, state::kAesKeySize> key{};
         std::array<std::byte, state::kBapNonceSize> nonce{};
