@@ -95,6 +95,8 @@ bool Parser::server_settings(server::Settings& output) noexcept {
     bool hasWorldPopulation = false;
     bool hasWorldPopulationCarrier = false;
     bool hasWorldPopulationSchemaHash = false;
+    bool hasMembershipSweep = false;
+    bool hasMembershipSweepDwell = false;
     bool hasGameplay = false;
     bool hasActivation = false;
     for (;;) {
@@ -233,6 +235,19 @@ bool Parser::server_settings(server::Settings& output) noexcept {
             }
             output.worldPopulationSchemaHash = static_cast<std::uint32_t>(value);
             hasWorldPopulationSchemaHash = true;
+        } else if (key == "membership_sweep") {
+            if (hasMembershipSweep || !boolean(output.membershipSweep)) {
+                return false;
+            }
+            hasMembershipSweep = true;
+        } else if (key == "membership_sweep_dwell_ms") {
+            std::uint64_t value = 0;
+            if (hasMembershipSweepDwell || !unsigned_integer(value)
+                || value > 0xFFFFFFFFULL) {
+                return false;
+            }
+            output.membershipSweepDwellMs = static_cast<std::uint32_t>(value);
+            hasMembershipSweepDwell = true;
         } else if (key == "gameplay") {
             if (hasGameplay || !gameplay_settings(output.gameplay)) {
                 return false;

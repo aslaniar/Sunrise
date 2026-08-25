@@ -10,6 +10,8 @@
 #include "../../../../../core/logging/log.h"
 #include "../../../../gameplay/gameplay_advertisement.h"
 #include "../../../../../state/activity/runtime.h"
+#include "../../../../../state/activity/membership/activity_membership_query.h"
+#include "../../../../../core/settings/settings.h"
 #include "../../../../gameplay/group/group_host_sessions.h"
 #include "activity_arrival.h"
 #include "activity_notification_frame.h"
@@ -21,6 +23,121 @@ namespace message = middleware::bap::activity_message::replicate_membership;
 
 /** The one published member always occupies slot zero of both top-level masks. */
 constexpr std::uint8_t kLocalMemberSlot = 0;
+
+/**
+ * INSTRUMENT (Track A, 2026-08-25): the shapes member slot 1 is swept through.
+ *
+ * The known-ACCEPTED artifact is our own solo body; the known-REJECTED one is the full
+ * mirrored row (FINDINGS 20.48). Everything between them is a cumulative build-up, so the
+ * first shape the client acknowledges names the field that was breaking it.
+ *
+ * ORDER IS DELIBERATE. `solo` sits LAST because an acknowledgement STOPS the republish loop
+ * and therefore ends the sweep: putting the known-good shape first would close the harness
+ * before any peer-bearing shape was tried. Reaching `solo` at all means every peer shape was
+ * refused, and whether the client then acks IS the meta-answer - if even our known-accepted
+ * body goes unacknowledged mid-session, the acknowledgement is not content-gated and the
+ * whole 20.48 reading needs revisiting.
+ */
+enum class PeerVariant : std::uint8_t {
+    /** memberKey alone. Tests whether ANY second row is structurally acceptable. */
+    keyOnly,
+    /** + accountSoid. */
+    keyAccount,
+    /** + joinIdentity. */
+    keyAccountJoin,
+    /** + the two int32 opaques. */
+    keyAccountJoinOpaquePair,
+    /** Every field, byte-identical to p2(35). Known REJECTED - the negative control. */
+    fullMirror,
+    /** No peer row at all. Known ACCEPTED - the terminal positive control. */
+    solo,
+};
+
+/** Shapes in the sweep. Kept beside the enum because both must move together. */
+constexpr std::uint64_t kPeerVariantCount = 6;
+/** Used when the configured dwell is zero. */
+constexpr std::uint32_t kDefaultSweepDwellMs = 30'000;
+
+/** @return Human-readable name of one swept shape, for the boot record. */
+[[nodiscard]] const char* variant_name(PeerVariant variant) noexcept {
+    switch (variant) {
+    case PeerVariant::keyOnly:
+        return "key_only";
+    case PeerVariant::keyAccount:
+        return "key_account";
+    case PeerVariant::keyAccountJoin:
+        return "key_account_join";
+    case PeerVariant::keyAccountJoinOpaquePair:
+        return "key_account_join_opaque";
+    case PeerVariant::fullMirror:
+        return "full_mirror";
+    case PeerVariant::solo:
+        return "solo";
+    }
+    return "unknown";
+}
+
+/**
+ * Picks the shape this body publishes.
+ * @param cycle Receives how many complete passes the sweep has made.
+ * @return fullMirror whenever the sweep is off, which is p2(35) byte for byte.
+ */
+[[nodiscard]] PeerVariant sweep_variant(std::uint64_t& cycle) noexcept {
+    cycle = 0;
+    const core::settings::server::Settings& server = core::settings::get().server;
+    if (!server.membershipSweep) {
+        return PeerVariant::fullMirror;
+    }
+    // One process-wide phase rather than one per session: both machines' bodies then carry the
+    // same shape at the same moment, which is what makes two logs comparable line for line.
+    static std::uint64_t startTick = 0;
+    const std::uint64_t now = GetTickCount64();
+    if (startTick == 0) {
+        startTick = now;
+    }
+    const std::uint32_t dwell = server.membershipSweepDwellMs == 0 ? kDefaultSweepDwellMs
+                                                                  : server.membershipSweepDwellMs;
+    const std::uint64_t step = (now - startTick) / dwell;
+    cycle = step / kPeerVariantCount;
+    return static_cast<PeerVariant>(step % kPeerVariantCount);
+}
+
+/**
+ * Writes one swept shape into the body.
+ * @param variant Shape to publish.
+ * @param peer The other joined session's identity.
+ * @param wire Receives the peer row and its presence flag.
+ */
+void apply_peer_variant(PeerVariant variant,
+                        const state::activity::membership::Identity& peer,
+                        message::MembershipSnapshot& wire) noexcept {
+    wire.peer = {};
+    wire.peerPresent = variant != PeerVariant::solo;
+    if (!wire.peerPresent) {
+        return;
+    }
+    // Cumulative by design: every case falls through to the next, so the shapes differ by
+    // exactly one addition and the first acknowledged one names the field.
+    wire.peer.memberKey = peer.memberKey;
+    if (variant == PeerVariant::keyOnly) {
+        return;
+    }
+    wire.peer.accountSoid = peer.accountSoid;
+    if (variant == PeerVariant::keyAccount) {
+        return;
+    }
+    wire.peer.field3 = peer.joinIdentity;
+    if (variant == PeerVariant::keyAccountJoin) {
+        return;
+    }
+    wire.peer.field1 = peer.smallOpaque;
+    wire.peer.field2 = peer.signedOpaque;
+    if (variant == PeerVariant::keyAccountJoinOpaquePair) {
+        return;
+    }
+    wire.peer.field5 = peer.opaqueSoid;
+    wire.peer.field6 = peer.secondaryOpaque;
+}
 
 /**
  * Maps a lock-consistent State snapshot into the fixed Middleware schema.
@@ -85,15 +202,10 @@ make_wire_snapshot(std::uint64_t sessionId,
     state::activity::ForeignPeerReason peerReason{};
     const bool havePeer =
         state::activity::foreign_member_identity(sessionId, peerIdentity, peerReason);
+    std::uint64_t sweepCycle = 0;
+    const PeerVariant variant = sweep_variant(sweepCycle);
     if (havePeer) {
-        wire.peer.memberKey = peerIdentity.memberKey;
-        wire.peer.field1 = peerIdentity.smallOpaque;
-        wire.peer.field2 = peerIdentity.signedOpaque;
-        wire.peer.field3 = peerIdentity.joinIdentity;
-        wire.peer.accountSoid = peerIdentity.accountSoid;
-        wire.peer.field5 = peerIdentity.opaqueSoid;
-        wire.peer.field6 = peerIdentity.secondaryOpaque;
-        wire.peerPresent = true;
+        apply_peer_variant(variant, peerIdentity, wire);
     }
     {
         // INSTRUMENT (FINDINGS 20.47): every type-12 body built anywhere converges here, so
@@ -127,12 +239,21 @@ make_wire_snapshot(std::uint64_t sessionId,
         }
     }
     if (havePeer) {
-        std::array<char, 128> line{};
+        std::array<char, 224> line{};
+        // ack= is the PREVIOUS body's verdict, which is exactly the correlation wanted: the
+        // shape named here is the one the client was holding when it decided. A flip to ack=1
+        // stops the republish loop, so the last shape logged before the log goes quiet is the
+        // accepted one.
         const int includedLine =
             std::snprintf(line.data(),
                           line.size(),
-                          "ev=activity stage=membership_peer result=included key=0x%016llX",
-                          static_cast<unsigned long long>(peerIdentity.memberKey));
+                          "ev=activity stage=membership_peer result=included key=0x%016llX "
+                          "variant=%s cycle=%llu ack=%d peer_row=%d",
+                          static_cast<unsigned long long>(peerIdentity.memberKey),
+                          variant_name(variant),
+                          static_cast<unsigned long long>(sweepCycle),
+                          state::activity::membership::acknowledged(sessionId) ? 1 : 0,
+                          wire.peerPresent ? 1 : 0);
         if (includedLine > 0) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::info,

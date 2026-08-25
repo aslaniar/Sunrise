@@ -89,6 +89,18 @@ struct Settings {
      * at the boot; the default is the corrected value (claims/refined-payload.md).
      */
     std::uint32_t worldPopulationSchemaHash{0x80806AC0U};
+    /**
+     * INSTRUMENT (Track A, 2026-08-25): cycle the shape of member slot 1 across successive
+     * republishes so ONE boot tests many candidate shapes instead of one.
+     *
+     * The client withholds its acknowledgement of every body carrying a peer row (FINDINGS
+     * 20.48), and `publishesMembership` republishes while unacknowledged - so the refusal
+     * loop is itself a free test harness. Off reproduces p2(35) exactly: the full mirrored
+     * row, every time.
+     */
+    bool membershipSweep{false};
+    /** Milliseconds one swept shape is held before advancing. Zero takes the default. */
+    std::uint32_t membershipSweepDwellMs{30'000};
 };
 
 } // namespace sunrise::core::settings::server
