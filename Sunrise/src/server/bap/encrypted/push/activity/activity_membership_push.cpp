@@ -82,7 +82,10 @@ make_wire_snapshot(std::uint64_t sessionId,
     // member slot 1. Without it the client's peer table holds only the local player and no
     // contact attempt can ever name anyone.
     state::activity::membership::Identity peerIdentity{};
-    if (state::activity::foreign_member_identity(sessionId, peerIdentity)) {
+    state::activity::ForeignPeerReason peerReason{};
+    const bool havePeer =
+        state::activity::foreign_member_identity(sessionId, peerIdentity, peerReason);
+    if (havePeer) {
         wire.peer.memberKey = peerIdentity.memberKey;
         wire.peer.field1 = peerIdentity.smallOpaque;
         wire.peer.field2 = peerIdentity.signedOpaque;
@@ -91,16 +94,49 @@ make_wire_snapshot(std::uint64_t sessionId,
         wire.peer.field5 = peerIdentity.opaqueSoid;
         wire.peer.field6 = peerIdentity.secondaryOpaque;
         wire.peerPresent = true;
+    }
+    {
+        // INSTRUMENT (FINDINGS 20.47): every type-12 body built anywhere converges here, so
+        // this line is the boring-path proof the encoder input stage ran at all - its absence
+        // means no membership body was due, which is a different finding from a refused one.
+        std::array<char, 160> line{};
+        int writtenLine = std::snprintf(line.data(),
+                                        line.size(),
+                                        "ev=activity stage=wire_snapshot session=%llu peer=%d",
+                                        static_cast<unsigned long long>(sessionId),
+                                        havePeer ? 1 : 0);
+        if (!havePeer) {
+            writtenLine = std::snprintf(line.data(),
+                                        line.size(),
+                                        "ev=activity stage=wire_snapshot session=%llu peer=0 "
+                                        "reason=%s",
+                                        static_cast<unsigned long long>(sessionId),
+                                        peerReason == state::activity::ForeignPeerReason::
+                                                           identity_missing
+                                            ? "identity_missing"
+                                            : (peerReason ==
+                                                       state::activity::ForeignPeerReason::
+                                                           destination_mismatch
+                                                   ? "destination_mismatch"
+                                                   : "none_joined"));
+        }
+        if (writtenLine > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::debug,
+                             {line.data(), static_cast<std::size_t>(writtenLine)});
+        }
+    }
+    if (havePeer) {
         std::array<char, 128> line{};
-        const int writtenLine =
+        const int includedLine =
             std::snprintf(line.data(),
                           line.size(),
                           "ev=activity stage=membership_peer result=included key=0x%016llX",
                           static_cast<unsigned long long>(peerIdentity.memberKey));
-        if (writtenLine > 0) {
+        if (includedLine > 0) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::info,
-                             {line.data(), static_cast<std::size_t>(writtenLine)});
+                             {line.data(), static_cast<std::size_t>(includedLine)});
         }
     }
     return wire;

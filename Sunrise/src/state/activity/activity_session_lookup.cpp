@@ -115,8 +115,10 @@ bool binding_matches(const SessionBinding& binding) noexcept {
 
 /** Copies another joined session's published identity from the same destination. */
 bool foreign_member_identity(const std::uint64_t ownSessionId,
-                             membership::Identity& output) noexcept {
+                             membership::Identity& output,
+                             ForeignPeerReason& reason) noexcept {
     output = {};
+    reason = ForeignPeerReason::none_joined;
     if (ownSessionId == kAbsentSessionId) {
         return false;
     }
@@ -127,17 +129,27 @@ bool foreign_member_identity(const std::uint64_t ownSessionId,
     if (own < kSessionCapacity) {
         const SessionRecord& ownRecord = state.sessions[own];
         for (const SessionRecord& record : state.sessions) {
+            if (record.sessionId == ownSessionId || !record.occupied || !record.joined) {
+                continue;
+            }
             // Same destination or not a peer at all: two players in different destinations
             // must never see each other's membership rows.
-            const bool candidate = record.occupied && record.joined
-                                   && record.membership.hasIdentity
-                                   && record.sessionId != ownSessionId
-                                   && same_destination(record.destination, ownRecord.destination);
-            if (candidate) {
-                output = record.membership.identity;
-                found = true;
-                break;
+            if (!same_destination(record.destination, ownRecord.destination)) {
+                // A joined session outside this destination is still evidence the table is
+                // not empty, so it outranks none_joined when nothing better appears.
+                if (reason == ForeignPeerReason::none_joined) {
+                    reason = ForeignPeerReason::destination_mismatch;
+                }
+                continue;
             }
+            if (!record.membership.hasIdentity) {
+                reason = ForeignPeerReason::identity_missing;
+                continue;
+            }
+            output = record.membership.identity;
+            reason = ForeignPeerReason::found;
+            found = true;
+            break;
         }
     }
     ReleaseSRWLockShared(&runtime::storage::g_stateLock);

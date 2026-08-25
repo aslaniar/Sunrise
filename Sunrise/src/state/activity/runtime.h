@@ -67,16 +67,32 @@ bool release_session(std::uint64_t sessionId) noexcept;
 [[nodiscard]] bool binding_matches(const SessionBinding& binding) noexcept;
 
 /**
+ * Reason codes for a missed foreign member, logged so a boot record names the broken link
+ * instead of leaving silence between "no push ran" and "the query refused".
+ */
+enum class ForeignPeerReason : std::uint8_t {
+    found,
+    /** No other occupied+joined session exists right now. */
+    none_joined,
+    /** Another joined session exists but has not published its identity yet. */
+    identity_missing,
+    /** A joined+published session exists, but outside this caller's destination. */
+    destination_mismatch,
+};
+
+/**
  * Copies another joined session's published client identity, for cross-client membership.
  * The candidate record must be occupied, joined, hold a published identity, and sit in the
  * SAME destination as the caller's session - two players in different destinations are not
  * peers. Ties resolve to the lowest table slot, which is stable while both stay joined.
  * @param ownSessionId The caller's committed activity session.
  * @param output Cleared, then receives the other session's published identity.
+ * @param reason Receives why no peer was found when false is returned.
  * @return True when exactly such a peer was found.
  */
 [[nodiscard]] bool foreign_member_identity(std::uint64_t ownSessionId,
-                                           membership::Identity& output) noexcept;
+                                           membership::Identity& output,
+                                           ForeignPeerReason& reason) noexcept;
 
 /**
  * Retains an exact record generation against release and allocator eviction.
