@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "logged_empty.h"
 
 namespace sunrise::steam::interfaces::tables {
 namespace {
@@ -98,7 +99,9 @@ void initialize_common() noexcept {
     fill_empty(g_appsMethods);
     fill_empty(g_inputMethods);
     fill_empty(g_utilsMethods);
-    fill_empty(g_friendsMethods);
+    // INSTRUMENT (FINDINGS 20.42): the friends table is where invite/presence questions
+    // would land, and its unimplemented slots must name themselves instead of vanishing.
+    fill_logged_empty<kFriendsMethodCount, 0>(g_friendsMethods);
     fill_empty(g_userMethods);
     fill_empty(g_userStatsMethods);
 

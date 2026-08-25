@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "logged_empty.h"
 
 namespace sunrise::steam::interfaces::tables {
 namespace {
@@ -94,7 +95,12 @@ void set_serialized_method(typename SerializedSignature<Slot>::Type function) no
 
 /** Sets up the networking tables and fills the slots they use. */
 void initialize_networking() noexcept {
-    fill_empty(g_matchmakingMethods);
+    fill_empty(g_httpMethods);
+
+    // INSTRUMENT (FINDINGS 20.42): the 33 matchmaking slots this shim does not implement
+    // must name themselves - a join decision that touches LeaveLobby or lobby-data getters
+    // is invisible behind the shared silent stub.
+    fill_logged_empty<kMatchmakingMethodCount, 1>(g_matchmakingMethods);
     fill_empty(g_clientMethods);
     fill_empty(g_serializedMethods);
     fill_empty(g_httpMethods);
