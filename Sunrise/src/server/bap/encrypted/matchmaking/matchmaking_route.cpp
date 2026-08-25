@@ -1,6 +1,9 @@
 #include "matchmaking_route.h"
 
 #include <Windows.h>
+#include "../../../../core/logging/log.h"
+#include <cstdio>
+#include <array>
 
 #include "../../../../middleware/bap/matchmaking/request/matchmaking_request_parser.h"
 #include "../../../../middleware/bap/matchmaking/response/matchmaking_response_encoder.h"
@@ -76,6 +79,35 @@ bool encode_response(state::matchmaking::ContextHandle context,
         response.advertisementId = latest.advertisementId;
         if (latest.hasDescriptor) {
             response.descriptor = std::span(latest.descriptor);
+        }
+    }
+    // INSTRUMENT (architecture-review-2026-08-25): nine svc-42 calls were made last boot and
+    // nothing recorded WHAT they asked for. Placement lives here - sessionSearch and
+    // locateSession are how a client finds a session to join - so the request kind is the one
+    // fact that confirms or kills the "we are one layer too deep" model. Strip once settled.
+    {
+        static constexpr const char* kKinds[] = {"none",
+                                                 "session_search",
+                                                 "advertisement_update",
+                                                 "advertisement_delete",
+                                                 "configuration",
+                                                 "rejoin_advertisement_update",
+                                                 "rejoin_advertisement_delete",
+                                                 "locate_session",
+                                                 "live_stats"};
+        const auto index = static_cast<std::size_t>(request.kind);
+        std::array<char, 160> line{};
+        const int count = std::snprintf(
+            line.data(),
+            line.size(),
+            "ev=matchmaking stage=request kind=%s served_descriptor=%u advertisement=0x%llX",
+            index < (sizeof kKinds / sizeof kKinds[0]) ? kKinds[index] : "unknown",
+            response.descriptor.empty() ? 0U : 1U,
+            static_cast<unsigned long long>(response.advertisementId));
+        if (count > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::info,
+                             {line.data(), static_cast<std::size_t>(count)});
         }
     }
     const bool encoded = service::response::encode(response, output, written);
