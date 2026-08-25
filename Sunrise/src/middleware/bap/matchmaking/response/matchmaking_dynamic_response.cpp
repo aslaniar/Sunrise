@@ -20,6 +20,12 @@ constexpr std::uint32_t kLocateResultField = 7;
 constexpr std::uint32_t kAdvertisementIdField = 1;
 /** Locate-result field 2 wraps the whole descriptor message. */
 constexpr std::uint32_t kLocateDescriptorField = 2;
+/** Search results live in service-43 field 3, which is a CONTAINER message. */
+constexpr std::uint32_t kSearchResultsField = 3;
+/** Container field 1 is the repeated SearchResult element (client table cap: 50). */
+constexpr std::uint32_t kSearchResultElementField = 1;
+/** Element field 1 wraps the descriptor, using the same table as the locate result. */
+constexpr std::uint32_t kSearchDescriptorField = 1;
 /** Descriptor-message field 1 carries the opaque descriptor bytes. */
 constexpr std::uint32_t kDescriptorBytesField = 1;
 /** Zero is never a valid assigned advertisement id. */
@@ -131,6 +137,65 @@ bool encode_locate_result(std::uint64_t advertisementId,
     Writer outerWriter(output.first(required));
     if (!outerWriter.write_length_delimited(kLocateResultField,
                                             output.subspan(resultOffset, resultSize))) {
+        return false;
+    }
+    written = required;
+    return true;
+}
+
+
+/** Encodes one search result carrying a single join descriptor. */
+bool encode_search_results(std::span<const std::byte> descriptor,
+                           std::span<std::byte> output,
+                           std::size_t& written) noexcept {
+    written = 0;
+    if (descriptor.size() != kJoinDescriptorSize) {
+        return false;
+    }
+
+    // Measured innermost first, exactly like encode_locate_result: each wrapper needs its
+    // child's encoded size before its own tag and length can be sized.
+    std::size_t bytesFieldSize = 0;      // 1: bytes[128]        inside DescriptorWrapper
+    std::size_t wrapperFieldSize = 0;    // 1: DescriptorWrapper inside SearchResult
+    std::size_t elementFieldSize = 0;    // 1: SearchResult      inside SearchResults
+    std::size_t required = 0;            // 3: SearchResults     inside the body
+    if (!protobuf::measure_length_delimited_field(
+            kDescriptorBytesField, descriptor.size(), bytesFieldSize)
+        || !protobuf::measure_length_delimited_field(
+            kSearchDescriptorField, bytesFieldSize, wrapperFieldSize)
+        || !protobuf::measure_length_delimited_field(
+            kSearchResultElementField, wrapperFieldSize, elementFieldSize)
+        || !protobuf::measure_length_delimited_field(
+            kSearchResultsField, elementFieldSize, required)) {
+        return false;
+    }
+    if (required > kMaximumResponseBodySize || output.size() < required) {
+        return false;
+    }
+
+    // Lay the nested messages out innermost first, then wrap outward, each wrapper moving its
+    // already encoded child into the same final payload range.
+    const std::size_t elementOffset = required - elementFieldSize;
+    const std::size_t wrapperOffset = elementOffset + elementFieldSize - wrapperFieldSize;
+    const std::size_t bytesOffset = wrapperOffset + wrapperFieldSize - bytesFieldSize;
+
+    Writer bytesWriter(output.subspan(bytesOffset, bytesFieldSize));
+    if (!bytesWriter.write_length_delimited(kDescriptorBytesField, descriptor)) {
+        return false;
+    }
+    Writer wrapperWriter(output.subspan(wrapperOffset, wrapperFieldSize));
+    if (!wrapperWriter.write_length_delimited(kSearchDescriptorField,
+                                              output.subspan(bytesOffset, bytesFieldSize))) {
+        return false;
+    }
+    Writer elementWriter(output.subspan(elementOffset, elementFieldSize));
+    if (!elementWriter.write_length_delimited(kSearchResultElementField,
+                                              output.subspan(wrapperOffset, wrapperFieldSize))) {
+        return false;
+    }
+    Writer outerWriter(output.first(required));
+    if (!outerWriter.write_length_delimited(kSearchResultsField,
+                                            output.subspan(elementOffset, elementFieldSize))) {
         return false;
     }
     written = required;

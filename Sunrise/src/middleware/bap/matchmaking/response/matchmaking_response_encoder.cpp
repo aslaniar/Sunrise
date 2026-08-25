@@ -44,7 +44,14 @@ bool encode(const Response& response, std::span<std::byte> output, std::size_t& 
     case RequestKind::rejoinAdvertisementDelete:
         return true;
     case RequestKind::sessionSearch:
-        return encode_empty_message(kSearchResultsField, output, written);
+        // An empty results field is what kept every client alone (FINDINGS 20.34): the client
+        // asks exactly once at setup:matchmaking and takes "nobody to join" as final. With a
+        // descriptor in hand we answer with one real result; without one we keep the old
+        // empty-but-present body, which is the correct "no sessions" answer.
+        if (response.descriptor.empty()) {
+            return encode_empty_message(kSearchResultsField, output, written);
+        }
+        return encode_search_results(response.descriptor, output, written);
     case RequestKind::advertisementUpdate:
         return encode_advertisement_id(true, response.advertisementId, output, written);
     case RequestKind::configuration:

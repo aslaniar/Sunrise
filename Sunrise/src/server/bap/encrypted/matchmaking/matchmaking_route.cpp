@@ -1,6 +1,8 @@
 #include "matchmaking_route.h"
 
 #include <Windows.h>
+#include "../../../../middleware/gameplay/descriptor/join_descriptor.h"
+#include "../../../gameplay/endpoint/gameplay_endpoint.h"
 #include "../../../../core/logging/log.h"
 #include <cstdio>
 #include <array>
@@ -53,6 +55,36 @@ static_assert(service::kJoinDescriptorSize == state::matchmaking::kDescriptorSiz
     return false;
 }
 
+
+/**
+ * Builds the join descriptor a searcher is handed.
+ *
+ * It points at THIS server's gameplay endpoint, which is the host of every instance here -
+ * so there is nothing to reverse-engineer: `descriptor::build` is the same constructor the
+ * citizen advertisement already uses, and p2(24) proved its output builds and ships.
+ *
+ * @param output Receives the 128-byte descriptor only when the channel can be advertised.
+ * @return True when the gameplay endpoint is bound and carries a usable identity.
+ */
+[[nodiscard]] bool build_search_descriptor(
+    std::array<std::byte, middleware::gameplay::descriptor::kDescriptorSize>& output) noexcept {
+    output = {};
+    if (!server::gameplay::endpoint::ready()) {
+        return false;
+    }
+    const server::gameplay::endpoint::Identity identity = server::gameplay::endpoint::identity();
+    const state::gameplay::Endpoint advertised = server::gameplay::endpoint::advertised();
+    if (identity.machineId == 0 || advertised.port == 0) {
+        return false;
+    }
+    middleware::gameplay::descriptor::JoinEndpoint join{};
+    join.address = advertised.address;
+    join.port = advertised.port;
+    join.machineId = identity.machineId;
+    join.onlineSessionId = identity.onlineSessionId;
+    return middleware::gameplay::descriptor::build(join, output);
+}
+
 } // namespace
 
 /** Prepares and encodes one kind-specific svc-43 response transaction. */
@@ -73,6 +105,16 @@ bool encode_response(state::matchmaking::ContextHandle context,
         response = {};
     }
 
+    // FINDINGS 20.34: an empty search result is what kept every client alone - it asks once
+    // at setup:matchmaking and takes "nobody" as final. Answer with one real result pointing
+    // at our own gameplay host. Shape from the client's own schema tables
+    // (claims/lane-svc43-field3.md), NOT guessed.
+    std::array<std::byte, middleware::gameplay::descriptor::kDescriptorSize> searchDescriptor{};
+    if (response.kind == service::RequestKind::sessionSearch
+        && build_search_descriptor(searchDescriptor)) {
+        response.descriptor = std::span<const std::byte>(searchDescriptor);
+    }
+
     state::matchmaking::LatestSnapshot latest{};
     if (response.kind == service::RequestKind::locateSession
         && state::matchmaking::latest_snapshot(context, latest)) {
@@ -81,6 +123,7 @@ bool encode_response(state::matchmaking::ContextHandle context,
             response.descriptor = std::span(latest.descriptor);
         }
     }
+    const bool encoded = service::response::encode(response, output, written);
     // INSTRUMENT (architecture-review-2026-08-25): nine svc-42 calls were made last boot and
     // nothing recorded WHAT they asked for. Placement lives here - sessionSearch and
     // locateSession are how a client finds a session to join - so the request kind is the one
@@ -100,17 +143,20 @@ bool encode_response(state::matchmaking::ContextHandle context,
         const int count = std::snprintf(
             line.data(),
             line.size(),
-            "ev=matchmaking stage=request kind=%s served_descriptor=%u advertisement=0x%llX",
+            "ev=matchmaking stage=request kind=%s served_descriptor=%u advertisement=0x%llX "
+            "encoded=%u bytes=%zu",
             index < (sizeof kKinds / sizeof kKinds[0]) ? kKinds[index] : "unknown",
             response.descriptor.empty() ? 0U : 1U,
-            static_cast<unsigned long long>(response.advertisementId));
+            static_cast<unsigned long long>(response.advertisementId),
+            encoded ? 1U : 0U,
+            written);
         if (count > 0) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::info,
                              {line.data(), static_cast<std::size_t>(count)});
         }
     }
-    const bool encoded = service::response::encode(response, output, written);
+
     state::matchmaking::erase_snapshot(latest);
     if (!encoded) {
         written = 0;
