@@ -69,6 +69,33 @@ void log_descriptor(const char* stage, std::span<const std::byte> descriptor) no
         core::log::write(core::log::Channel::server, core::log::Level::info,
                          {line.data(), static_cast<std::size_t>(count)});
     }
+
+    // FINDINGS 20.40: the decoded fields came back as PRINTABLE TEXT - "steami" where an IPv4
+    // belongs, "957860" where the public one does - while the tail at offset 110 decoded to a
+    // sensible Steam chat-lobby id. So the layout is partly right and partly wrong, and only
+    // the raw bytes say which parts. Dumped in halves because one 128-byte hex line plus its
+    // ASCII rendering does not fit a single log record.
+    for (std::size_t half = 0; half < 2; ++half) {
+        const std::size_t start = half * (join::kDescriptorSize / 2);
+        std::array<char, 160> hex{};
+        std::array<char, 80> text{};
+        for (std::size_t index = 0; index < join::kDescriptorSize / 2; ++index) {
+            static constexpr char kDigits[] = "0123456789ABCDEF";
+            const auto value = static_cast<unsigned char>(bytes[start + index]);
+            hex[index * 2] = kDigits[value >> 4];
+            hex[(index * 2) + 1] = kDigits[value & 0x0F];
+            text[index] = (value >= 0x20 && value < 0x7F) ? static_cast<char>(value) : '.';
+        }
+        std::array<char, 320> dump{};
+        const int written = std::snprintf(dump.data(), dump.size(),
+                                          "ev=matchmaking stage=descriptor where=raw off=%zu "
+                                          "hex=%s ascii=%s",
+                                          start, hex.data(), text.data());
+        if (written > 0) {
+            core::log::write(core::log::Channel::server, core::log::Level::info,
+                             {dump.data(), static_cast<std::size_t>(written)});
+        }
+    }
 }
 
 /**
@@ -104,6 +131,7 @@ void log_request_body(std::span<const std::byte> body) noexcept {
         core::log::write(core::log::Channel::server, core::log::Level::info,
                          {line.data(), static_cast<std::size_t>(count)});
     }
+
 }
 
 [[nodiscard]] bool prepare_fields(state::matchmaking::ContextHandle context,
