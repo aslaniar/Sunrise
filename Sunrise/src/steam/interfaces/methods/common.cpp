@@ -1,6 +1,10 @@
+#include <array>
+#include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 
+#include "../../../core/logging/log.h"
 #include "../../../core/settings/settings.h"
 #include "../internal.h"
 
@@ -11,11 +15,6 @@ namespace {
 constexpr int kUserStatsReceivedCallback = 1101;
 /** Steam result code for success. */
 constexpr int kResultOk = 1;
-/**
- * Account id for the single local user. The Client builds its whole account identity from it,
- * so the authored `primary_soid` is tied to this value and the two move together.
- */
-constexpr std::uint64_t kLocalSteamId = 0x0110000130AA9EC5ULL;
 /** Steam universe value for the public network. */
 constexpr int kConnectedUniverse = 1;
 /** FNV-1a 64-bit offset basis for stable action handles. */
@@ -71,12 +70,43 @@ UserHandle get_user_handle([[maybe_unused]] void* self) noexcept {
 }
 
 /**
+ * INSTRUMENT: names the identity this process answers with, once, on the first GetSteamID.
+ *
+ * Two instances reporting one user was invisible for weeks because nothing printed the value.
+ * This line is the boring-path proof that the configured (or default) identity actually ran:
+ * a boot record without it means the instrument never executed, not that the value is fine.
+ * Logging here is safe because settings and sinks initialize before the Client asks.
+ * @param value The SteamID64 about to be handed out.
+ */
+void report_identity_once(std::uint64_t value) noexcept {
+    static std::atomic<bool> reported{false};
+    bool expected = false;
+    if (!reported.compare_exchange_strong(expected, true)) {
+        return;
+    }
+    std::array<char, 96> line{};
+    const int written = std::snprintf(line.data(),
+                                      line.size(),
+                                      "ev=steamnet stage=identity result=resolved id=0x%016llX",
+                                      static_cast<unsigned long long>(value));
+    if (written > 0) {
+        core::log::write(core::log::Channel::client,
+                         core::log::Level::info,
+                         {line.data(), static_cast<std::size_t>(written)});
+    }
+}
+
+/**
  * @param result Caller storage for the SteamId.
  * @return The same storage, or null when none was given.
  */
 SteamId* get_steam_id([[maybe_unused]] void* self, SteamId* result) noexcept {
     if (result != nullptr) {
-        result->value = kLocalSteamId;
+        // FINDINGS 20.40: both machines presented this same user, so no client could rendezvous
+        // with the other. The value is authored per instance now; the default reproduces the
+        // historical constant exactly.
+        result->value = core::settings::get().steam.user.steamId;
+        report_identity_once(result->value);
     }
     return result;
 }
@@ -169,9 +199,21 @@ void* get_generic_interface([[maybe_unused]] void* self,
     if (user != user_handle() || pipe != pipe_handle() || version == nullptr) {
         return nullptr;
     }
-    return std::strcmp(version, versions::kSerializedNetworking) == 0
-               ? tables::serialized_networking()
-               : nullptr;
+    if (std::strcmp(version, versions::kSerializedNetworking) != 0) {
+        return nullptr;
+    }
+    // INSTRUMENT liveness: the Client asking for this table is the boring path. A boot whose
+    // record carries no such line never reached the serialized-networking layer at all, which
+    // is a different finding from "the table was handed out and nothing called it".
+    std::array<char, 96> line{};
+    const int written = std::snprintf(
+        line.data(), line.size(), "ev=steamnet stage=interface_acquired version=%s", version);
+    if (written > 0) {
+        core::log::write(core::log::Channel::client,
+                         core::log::Level::info,
+                         {line.data(), static_cast<std::size_t>(written)});
+    }
+    return tables::serialized_networking();
 }
 
 /** @return The user interface, or null for bad input. */

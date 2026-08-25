@@ -156,6 +156,46 @@ constexpr std::array<std::string_view, 13> kSupportedLanguages{
            != kSupportedLanguages.end();
 }
 
+/** @param value Authored SteamID64. @return True for an individual-account id with a user part. */
+[[nodiscard]] bool is_individual_steam_id(std::uint64_t value) noexcept {
+    return (value >> 32U) == (steam::kSteamIdIndividualPrefix >> 32U)
+           && (value & 0xFFFFFFFFULL) != 0;
+}
+
+/**
+ * Names a replaced SteamID64. Settings are read before the log sinks exist, so this early line
+ * is the only report.
+ * @param value Authored value that was not accepted.
+ * @return The built-in identity the process answers with instead.
+ */
+[[nodiscard]] std::uint64_t report_steam_id_fallback(std::uint64_t value) noexcept {
+    std::array<char, 128> line{};
+    const int written = std::snprintf(line.data(),
+                                      line.size(),
+                                      "ev=settings stage=steam_id result=fallback "
+                                      "authored=0x%016llX default=0x%016llX",
+                                      static_cast<unsigned long long>(value),
+                                      static_cast<unsigned long long>(steam::kDefaultSteamId));
+    if (written > 0) {
+        log::early({line.data(), std::min(static_cast<std::size_t>(written), line.size() - 1)});
+    }
+    return steam::kDefaultSteamId;
+}
+
+/**
+ * Resolves an authored SteamID64, falling back to the built-in identity for anything else.
+ * A wrong-shaped id would present an account identity the rest of Steam tooling cannot name,
+ * so only individual-account ids are accepted (the one shape the Client has ever presented).
+ * @param value Authored number.
+ * @return The accepted identity.
+ */
+[[nodiscard]] std::uint64_t resolve_steam_id(std::uint64_t value) noexcept {
+    if (!is_individual_steam_id(value)) {
+        return report_steam_id_fallback(value);
+    }
+    return value;
+}
+
 /**
  * Names a replaced language token. Settings are read before the log sinks exist, so this early
  * line is the only report.
@@ -242,6 +282,7 @@ bool Parser::steam_user_settings(steam::User& output) noexcept {
     }
     steam::User candidate = output;
     bool hasPersonaName = false;
+    bool hasSteamId = false;
     if (consume('}')) {
         return true;
     }
@@ -257,6 +298,15 @@ bool Parser::steam_user_settings(steam::User& output) noexcept {
                 return false;
             }
             hasPersonaName = true;
+        } else if (key == "steam_id") {
+            // One accepted shape only, like language: the value names this process to every
+            // peer, so a wrong number must not pass silently.
+            std::uint64_t value = 0;
+            if (hasSteamId || !unsigned_value(value)) {
+                return false;
+            }
+            candidate.steamId = resolve_steam_id(value);
+            hasSteamId = true;
         } else if (!skip_value(0)) {
             return false;
         }
