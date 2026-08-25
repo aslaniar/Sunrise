@@ -2,8 +2,12 @@
 
 #include <Windows.h>
 
+#include <array>
+#include <cstdio>
+
 #include "../../../../../middleware/bap/activity_message/replicate_membership.h"
 #include "../../../../../middleware/secure_channel/runtime.h"
+#include "../../../../../core/logging/log.h"
 #include "../../../../gameplay/gameplay_advertisement.h"
 #include "../../../../../state/activity/runtime.h"
 #include "../../../../gameplay/group/group_host_sessions.h"
@@ -74,6 +78,31 @@ make_wire_snapshot(std::uint64_t sessionId,
     } else {
         wire.citizen = {};
     }
+    // FINDINGS 20.44: a second joined session in this destination publishes its identity as
+    // member slot 1. Without it the client's peer table holds only the local player and no
+    // contact attempt can ever name anyone.
+    state::activity::membership::Identity peerIdentity{};
+    if (state::activity::foreign_member_identity(sessionId, peerIdentity)) {
+        wire.peer.memberKey = peerIdentity.memberKey;
+        wire.peer.field1 = peerIdentity.smallOpaque;
+        wire.peer.field2 = peerIdentity.signedOpaque;
+        wire.peer.field3 = peerIdentity.joinIdentity;
+        wire.peer.accountSoid = peerIdentity.accountSoid;
+        wire.peer.field5 = peerIdentity.opaqueSoid;
+        wire.peer.field6 = peerIdentity.secondaryOpaque;
+        wire.peerPresent = true;
+        std::array<char, 128> line{};
+        const int writtenLine =
+            std::snprintf(line.data(),
+                          line.size(),
+                          "ev=activity stage=membership_peer result=included key=0x%016llX",
+                          static_cast<unsigned long long>(peerIdentity.memberKey));
+        if (writtenLine > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::info,
+                             {line.data(), static_cast<std::size_t>(writtenLine)});
+        }
+    }
     return wire;
 }
 
@@ -105,6 +134,12 @@ bool append_membership_notification(Scratch& scratch,
                                      nonce,
                                      response,
                                      written);
+    if (!encoded) {
+        // A refused body used to fail silently and read as "no push was due". Name it.
+        core::log::write(core::log::Channel::server,
+                         core::log::Level::warn,
+                         "ev=activity stage=membership result=encode_fail");
+    }
     SecureZeroMemory(scratch.responseBody.data(), message::encoded_size(snapshot));
     if (encoded) {
         middleware::secure_channel::advance_nonce(nonce);

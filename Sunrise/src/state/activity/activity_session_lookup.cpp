@@ -113,6 +113,37 @@ bool binding_matches(const SessionBinding& binding) noexcept {
     return matches;
 }
 
+/** Copies another joined session's published identity from the same destination. */
+bool foreign_member_identity(const std::uint64_t ownSessionId,
+                             membership::Identity& output) noexcept {
+    output = {};
+    if (ownSessionId == kAbsentSessionId) {
+        return false;
+    }
+    AcquireSRWLockShared(&runtime::storage::g_stateLock);
+    const ActivityState& state = runtime::storage::g_activity;
+    const std::size_t own = transactions::find_session(state, ownSessionId);
+    bool found = false;
+    if (own < kSessionCapacity) {
+        const SessionRecord& ownRecord = state.sessions[own];
+        for (const SessionRecord& record : state.sessions) {
+            // Same destination or not a peer at all: two players in different destinations
+            // must never see each other's membership rows.
+            const bool candidate = record.occupied && record.joined
+                                   && record.membership.hasIdentity
+                                   && record.sessionId != ownSessionId
+                                   && same_destination(record.destination, ownRecord.destination);
+            if (candidate) {
+                output = record.membership.identity;
+                found = true;
+                break;
+            }
+        }
+    }
+    ReleaseSRWLockShared(&runtime::storage::g_stateLock);
+    return found;
+}
+
 /** Retains an exact record generation against release and allocator eviction. */
 bool retain_binding(const SessionBinding& binding) noexcept {
     AcquireSRWLockExclusive(&runtime::storage::g_stateLock);

@@ -112,7 +112,7 @@ constexpr std::uint64_t kDescriptorCount = 128;
 /** Writes all 64 state-zero regions and the host-present tail. */
 bool write_region_block(encoding::bits::Writer& writer,
                         const MembershipSnapshot& snapshot) noexcept {
-    bool encoded = writer.bit_count() == kRegionBlockStartBit;
+    bool encoded = writer.bit_count() == region_block_start_bit(snapshot);
     for (std::size_t bubble = 0; encoded && bubble < kRegionCount; ++bubble) {
         encoded = write_region(writer, bubble, snapshot);
     }

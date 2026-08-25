@@ -67,6 +67,18 @@ bool release_session(std::uint64_t sessionId) noexcept;
 [[nodiscard]] bool binding_matches(const SessionBinding& binding) noexcept;
 
 /**
+ * Copies another joined session's published client identity, for cross-client membership.
+ * The candidate record must be occupied, joined, hold a published identity, and sit in the
+ * SAME destination as the caller's session - two players in different destinations are not
+ * peers. Ties resolve to the lowest table slot, which is stable while both stay joined.
+ * @param ownSessionId The caller's committed activity session.
+ * @param output Cleared, then receives the other session's published identity.
+ * @return True when exactly such a peer was found.
+ */
+[[nodiscard]] bool foreign_member_identity(std::uint64_t ownSessionId,
+                                           membership::Identity& output) noexcept;
+
+/**
  * Retains an exact record generation against release and allocator eviction.
  * @param binding Immutable identity a consumer intends to hold.
  * @return True when the binding still matches and its retain count can advance.

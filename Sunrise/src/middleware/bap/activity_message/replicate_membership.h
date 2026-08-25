@@ -24,6 +24,13 @@ inline constexpr std::size_t kCitizenEncodedSize =
     kEncodedSize + gameplay::descriptor::kDescriptorSize;
 
 /**
+ * Bits one populated member row adds over the 3 absent bits that otherwise hold its slot.
+ * Derived from the fixed layout: the member table spans bits 65..834 (769 bits) with the
+ * local row plus 31 absent slots, which makes a populated row 676 bits; 676 minus 3 is 673.
+ */
+inline constexpr std::size_t kPeerRowExtraBits = 673;
+
+/**
  * One remote-citizen advertisement placed in a single region record.
  * The record is picked by region index. The client adopts only the record whose index matches
  * its pending region.
@@ -54,18 +61,40 @@ struct MembershipSnapshot final {
     std::uint32_t epoch{};
     /** Transition token copied into every member lane of every region. */
     std::uint8_t transitionToken{};
+    /**
+     * FINDINGS 20.44: another joined session in the same destination publishes its identity
+     * into member slot 1, so the client's own peer table gains peer # 1. The row shape mirrors
+     * the local row exactly; whether the client accepts that for a remote player is exactly
+     * what the next boot tests.
+     */
+    client_identity::ClientIdentity peer{};
+    bool peerPresent{};
 };
 
-/** @return Encoded byte size for one snapshot, which grows with a citizen advertisement. */
+/** @return Bits the whole body carries before byte padding. */
+[[nodiscard]] constexpr std::size_t
+meaningful_bit_count(const MembershipSnapshot& snapshot) noexcept {
+    std::size_t bits = kMeaningfulBitCount;
+    if (snapshot.peerPresent) {
+        bits += kPeerRowExtraBits;
+    }
+    if (snapshot.citizen.present) {
+        bits += kDescriptorBitCount;
+    }
+    return bits;
+}
+
+/** @return Encoded byte size for one snapshot: meaningful bits padded to a whole byte. */
 [[nodiscard]] constexpr std::size_t encoded_size(const MembershipSnapshot& snapshot) noexcept {
-    return snapshot.citizen.present ? kCitizenEncodedSize : kEncodedSize;
+    const std::size_t bits = meaningful_bit_count(snapshot);
+    return bits / 8 + (bits % 8 != 0 ? 1 : 0);
 }
 
 /**
  * Encodes one full-player membership snapshot. No allocation.
  * @param snapshot Checked identity, revision, transition, and host-echo values.
  * @param output Caller storage, left unchanged when validation fails or it is too small.
- * @param written Receives 3,746 on success or zero on failure.
+ * @param written Receives the encoded byte count on success or zero on failure.
  * @return True when the host-present body was encoded.
  */
 [[nodiscard]] bool encode_replicate_membership(const MembershipSnapshot& snapshot,
@@ -79,23 +108,41 @@ inline constexpr std::size_t kRegionBlockStartBit = 835;
 /** The host-present region block ends before top-level field four. */
 inline constexpr std::size_t kRegionBlockEndBit = 29'899;
 
+/** @return Bit at which the region block starts for one snapshot. */
+[[nodiscard]] constexpr std::size_t
+region_block_start_bit(const MembershipSnapshot& snapshot) noexcept {
+    return snapshot.peerPresent ? kRegionBlockStartBit + kPeerRowExtraBits
+                                : kRegionBlockStartBit;
+}
+
 /** @return Bit at which the region block ends for one snapshot. */
 [[nodiscard]] constexpr std::size_t
 region_block_end_bit(const MembershipSnapshot& snapshot) noexcept {
-    return snapshot.citizen.present ? kRegionBlockEndBit + kDescriptorBitCount : kRegionBlockEndBit;
+    std::size_t bits = kRegionBlockEndBit;
+    if (snapshot.peerPresent) {
+        bits += kPeerRowExtraBits;
+    }
+    if (snapshot.citizen.present) {
+        bits += kDescriptorBitCount;
+    }
+    return bits;
 }
 
 /** @return True when the teleport slice-set index fits its fixed wire field. */
 [[nodiscard]] bool valid(const MembershipSnapshot& snapshot) noexcept;
 
 /**
- * Writes the one populated member and 31 absent member slots.
+ * Writes the populated members and the absent member slots after them.
  * @param writer Fixed-buffer writer positioned at bit 65.
- * @param identity Exact client identity accepted for the current join.
+ * @param identity Exact client identity accepted for the current join; occupies slot 0.
+ * @param peer The other joined session's identity; occupies slot 1 when present.
+ * @param peerPresent True when a peer row is published this revision.
  * @return True when the writer reaches the region-block presence bit.
  */
 [[nodiscard]] bool write_member_table(encoding::bits::Writer& writer,
-                                      const client_identity::ClientIdentity& identity) noexcept;
+                                      const client_identity::ClientIdentity& identity,
+                                      const client_identity::ClientIdentity& peer,
+                                      bool peerPresent) noexcept;
 
 /**
  * Writes all 64 state-zero regions and the host-present tail.

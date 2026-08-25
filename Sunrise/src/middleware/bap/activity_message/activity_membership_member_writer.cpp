@@ -83,6 +83,23 @@ constexpr std::uint16_t kPlayerBlobByteCount = 18;
     return writer.write(0, 1);
 }
 
+/** Writes the populated row for one member, then its trailing state bits. */
+[[nodiscard]] bool write_member_row(encoding::bits::Writer& writer,
+                                    const client_identity::ClientIdentity& identity) noexcept {
+    const std::uint32_t field1Wire = std::bit_cast<std::uint32_t>(identity.field1) + kField1Bias;
+    const std::uint32_t field2Wire = std::bit_cast<std::uint32_t>(identity.field2) + kField2Bias;
+    // The trailing 3+1+5 bits mirror the local row: presence of the nested block's tail, a
+    // set flag, and the zero leave reason at bias 1. Whether a REMOTE member carries the same
+    // values is exactly what the next boot observes.
+    return writer.write(1, 1) && write_member_key(writer, identity.memberKey)
+           && writer.write(field1Wire, 10) && writer.write(field2Wire, 32)
+           && writer.write(identity.field3, 64) && writer.write(identity.accountSoid, 64)
+           && writer.write(identity.field5, 64) && writer.write(identity.field6, 64)
+           && writer.write(1, 1) && writer.write(1, 1)
+           && write_player_identity(writer, identity) && writer.write(0, 3)
+           && writer.write(1, 1) && writer.write(kLeaveReasonWire, 5);
+}
+
 } // namespace
 
 /** Checks the one field that could otherwise encode outside its own wire width. */
@@ -92,22 +109,21 @@ bool valid(const MembershipSnapshot& snapshot) noexcept {
            && snapshot.teleport.sliceSetIndex <= authoritative::kMaximumSliceSetIndex;
 }
 
-/** Writes the one populated member and 31 absent member slots. */
+/** Writes the populated members and the absent slots after them. */
 bool write_member_table(encoding::bits::Writer& writer,
-                        const client_identity::ClientIdentity& identity) noexcept {
-    const std::uint32_t field1Wire = std::bit_cast<std::uint32_t>(identity.field1) + kField1Bias;
-    const std::uint32_t field2Wire = std::bit_cast<std::uint32_t>(identity.field2) + kField2Bias;
-    bool encoded = writer.bit_count() == kMemberStartBit && writer.write(1, 1)
-                   && write_member_key(writer, identity.memberKey) && writer.write(field1Wire, 10)
-                   && writer.write(field2Wire, 32) && writer.write(identity.field3, 64)
-                   && writer.write(identity.accountSoid, 64) && writer.write(identity.field5, 64)
-                   && writer.write(identity.field6, 64) && writer.write(1, 1) && writer.write(1, 1)
-                   && write_player_identity(writer, identity) && writer.write(0, 3)
-                   && writer.write(1, 1) && writer.write(kLeaveReasonWire, 5);
-    for (std::size_t member = 1; encoded && member < kMemberCount; ++member) {
+                        const client_identity::ClientIdentity& identity,
+                        const client_identity::ClientIdentity& peer,
+                        bool peerPresent) noexcept {
+    bool encoded = writer.bit_count() == kMemberStartBit && write_member_row(writer, identity);
+    if (encoded && peerPresent) {
+        encoded = write_member_row(writer, peer);
+    }
+    for (std::size_t member = peerPresent ? 2 : 1; encoded && member < kMemberCount; ++member) {
         encoded = writer.write(0, kAbsentMemberBitCount);
     }
-    return encoded && writer.bit_count() + 1 == kRegionBlockStartBit;
+    return encoded && writer.bit_count() + 1 == kRegionBlockStartBit + (peerPresent
+                                                                            ? kPeerRowExtraBits
+                                                                            : 0);
 }
 
 } // namespace sunrise::middleware::bap::activity_message::replicate_membership
