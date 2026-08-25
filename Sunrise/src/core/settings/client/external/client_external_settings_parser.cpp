@@ -71,6 +71,8 @@ bool Parser::client_external_settings(external::Settings& output) noexcept {
     bool hasHost = false;
     bool hasConfigUrl = false;
     bool hasConfigGuid = false;
+    bool hasPeerSubnet = false;
+    bool hasPeerPrefixBits = false;
     if (consume('}')) {
         return true;
     }
@@ -104,6 +106,24 @@ bool Parser::client_external_settings(external::Settings& output) noexcept {
                 return false;
             }
             hasConfigGuid = true;
+        } else if (key == "peer_subnet") {
+            std::string_view value;
+            // A dotted quad only, like every other address key. Pairs with peer_prefix_bits;
+            // neither does anything without the other.
+            if (hasPeerSubnet || !string(value)
+                || !address::parse_ipv4(value, candidate.peerSubnet)) {
+                return false;
+            }
+            hasPeerSubnet = true;
+        } else if (key == "peer_prefix_bits") {
+            std::uint64_t value = 0;
+            // 1..32. Zero is the disabled default and is expressed by omitting the key, so an
+            // explicit zero is refused rather than silently meaning "off".
+            if (hasPeerPrefixBits || !unsigned_integer(value) || value == 0 || value > 32) {
+                return false;
+            }
+            candidate.peerPrefixBits = static_cast<std::uint8_t>(value);
+            hasPeerPrefixBits = true;
         } else if (!skip_value(0)) {
             return false;
         }

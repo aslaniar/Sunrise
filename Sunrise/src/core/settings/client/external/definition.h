@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <cstddef>
 
 namespace sunrise::core::settings::client::external {
@@ -29,6 +30,22 @@ struct Settings {
     std::array<unsigned char, kAddressOctets> address{127, 0, 0, 1};
     /** Answered to the Client's config URL getter. Must be a route the external server serves. */
     std::array<char, kConfigUrlCapacity> configUrl{"https://127.0.0.1/config/"};
+    /**
+     * Subnet whose addresses a client may reach DIRECTLY, bypassing the single-address
+     * redirect. This exists for one reason: a posse (the session behind a fireteam) is
+     * peer-to-peer - one client hosts and the others connect to it - so with every
+     * destination rewritten to the server, a second player can never reach the first
+     * (claims/posse-transport-options.md).
+     *
+     * prefixBits ZERO DISABLES IT, and that is the default: with no prefix the policy is
+     * byte-for-byte the old fail-closed one, every destination redirected to the server.
+     * A prefix must be set deliberately, and should be the narrowest that covers the peers
+     * (a LAN, e.g. 192.168.1.0/24).
+     */
+    std::array<unsigned char, kAddressOctets> peerSubnet{};
+    /** Prefix length of peerSubnet, 1..32. Zero means no peer is directly reachable. */
+    std::uint8_t peerPrefixBits{};
+
     /** Answered to the config token getter. The Client compares it against manifest field 5. */
     std::array<char, kConfigGuidCapacity> configGuid{"d2legacy-0000-0000-0000-000000000001"};
 };
