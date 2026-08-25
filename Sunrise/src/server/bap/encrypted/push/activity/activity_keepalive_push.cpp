@@ -6,6 +6,7 @@
 #include <cstdio>
 
 #include "../../../../../core/logging/log.h"
+#include "../../../../../core/settings/settings.h"
 #include "../../../../../state/activity/definition.h"
 #include "../../../../../state/activity/membership/activity_membership_query.h"
 #include "../../../../../state/runtime/runtime.h"
@@ -123,6 +124,73 @@ bool consume_activity_keepalive(Session& session,
         // membership push on it leaves the transition running with no world entered.
         return publish_frame(
             session, scratch, response, written, framedSize, nextSendNonce, published);
+    }
+    if (session.activityRole == ActivityClientRole::publicTarget) {
+        // This link owes exactly one membership body: the client's msg-12 handler is the only
+        // writer of the flag that binds a world container to this ActivityClient, and until that
+        // bind lands its join grant has no view - which is why the instance stayed PRIVATE
+        // (FINDINGS 20.28).
+        //
+        // The body is the PRIVATE link's member table, sent verbatim on this envelope. Quoted
+        // from upstream because getting it wrong destroys the player object:
+        // "The client matches itself by the key at `client+27696`, which is its machine id and is
+        // the same on both links, so only the private snapshot carries a member the client
+        // recognises as the local player. A body carrying anything else makes the client prune the
+        // member and destroy the player it holds."
+        //
+        // Read, never committed: prepare_refresh captures without changing State, and this link
+        // must not move the private session's membership revision.
+        state::activity::membership::PendingMutation staged{};
+        bool appended = false;
+        if (core::settings::get().server.activation.activityPublicMembership
+            && !session.activityPublicMembershipSent) {
+            const std::uint64_t privateSessionId = state::activity::membership::live_region_session(
+                state::activity::kAbsentSessionId);
+            // Zero until the private link's client publishes its identity; before that the table
+            // holds only the seed placeholder, which the client does not match either.
+            const bool identityPublished =
+                privateSessionId != state::activity::kAbsentSessionId
+                && state::activity::membership::join_identity(privateSessionId) != 0;
+            const bool hasSnapshot =
+                identityPublished
+                && state::activity::membership::prepare_refresh(
+                    privateSessionId, kCurrentRevision, kNoBubble, staged)
+                && staged.hasSnapshot;
+            if (hasSnapshot) {
+                activity_message::ActivityPlan plan{};
+                plan.sessionId = session.activitySessionId;
+                plan.membershipMutation = staged;
+                appended = append_membership_notification(
+                    scratch, plan, key, nextSendNonce, scratch.framed, framedSize);
+                published = appended || published;
+            }
+            SecureZeroMemory(&staged, sizeof staged);
+        }
+        // The public target owns its own epoch and roster; it must not advertise another target.
+        published = append_roster_notification(
+                        session, scratch, key, nextSendNonce, scratch.framed, framedSize, false)
+                    || published;
+        std::array<char, 128> line{};
+        const int count = std::snprintf(line.data(),
+                                        line.size(),
+                                        "ev=activity stage=public_membership result=%s "
+                                        "appended=%u sent=%u",
+                                        published ? "ok" : "fail",
+                                        appended ? 1U : 0U,
+                                        session.activityPublicMembershipSent ? 1U : 0U);
+        if (count > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::debug,
+                             {line.data(), static_cast<std::size_t>(count)});
+        }
+        const bool delivered = publish_frame(
+            session, scratch, response, written, framedSize, nextSendNonce, published);
+        if (delivered && appended) {
+            // Latched on delivery, not at encode: an encoded body the client never saw is not a
+            // send, and this link never acknowledges one.
+            session.activityPublicMembershipSent = true;
+        }
+        return delivered;
     }
 
     // The client applies one membership update per revision and drops repeats, so an already

@@ -1,4 +1,5 @@
 #include "activity_message_route.h"
+#include "../../../gameplay/group/group_host_sessions.h"
 
 #include <algorithm>
 #include <array>
@@ -162,12 +163,29 @@ void report_message(std::uint32_t messageType,
     const std::size_t reserve =
         core::settings::server::gameplay::effective_reserve(core::settings::get().server.gameplay);
     const std::size_t granted = state::activity::entity_slots::kSlotCount - reserve;
-    if (!service::join_request::parse_join_request(request.payload, parsed)
-        || parsed.sessionId != request.accountHandle
-        || !state::activity::entity_slots::prepare_join(
+    if (!service::join_request::parse_join_request(request.payload, parsed)) {
+        return false;
+    }
+    // Normally a join may only name the session THIS link allocated. The one exception is the
+    // second half of the client's activity pair: a join naming a session this server ADVERTISED
+    // in a citizen descriptor is the client taking the bait, and refusing it is what kept every
+    // instance PRIVATE (FINDINGS 20.28 - activity_host_changed reported
+    // `instance=PRIVATE CURRENT` with a blank ah-sid and never moved).
+    server::gameplay::group::HostSessionBinding host{};
+    const bool namesOwnSession = parsed.sessionId == request.accountHandle;
+    const bool namesAdvertisedHost =
+        !namesOwnSession
+        && server::gameplay::group::host_session_for_activity(parsed.sessionId, host)
+        && state::activity::binding_matches(host.target);
+    if (!namesOwnSession && !namesAdvertisedHost) {
+        return false;
+    }
+    if (!state::activity::entity_slots::prepare_join(
             parsed.sessionId, parsed.memberKey, granted, reserve, plan.entitySlotMutation)) {
         return false;
     }
+    plan.bindsPublicTarget = namesAdvertisedHost;
+    plan.publicGroupSession = namesAdvertisedHost ? host.groupSessionId : 0;
     plan.correlation = parsed.correlation;
     plan.sessionId = parsed.sessionId;
     plan.joinCharacterSoid = parsed.characterSoid;

@@ -48,6 +48,15 @@ struct RosterPublication {
     bool staged{};
 };
 
+/** Which half of the client's activity link pair one BAP link is. */
+enum class ActivityClientRole : std::uint8_t {
+    none,
+    /** The link the client allocated for itself; it carries the citizen advertisement. */
+    privateCurrent,
+    /** A link bound to a session THIS server advertised; it carries the membership body. */
+    publicTarget,
+};
+
 /** Mutable transport state owned by one BAP connection. */
 struct Session {
     std::uint32_t id{};
@@ -124,6 +133,18 @@ struct Session {
     bool abilityRefreshArmed{};
     /** Provisioned slot this peer authenticated against (stamped at svc-25). */
     core::settings::AccountKey accountKey{core::settings::kLegacyAccount};
+    /**
+     * Which half of the client's activity pair this link is.
+     * The client holds TWO activity links: the private one it allocated for itself, and - once
+     * it joins a session this server advertised - a public one bound to that host session. Only
+     * the public link may carry the membership body that makes the client bind a world
+     * container, which is what turns its instance from PRIVATE into PUBLIC.
+     */
+    ActivityClientRole activityRole{ActivityClientRole::none};
+    /** Group session the public link joined, or zero. Names the host row that advertised it. */
+    std::uint64_t activityPublicGroupSession{};
+    /** Cleared once the public link has published its single membership body. */
+    bool activityPublicMembershipSent{};
     /** Latest shared-account generation this peer has received. */
     std::uint64_t accountGeneration{};
     /** Newest shared-account generation owed as a full cross-peer refresh. */

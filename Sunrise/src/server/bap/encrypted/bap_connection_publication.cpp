@@ -2,6 +2,8 @@
 
 #include <Windows.h>
 
+#include "../../../core/logging/log.h"
+
 namespace sunrise::server::bap::encrypted {
 namespace {
 
@@ -31,6 +33,9 @@ ConnectionFields connection_fields(const ServiceOutcome& outcome) noexcept {
         fields.joinMemberKey = plan.entitySlotMutation.memberKey;
         fields.joinCharacterSoid = plan.joinCharacterSoid;
         fields.joinsActivity = true;
+        fields.bindsPublicTarget = plan.bindsPublicTarget;
+        fields.publicGroupSession = plan.publicGroupSession;
+        fields.publicTargetSession = plan.sessionId;
     }
     // The initial load is a transition too, and its token does not arrive for several seconds.
     fields.opensTransitionWindow =
@@ -68,6 +73,20 @@ void publish_connection_fields(Session& session,
     if (fields.joinsActivity) {
         session.activityRosterSends = 0;
         session.activityRosterGroups = 0;
+    }
+    // A join naming a session this server advertised makes THIS link the client's public half.
+    // The private link keeps its own role, so the pair stays distinguishable and only the public
+    // one is allowed to publish the membership body.
+    if (fields.bindsPublicTarget) {
+        session.activityRole = ActivityClientRole::publicTarget;
+        session.activityPublicGroupSession = fields.publicGroupSession;
+        session.activitySessionId = fields.publicTargetSession;
+        session.activityPublicMembershipSent = false;
+        core::log::write(core::log::Channel::server,
+                         core::log::Level::info,
+                         "ev=activity stage=bind result=public_target");
+    } else if (fields.joinsActivity && session.activityRole == ActivityClientRole::none) {
+        session.activityRole = ActivityClientRole::privateCurrent;
     }
 }
 

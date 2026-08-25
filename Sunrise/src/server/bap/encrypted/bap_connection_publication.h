@@ -21,6 +21,12 @@ struct ConnectionFields {
     bool opensTransitionWindow{};
     /** Set by a join alone, which re-arms the roster warm-up the new container needs. */
     bool joinsActivity{};
+    /** Set when the join named a session this server advertised, not the link's own. */
+    bool bindsPublicTarget{};
+    /** Group session behind the advertised host row. */
+    std::uint64_t publicGroupSession{};
+    /** Activity session the public link binds to. */
+    std::uint64_t publicTargetSession{};
 };
 
 /**

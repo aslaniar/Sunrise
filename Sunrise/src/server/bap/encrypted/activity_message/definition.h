@@ -46,6 +46,13 @@ struct ActivityPlan final {
     /** The character the join request named, or zero when it carried none. */
     std::uint64_t joinCharacterSoid{};
     /**
+     * Set when the join named a session THIS server advertised rather than the one the link
+     * allocated. The link becomes the client's public target and owes one membership body.
+     */
+    bool bindsPublicTarget{};
+    /** Group session behind that host row, carried so the publication can name it. */
+    std::uint64_t publicGroupSession{};
+    /**
      * Set when the delta moved the player to a different region.
      * The new region has no bubble authority until the roster grants it, so waiting for the next
      * roster tick leaves it empty for up to a whole interval.
