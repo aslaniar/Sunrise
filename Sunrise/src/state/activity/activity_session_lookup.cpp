@@ -34,6 +34,21 @@ namespace {
            && left.hasDescriptorName == right.hasDescriptorName;
 }
 
+/**
+ * Peer test for cross-client membership: two sessions are peers when they occupy the same
+ * ACTIVITY of the same destination PACKAGE. Arrival bubbles, spawn sets, slice overrides and
+ * descriptor-name details are per-join facts - retail fireteam members do not carry identical
+ * arrival selections either (FINDINGS 20.47: strict equality rejected two live Tower sessions
+ * that both printed dest=city_tower_social_d2).
+ */
+[[nodiscard]] bool same_peer_destination(
+    const destination::DestinationSelection& left,
+    const destination::DestinationSelection& right) noexcept {
+    return left.packageName == right.packageName
+           && left.packageNameLength == right.packageNameLength
+           && left.activityIndex == right.activityIndex;
+}
+
 /** @return True when the record is the exact generation the binding names. */
 [[nodiscard]] bool record_matches(const SessionRecord& record,
                                   const SessionBinding& binding) noexcept {
@@ -132,9 +147,9 @@ bool foreign_member_identity(const std::uint64_t ownSessionId,
             if (record.sessionId == ownSessionId || !record.occupied || !record.joined) {
                 continue;
             }
-            // Same destination or not a peer at all: two players in different destinations
-            // must never see each other's membership rows.
-            if (!same_destination(record.destination, ownRecord.destination)) {
+            // Same peer destination or not a peer at all: two players in different
+            // destinations must never see each other's membership rows.
+            if (!same_peer_destination(record.destination, ownRecord.destination)) {
                 // A joined session outside this destination is still evidence the table is
                 // not empty, so it outranks none_joined when nothing better appears.
                 if (reason == ForeignPeerReason::none_joined) {
