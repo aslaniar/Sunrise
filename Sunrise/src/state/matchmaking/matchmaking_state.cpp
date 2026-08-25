@@ -1,6 +1,8 @@
 #include "matchmaking_state.h"
 
 #include <Windows.h>
+#include "../../core/logging/log.h"
+#include <cstdio>
 
 #include <cstddef>
 #include <cstdint>
@@ -106,12 +108,30 @@ bool foreign_advertisement(ContextHandle exclude, LatestSnapshot& snapshot) noex
     SecureZeroMemory(&snapshot, sizeof snapshot);
     AcquireSRWLockShared(&runtime::storage::g_stateLock);
     MatchmakingState& state = runtime::storage::g_states[core::settings::kLegacyAccount].matchmaking;
+
+    // The caller's OWN advertised descriptor, if it has one. Excluding only its context slot is
+    // not enough: each BAP connection acquires its own matchmaking context, and one client holds
+    // several connections - so a searcher was being handed its own session back from its sibling
+    // link, which is nothing it can join (FINDINGS 20.37). Identity here is the descriptor
+    // itself, which is the thing a peer would actually connect to.
+    std::array<std::byte, kDescriptorSize> own{};
+    bool hasOwn = false;
+    if (const ContextSlot* mine = transactions::resolve(state, exclude);
+        mine != nullptr && mine->data.latestSlot < kVariantCapacity) {
+        const VariantRecord& record = mine->data.variants[mine->data.latestSlot];
+        if (record.occupied && record.hasDescriptor) {
+            std::memcpy(own.data(), record.descriptor.data(), kDescriptorSize);
+            hasOwn = true;
+        }
+    }
+
     LatestSnapshot prepared{};
     bool found = false;
+    std::size_t skippedSelf = 0;
+    std::size_t skippedSibling = 0;
     for (std::size_t index = 0; index < state.contexts.size() && !found; ++index) {
-        // Never hand a client its own session back: it is already in it, and a self-result is
-        // what a solo boot would otherwise produce.
         if (index == exclude.slot) {
+            ++skippedSelf;
             continue;
         }
         const ContextSlot& slot = state.contexts[index];
@@ -119,9 +139,14 @@ bool foreign_advertisement(ContextHandle exclude, LatestSnapshot& snapshot) noex
             continue;
         }
         const VariantRecord& latest = slot.data.variants[slot.data.latestSlot];
-        // A descriptor is the whole point of the result - an id alone names nothing reachable.
         if (!latest.occupied || latest.advertisementId == kAbsentAdvertisementId
             || !latest.hasDescriptor) {
+            continue;
+        }
+        // Same descriptor means the same session, whichever connection published it.
+        if (hasOwn
+            && std::memcmp(own.data(), latest.descriptor.data(), kDescriptorSize) == 0) {
+            ++skippedSibling;
             continue;
         }
         prepared.advertisementId = latest.advertisementId;
@@ -134,6 +159,15 @@ bool foreign_advertisement(ContextHandle exclude, LatestSnapshot& snapshot) noex
         snapshot = prepared;
     }
     SecureZeroMemory(&prepared, sizeof prepared);
+    SecureZeroMemory(own.data(), own.size());
+    std::array<char, 128> line{};
+    const int count = std::snprintf(line.data(), line.size(),
+                                    "ev=matchmaking stage=foreign result=%s self=%zu sibling=%zu",
+                                    found ? "found" : "none", skippedSelf, skippedSibling);
+    if (count > 0) {
+        core::log::write(core::log::Channel::server, core::log::Level::info,
+                         {line.data(), static_cast<std::size_t>(count)});
+    }
     return found;
 }
 
