@@ -61,6 +61,22 @@ void register_callback(void* callback, int callbackId) noexcept {
     if (callback == nullptr) {
         return;
     }
+    // INSTRUMENT (transport-relay-design.md D4/O1): names every callback id the Client
+    // registers, so a boot record proves whether the inbound-rendezvous id is consumed
+    // before any relay synthesis is built. Boring path by definition - every registration
+    // logs exactly once here.
+    {
+        std::array<char, 80> line{};
+        const int written = std::snprintf(line.data(),
+                                          line.size(),
+                                          "ev=relay stage=register id=%d",
+                                          callbackId);
+        if (written > 0) {
+            core::log::write(core::log::Channel::client,
+                             core::log::Level::info,
+                             {line.data(), static_cast<std::size_t>(written)});
+        }
+    }
     AcquireSRWLockExclusive(&g_lock);
     CallbackEntry* freeEntry = nullptr;
     for (auto& entry : g_callbacks) {
