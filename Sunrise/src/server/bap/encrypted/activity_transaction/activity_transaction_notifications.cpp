@@ -2,6 +2,7 @@
 
 #include "../../../../core/logging/log.h"
 #include "../../../gameplay/gameplay_advertisement.h"
+#include "../../../../state/activity/runtime.h"
 #include "../push/activity/activity_arrival.h"
 #include "../push/activity/activity_global_state_push.h"
 #include "../push/activity/activity_membership_push.h"
@@ -22,7 +23,14 @@ namespace {
 [[nodiscard]] bool advertisement_pending(const activity_message::ActivityPlan& activity) noexcept {
     // Take the delta's region, not the committed one. Staging runs before the commit, so the
     // committed value still names the region the player has left.
+    // SOURCED (FINDINGS 20.31): the source-less overload always answers `absent`, which made
+    // this hold a no-op and let the body publish with no descriptor in it.
+    state::activity::SessionBinding source{};
+    if (!state::activity::snapshot_binding(activity.sessionId, source)) {
+        return false;
+    }
     const server::gameplay::AdvertisementState state = server::gameplay::advertisement_state(
+        source,
         push::activity::planned_region(activity.membershipMutation, activity.sessionId).index);
     if (state != server::gameplay::AdvertisementState::pending) {
         return false;

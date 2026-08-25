@@ -11,6 +11,7 @@
 #include "../../../../../state/activity/membership/activity_membership_query.h"
 #include "../../../../../state/runtime/runtime.h"
 #include "../../../../gameplay/gameplay_advertisement.h"
+#include "../../../../../state/activity/runtime.h"
 #include "../../activity_message/definition.h"
 #include "activity_arrival.h"
 #include "activity_global_state_push.h"
@@ -193,11 +194,19 @@ bool consume_activity_keepalive(Session& session,
         return delivered;
     }
 
+    // This link's own committed activity record is the advertisement's SOURCE - the target the
+    // descriptor names must copy its destination. An uncommitted session leaves it cleared, and
+    // the readiness queries below then answer `absent`, which is the correct fail-closed answer
+    // (FINDINGS 20.31: binding to the source-LESS overload by accident silenced the descriptor).
+    state::activity::SessionBinding advertisementSource{};
+    static_cast<void>(
+        state::activity::snapshot_binding(session.activitySessionId, advertisementSource));
+
     // The client applies one membership update per revision and drops repeats, so an already
     // acknowledged region change needs a new revision to land. Move it only when there is a real
     // advertisement, or an empty channel advances the revision on every poll.
     if (regionChanged
-        && server::gameplay::advertisement_state(reportedRegion)
+        && server::gameplay::advertisement_state(advertisementSource, reportedRegion)
                == server::gameplay::AdvertisementState::ready
         && state::activity::membership::acknowledged(session.activitySessionId)
         && state::activity::membership::republish(session.activitySessionId)) {
@@ -239,6 +248,7 @@ bool consume_activity_keepalive(Session& session,
     // the arrival slice set stands in, and that first push carries a descriptor too.
     const server::gameplay::AdvertisementState advertisement =
         publishesMembership ? server::gameplay::advertisement_state(
+                                  advertisementSource,
                                   effective_region(session.activitySessionId).index)
                             : server::gameplay::AdvertisementState::absent;
     if (publishesMembership && advertisement == server::gameplay::AdvertisementState::pending) {

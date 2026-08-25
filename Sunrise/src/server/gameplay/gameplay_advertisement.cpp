@@ -196,20 +196,4 @@ AdvertisementState advertisement_state(const state::activity::SessionBinding& so
     }
 }
 
-/** Source-less publishers remain wire-silent and do not claim a host row. */
-void build_advertisement(std::int32_t regionIndex,
-                         RegionSource regionSource,
-                         std::uint8_t localMemberSlot,
-                         message::CitizenAdvertisement& output) noexcept {
-    static_cast<void>(localMemberSlot);
-    output = {};
-    report_outcome(Skip::noSource, regionIndex, regionSource, 0);
-}
-
-/** Source-less readiness queries remain absent and do not claim a host row. */
-AdvertisementState advertisement_state(std::int32_t regionIndex) noexcept {
-    static_cast<void>(regionIndex);
-    return AdvertisementState::absent;
-}
-
 } // namespace sunrise::server::gameplay

@@ -48,20 +48,11 @@ void build_advertisement(
 [[nodiscard]] AdvertisementState advertisement_state(const state::activity::SessionBinding& source,
                                                      std::int32_t regionIndex) noexcept;
 
-/**
- * Source-less publisher. It clears output and claims no host row, so the channel stays silent.
- * TODO: no caller yet. It is the fail-closed answer for a publisher that holds no source binding.
- */
-void build_advertisement(
-    std::int32_t regionIndex,
-    RegionSource regionSource,
-    std::uint8_t localMemberSlot,
-    middleware::bap::activity_message::replicate_membership::CitizenAdvertisement& output) noexcept;
-
-/**
- * Source-less readiness query. It reports absent and claims no host row.
- * TODO: no caller yet. It is the fail-closed answer for a caller that holds no source binding.
- */
-[[nodiscard]] AdvertisementState advertisement_state(std::int32_t regionIndex) noexcept;
+// The source-LESS overloads upstream ships here are DELETED in this fork. They are fail-closed
+// stubs ("TODO: no caller yet") that clear the output and report `reason=no_source`, and because
+// they are a valid overload our BAP publishers bound to them by accident when this subtree was
+// adopted - silencing the citizen advertisement for three commits with a clean build and no
+// warning (FINDINGS 20.31). Deleting them makes that mistake a COMPILE ERROR, which is the same
+// treatment the defaulted AccountKey got in 20.22 and for the same reason.
 
 } // namespace sunrise::server::gameplay

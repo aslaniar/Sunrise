@@ -5,6 +5,8 @@
 #include "../../../../../middleware/bap/activity_message/replicate_membership.h"
 #include "../../../../../middleware/secure_channel/runtime.h"
 #include "../../../../gameplay/gameplay_advertisement.h"
+#include "../../../../../state/activity/runtime.h"
+#include "../../../../gameplay/group/group_host_sessions.h"
 #include "activity_arrival.h"
 #include "activity_notification_frame.h"
 
@@ -47,11 +49,31 @@ make_wire_snapshot(std::uint64_t sessionId,
     // The region this body is about to commit, not the one State still holds. Staging runs before
     // the commit, so the region just left would leave the pending record empty for good.
     const EffectiveRegion region = planned_region(mutation, sessionId);
-    server::gameplay::build_advertisement(region.index,
-                                          region.reported ? server::gameplay::RegionSource::reported
-                                                          : server::gameplay::RegionSource::arrival,
-                                          kLocalMemberSlot,
-                                          wire.citizen);
+    // SOURCED, not source-less. The source-less overload is upstream's fail-closed stub - it
+    // clears the output and reports `reason=no_source` - and binding to it by accident is what
+    // silenced the citizen advertisement from f68f230 onward (FINDINGS 20.31). The source is
+    // this session's own committed record, whose destination the advertised target must copy.
+    state::activity::SessionBinding source{};
+    std::uint64_t hostGeneration = 0;
+    if (state::activity::snapshot_binding(sessionId, source)) {
+        server::gameplay::build_advertisement(
+            source,
+            region.index,
+            region.reported ? server::gameplay::RegionSource::reported
+                            : server::gameplay::RegionSource::arrival,
+            kLocalMemberSlot,
+            wire.citizen,
+            hostGeneration);
+        // Released here rather than held on the Session: threading a generation through six
+        // append_membership_notification call sites buys only eviction resistance, and the host
+        // row is re-claimed by the next advertisement. The row stays claimed; only the retain
+        // that pins it against LRU eviction is dropped. Every retain is balanced.
+        if (hostGeneration != 0) {
+            server::gameplay::group::release_host_session(hostGeneration);
+        }
+    } else {
+        wire.citizen = {};
+    }
     return wire;
 }
 
