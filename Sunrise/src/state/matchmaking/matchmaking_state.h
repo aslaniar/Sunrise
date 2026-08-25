@@ -61,6 +61,20 @@ namespace sunrise::state::matchmaking {
 [[nodiscard]] bool latest_snapshot(ContextHandle context, LatestSnapshot& snapshot) noexcept;
 
 /**
+ * Copies one advertisement published by a context OTHER than the caller's.
+ *
+ * This is the read that makes a session search mean anything: every prior accessor is
+ * per-context, so a client could only ever be handed its own advertisement back
+ * (FINDINGS 20.34/20.35). The storage was already one array of contexts; this only exposes
+ * it across them.
+ *
+ * @param exclude Caller's own context, never returned to itself.
+ * @param snapshot Cleared, then receives the first other context's kept advertisement.
+ * @return True when another context is advertising a descriptor.
+ */
+[[nodiscard]] bool foreign_advertisement(ContextHandle exclude, LatestSnapshot& snapshot) noexcept;
+
+/**
  * Commits one prepared mutation only when all captured revisions still match.
  * @param mutation Prepared data, always cleared before this function returns.
  * @return True when no mutation was needed, or the mutation committed in one step.

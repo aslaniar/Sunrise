@@ -100,4 +100,41 @@ void erase_snapshot(LatestSnapshot& snapshot) noexcept {
     SecureZeroMemory(&snapshot, sizeof snapshot);
 }
 
+
+/** Copies one advertisement published by a context other than the caller's. */
+bool foreign_advertisement(ContextHandle exclude, LatestSnapshot& snapshot) noexcept {
+    SecureZeroMemory(&snapshot, sizeof snapshot);
+    AcquireSRWLockShared(&runtime::storage::g_stateLock);
+    MatchmakingState& state = runtime::storage::g_states[core::settings::kLegacyAccount].matchmaking;
+    LatestSnapshot prepared{};
+    bool found = false;
+    for (std::size_t index = 0; index < state.contexts.size() && !found; ++index) {
+        // Never hand a client its own session back: it is already in it, and a self-result is
+        // what a solo boot would otherwise produce.
+        if (index == exclude.slot) {
+            continue;
+        }
+        const ContextSlot& slot = state.contexts[index];
+        if (!slot.active || slot.data.latestSlot >= kVariantCapacity) {
+            continue;
+        }
+        const VariantRecord& latest = slot.data.variants[slot.data.latestSlot];
+        // A descriptor is the whole point of the result - an id alone names nothing reachable.
+        if (!latest.occupied || latest.advertisementId == kAbsentAdvertisementId
+            || !latest.hasDescriptor) {
+            continue;
+        }
+        prepared.advertisementId = latest.advertisementId;
+        prepared.hasDescriptor = true;
+        std::memcpy(prepared.descriptor.data(), latest.descriptor.data(), kDescriptorSize);
+        found = true;
+    }
+    ReleaseSRWLockShared(&runtime::storage::g_stateLock);
+    if (found) {
+        snapshot = prepared;
+    }
+    SecureZeroMemory(&prepared, sizeof prepared);
+    return found;
+}
+
 } // namespace sunrise::state::matchmaking

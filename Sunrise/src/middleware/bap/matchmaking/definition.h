@@ -10,6 +10,18 @@ namespace sunrise::middleware::bap::matchmaking {
 inline constexpr std::size_t kJoinDescriptorSize = 128;
 /** A field-7 reply with a uint64 id and a full descriptor is at most 148 bytes. */
 inline constexpr std::size_t kMaximumResponseBodySize = 148;
+/**
+ * A field-3 search result is a deeper shape than field 7 and needs its own ceiling.
+ * Worst case, one element with a full descriptor and a maximal uint64 IdPair:
+ *     bytes[128] field      1 + 2 + 128 = 131
+ *     DescriptorWrapper     1 + 2 + 131 = 134
+ *     IdPair (2 x u64 max)  1 + 1 + (11 + 11) = 24
+ *     SearchResult element  1 + 2 + (134 + 24) = 161
+ *     SearchResults field 3 1 + 2 + 161 = 164
+ * Both ceilings are our own sanity bounds, not client limits - the response buffer is
+ * client::network::kBapFrameCapacity (256 KiB).
+ */
+inline constexpr std::size_t kMaximumSearchResponseBodySize = 164;
 
 /** Request selector carried by service-42 protobuf field two. */
 enum class RequestKind : std::uint8_t {

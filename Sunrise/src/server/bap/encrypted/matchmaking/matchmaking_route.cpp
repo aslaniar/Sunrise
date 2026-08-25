@@ -105,14 +105,15 @@ bool encode_response(state::matchmaking::ContextHandle context,
         response = {};
     }
 
-    // FINDINGS 20.34: an empty search result is what kept every client alone - it asks once
-    // at setup:matchmaking and takes "nobody" as final. Answer with one real result pointing
-    // at our own gameplay host. Shape from the client's own schema tables
-    // (claims/lane-svc43-field3.md), NOT guessed.
-    std::array<std::byte, middleware::gameplay::descriptor::kDescriptorSize> searchDescriptor{};
+    // FINDINGS 20.34/20.35: an empty search result is what kept every client alone. Answer with
+    // ANOTHER context's advertisement - the session some other client actually published - not a
+    // synthetic self-descriptor. A client handed its own session back has nothing to join, which
+    // is why the solo boot could never have succeeded whatever we encoded.
+    state::matchmaking::LatestSnapshot foreign{};
     if (response.kind == service::RequestKind::sessionSearch
-        && build_search_descriptor(searchDescriptor)) {
-        response.descriptor = std::span<const std::byte>(searchDescriptor);
+        && state::matchmaking::foreign_advertisement(context, foreign) && foreign.hasDescriptor) {
+        response.advertisementId = foreign.advertisementId;
+        response.descriptor = std::span<const std::byte>(foreign.descriptor);
     }
 
     state::matchmaking::LatestSnapshot latest{};

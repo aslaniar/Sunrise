@@ -31,12 +31,15 @@ namespace sunrise::middleware::bap::matchmaking::response {
  * result's field 2 and by svc-42's advertisementUpdate, so the innermost two levels
  * are wire-proven by two independent production paths.
  *
+ * @param advertisementId Nonzero id of the advertisement this result points at; the element's
+ *        field-6 IdPair names it, so the client can associate the descriptor with a session.
  * @param descriptor Exactly 128 bytes; the join descriptor a searcher should reach.
  * @param output Caller-owned response storage, left unchanged on failure.
  * @param written Receives the whole response size or zero on failure.
  * @return True when the descriptor is the right size and the response fits.
  */
-[[nodiscard]] bool encode_search_results(std::span<const std::byte> descriptor,
+[[nodiscard]] bool encode_search_results(std::uint64_t advertisementId,
+                                         std::span<const std::byte> descriptor,
                                          std::span<std::byte> output,
                                          std::size_t& written) noexcept;
 

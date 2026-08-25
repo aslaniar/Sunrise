@@ -51,7 +51,8 @@ bool encode(const Response& response, std::span<std::byte> output, std::size_t& 
         if (response.descriptor.empty()) {
             return encode_empty_message(kSearchResultsField, output, written);
         }
-        return encode_search_results(response.descriptor, output, written);
+        return encode_search_results(
+            response.advertisementId, response.descriptor, output, written);
     case RequestKind::advertisementUpdate:
         return encode_advertisement_id(true, response.advertisementId, output, written);
     case RequestKind::configuration:

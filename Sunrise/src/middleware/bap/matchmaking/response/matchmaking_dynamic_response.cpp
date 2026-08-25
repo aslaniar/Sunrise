@@ -24,6 +24,11 @@ constexpr std::uint32_t kLocateDescriptorField = 2;
 constexpr std::uint32_t kSearchResultsField = 3;
 /** Container field 1 is the repeated SearchResult element (client table cap: 50). */
 constexpr std::uint32_t kSearchResultElementField = 1;
+/** Element field 6 is the IdPair the client uses to name what a result points at. */
+constexpr std::uint32_t kSearchResultIdPairField = 6;
+/** IdPair fields 1 and 2, both uint64 varints (client table 0x141C38D40). */
+constexpr std::uint32_t kIdPairFirstField = 1;
+constexpr std::uint32_t kIdPairSecondField = 2;
 /** Element field 1 wraps the descriptor, using the same table as the locate result. */
 constexpr std::uint32_t kSearchDescriptorField = 1;
 /** Descriptor-message field 1 carries the opaque descriptor bytes. */
@@ -145,11 +150,13 @@ bool encode_locate_result(std::uint64_t advertisementId,
 
 
 /** Encodes one search result carrying a single join descriptor. */
-bool encode_search_results(std::span<const std::byte> descriptor,
+bool encode_search_results(std::uint64_t advertisementId,
+                           std::span<const std::byte> descriptor,
                            std::span<std::byte> output,
                            std::size_t& written) noexcept {
     written = 0;
-    if (descriptor.size() != kJoinDescriptorSize) {
+    if (descriptor.size() != kJoinDescriptorSize
+        || advertisementId == kInvalidAdvertisementId) {
         return false;
     }
 
@@ -157,27 +164,45 @@ bool encode_search_results(std::span<const std::byte> descriptor,
     // child's encoded size before its own tag and length can be sized.
     std::size_t bytesFieldSize = 0;      // 1: bytes[128]        inside DescriptorWrapper
     std::size_t wrapperFieldSize = 0;    // 1: DescriptorWrapper inside SearchResult
+    std::size_t idFirstSize = 0;         // 1: uint64            inside IdPair
+    std::size_t idSecondSize = 0;        // 2: uint64            inside IdPair
+    std::size_t idPairFieldSize = 0;     // 6: IdPair            inside SearchResult
+    std::size_t elementPayloadSize = 0;  // wrapper + idPair
     std::size_t elementFieldSize = 0;    // 1: SearchResult      inside SearchResults
     std::size_t required = 0;            // 3: SearchResults     inside the body
     if (!protobuf::measure_length_delimited_field(
             kDescriptorBytesField, descriptor.size(), bytesFieldSize)
         || !protobuf::measure_length_delimited_field(
             kSearchDescriptorField, bytesFieldSize, wrapperFieldSize)
-        || !protobuf::measure_length_delimited_field(
-            kSearchResultElementField, wrapperFieldSize, elementFieldSize)
+        || !protobuf::measure_varint_field(kIdPairFirstField, advertisementId, idFirstSize)
+        || !protobuf::measure_varint_field(kIdPairSecondField, advertisementId, idSecondSize)) {
+        return false;
+    }
+    idPairFieldSize = 0;
+    if (!protobuf::measure_length_delimited_field(
+            kSearchResultIdPairField, idFirstSize + idSecondSize, idPairFieldSize)) {
+        return false;
+    }
+    elementPayloadSize = wrapperFieldSize + idPairFieldSize;
+    if (!protobuf::measure_length_delimited_field(
+            kSearchResultElementField, elementPayloadSize, elementFieldSize)
         || !protobuf::measure_length_delimited_field(
             kSearchResultsField, elementFieldSize, required)) {
         return false;
     }
-    if (required > kMaximumResponseBodySize || output.size() < required) {
+    if (required > kMaximumSearchResponseBodySize || output.size() < required) {
         return false;
     }
 
     // Lay the nested messages out innermost first, then wrap outward, each wrapper moving its
     // already encoded child into the same final payload range.
     const std::size_t elementOffset = required - elementFieldSize;
-    const std::size_t wrapperOffset = elementOffset + elementFieldSize - wrapperFieldSize;
+    // Element payload order: the descriptor wrapper, then the IdPair naming what it points at.
+    const std::size_t payloadOffset = elementOffset + elementFieldSize - elementPayloadSize;
+    const std::size_t wrapperOffset = payloadOffset;
     const std::size_t bytesOffset = wrapperOffset + wrapperFieldSize - bytesFieldSize;
+    const std::size_t idPairOffset = payloadOffset + wrapperFieldSize;
+    const std::size_t idPayloadOffset = idPairOffset + idPairFieldSize - (idFirstSize + idSecondSize);
 
     Writer bytesWriter(output.subspan(bytesOffset, bytesFieldSize));
     if (!bytesWriter.write_length_delimited(kDescriptorBytesField, descriptor)) {
@@ -188,9 +213,20 @@ bool encode_search_results(std::span<const std::byte> descriptor,
                                               output.subspan(bytesOffset, bytesFieldSize))) {
         return false;
     }
+    Writer idWriter(output.subspan(idPayloadOffset, idFirstSize + idSecondSize));
+    if (!idWriter.write_varint(kIdPairFirstField, advertisementId)
+        || !idWriter.write_varint(kIdPairSecondField, advertisementId)) {
+        return false;
+    }
+    Writer idPairWriter(output.subspan(idPairOffset, idPairFieldSize));
+    if (!idPairWriter.write_length_delimited(
+            kSearchResultIdPairField,
+            output.subspan(idPayloadOffset, idFirstSize + idSecondSize))) {
+        return false;
+    }
     Writer elementWriter(output.subspan(elementOffset, elementFieldSize));
     if (!elementWriter.write_length_delimited(kSearchResultElementField,
-                                              output.subspan(wrapperOffset, wrapperFieldSize))) {
+                                              output.subspan(payloadOffset, elementPayloadSize))) {
         return false;
     }
     Writer outerWriter(output.first(required));
