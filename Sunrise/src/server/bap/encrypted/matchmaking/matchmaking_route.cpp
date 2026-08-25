@@ -71,6 +71,41 @@ void log_descriptor(const char* stage, std::span<const std::byte> descriptor) no
     }
 }
 
+/**
+ * INSTRUMENT (FINDINGS 20.39): dumps one request body the parser found no descriptor in.
+ *
+ * The first boot with log_descriptor produced ZERO lines against a stream of
+ * advertisement_update calls, which says every one of them parsed as descriptor-absent. That
+ * has two readings - the client publishes no descriptor, or it publishes one under a field
+ * shape we do not read - and the positive-only instrument cannot tell them apart. The raw body
+ * can: it is small, and the 128-byte blob either appears in it or does not.
+ *
+ * @param body Borrowed request body, dumped up to the cap.
+ */
+void log_request_body(std::span<const std::byte> body) noexcept {
+    // Two hex digits per byte, so the cap keeps one line inside the buffer below.
+    constexpr std::size_t kDumpCap = 96;
+    const std::size_t shown = body.size() < kDumpCap ? body.size() : kDumpCap;
+
+    std::array<char, 256> hex{};
+    for (std::size_t index = 0; index < shown; ++index) {
+        static constexpr char kDigits[] = "0123456789ABCDEF";
+        const auto value = static_cast<unsigned char>(body[index]);
+        hex[index * 2] = kDigits[value >> 4];
+        hex[(index * 2) + 1] = kDigits[value & 0x0F];
+    }
+
+    std::array<char, 384> line{};
+    const int count = std::snprintf(line.data(), line.size(),
+                                    "ev=matchmaking stage=descriptor where=absent len=%zu "
+                                    "shown=%zu body=%s",
+                                    body.size(), shown, hex.data());
+    if (count > 0) {
+        core::log::write(core::log::Channel::server, core::log::Level::info,
+                         {line.data(), static_cast<std::size_t>(count)});
+    }
+}
+
 [[nodiscard]] bool prepare_fields(state::matchmaking::ContextHandle context,
                                   const service::Request& request,
                                   service::Response& response,
@@ -78,9 +113,6 @@ void log_descriptor(const char* stage, std::span<const std::byte> descriptor) no
     response.kind = request.kind;
     switch (request.kind) {
     case service::RequestKind::advertisementUpdate:
-        if (request.advertisement.hasDescriptor) {
-            log_descriptor("publish", request.advertisement.descriptor);
-        }
         return state::matchmaking::prepare_variant_update(context,
                                                           request.advertisement.existingId,
                                                           request.advertisement.variantKey,
@@ -146,6 +178,15 @@ bool encode_response(state::matchmaking::ContextHandle context,
     hasMutation = false;
     SecureZeroMemory(&mutation, sizeof mutation);
     const service::Request request = service::request::parse(requestBody);
+    // Both readings of a descriptor-absent advertisement get recorded, so the next boot
+    // distinguishes "client sends none" from "we parse the wrong shape" (FINDINGS 20.39).
+    if (request.kind == service::RequestKind::advertisementUpdate) {
+        if (request.advertisement.hasDescriptor) {
+            log_descriptor("publish", request.advertisement.descriptor);
+        } else {
+            log_request_body(requestBody);
+        }
+    }
     service::Response response{};
     if (!prepare_fields(context, request, response, mutation)) {
         // A correlated empty fallback clears the pending client task without publishing State.
