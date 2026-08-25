@@ -25,6 +25,37 @@ struct JoinEndpoint {
 };
 
 /**
+ * Everything one decoder recovers from a descriptor another party published.
+ * The writer's mirror: we have always built these and never read one, so a peer's advertised
+ * endpoint has never been inspected (FINDINGS 20.38).
+ */
+struct JoinReading {
+    /** Machine identity, local entry 0 address and port, and the online session id. */
+    JoinEndpoint endpoint{};
+    /** Public-entry IPv4 in host order. Zero means the descriptor carries no public entry. */
+    std::uint32_t publicAddress{};
+    /** Public-entry UDP port in host order. */
+    std::uint16_t publicPort{};
+    /** NAT type byte. 1 reads as open; zero leaves the address unroutable. */
+    std::uint8_t natType{};
+    /** Transport method. 0 is the direct path; 6 and 7 select the relay. */
+    std::uint8_t method{};
+};
+
+/**
+ * Reads one published join descriptor.
+ * Total inverse of build(): every field build() writes, this recovers, so a descriptor we
+ * forward can be checked against what the peer must actually be reachable at.
+ * @param input All 128 published bytes.
+ * @param output Receives every recovered field, whether or not the descriptor is usable.
+ * @return True when the reading names a routable direct-path endpoint, matching build()'s
+ *         own acceptance rule plus a public entry, without which the client falls back to
+ *         NAT traversal.
+ */
+[[nodiscard]] bool read(const std::array<std::byte, kDescriptorSize>& input,
+                        JoinReading& output) noexcept;
+
+/**
  * Builds one NetAddr for the direct method-0 path.
  * The endpoint goes in twice, as local entry 0 and as the public entry. A peer with no public
  * entry is unroutable and the client falls back to NAT traversal.

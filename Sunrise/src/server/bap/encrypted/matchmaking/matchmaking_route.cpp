@@ -6,6 +6,8 @@
 #include "../../../../core/logging/log.h"
 #include <cstdio>
 #include <array>
+#include <cstring>
+#include <span>
 
 #include "../../../../middleware/bap/matchmaking/request/matchmaking_request_parser.h"
 #include "../../../../middleware/bap/matchmaking/response/matchmaking_response_encoder.h"
@@ -26,6 +28,49 @@ static_assert(service::kJoinDescriptorSize == state::matchmaking::kDescriptorSiz
  * @param mutation Receives a prepared update without committing persistent State.
  * @return True when the request is static or all required State fields are available.
  */
+/**
+ * INSTRUMENT (FINDINGS 20.38): decodes one descriptor and logs the endpoint it names.
+ *
+ * We have built descriptors since the plane was wired and never read one back, so what a peer
+ * actually publishes - and therefore what we forward to a searcher - has never been observed.
+ * If the advertised endpoint is not a routable host, a searcher is correct to ignore it and
+ * every field added to the search result is wasted. Strip once the peer link forms.
+ *
+ * @param stage Label naming where in the route the descriptor was seen.
+ * @param descriptor Borrowed bytes, of any length: a wrong length is itself the finding.
+ */
+void log_descriptor(const char* stage, std::span<const std::byte> descriptor) noexcept {
+    namespace join = middleware::gameplay::descriptor;
+    if (descriptor.size() != join::kDescriptorSize) {
+        core::log::write(core::log::Channel::server, core::log::Level::warn,
+                         "ev=matchmaking stage=descriptor result=size_mismatch");
+        return;
+    }
+    std::array<std::byte, join::kDescriptorSize> bytes{};
+    std::memcpy(bytes.data(), descriptor.data(), bytes.size());
+    join::JoinReading reading{};
+    const bool routable = join::read(bytes, reading);
+
+    std::array<char, 256> line{};
+    const int count = std::snprintf(
+        line.data(), line.size(),
+        "ev=matchmaking stage=descriptor where=%s routable=%d machine=0x%016llX "
+        "local=%u.%u.%u.%u:%u public=%u.%u.%u.%u:%u nat=%u method=%u session=0x%016llX",
+        stage, routable ? 1 : 0,
+        static_cast<unsigned long long>(reading.endpoint.machineId),
+        reading.endpoint.address >> 24, (reading.endpoint.address >> 16) & 0xFF,
+        (reading.endpoint.address >> 8) & 0xFF, reading.endpoint.address & 0xFF,
+        reading.endpoint.port,
+        reading.publicAddress >> 24, (reading.publicAddress >> 16) & 0xFF,
+        (reading.publicAddress >> 8) & 0xFF, reading.publicAddress & 0xFF,
+        reading.publicPort, reading.natType, reading.method,
+        static_cast<unsigned long long>(reading.endpoint.onlineSessionId));
+    if (count > 0) {
+        core::log::write(core::log::Channel::server, core::log::Level::info,
+                         {line.data(), static_cast<std::size_t>(count)});
+    }
+}
+
 [[nodiscard]] bool prepare_fields(state::matchmaking::ContextHandle context,
                                   const service::Request& request,
                                   service::Response& response,
@@ -33,6 +78,9 @@ static_assert(service::kJoinDescriptorSize == state::matchmaking::kDescriptorSiz
     response.kind = request.kind;
     switch (request.kind) {
     case service::RequestKind::advertisementUpdate:
+        if (request.advertisement.hasDescriptor) {
+            log_descriptor("publish", request.advertisement.descriptor);
+        }
         return state::matchmaking::prepare_variant_update(context,
                                                           request.advertisement.existingId,
                                                           request.advertisement.variantKey,
@@ -114,6 +162,7 @@ bool encode_response(state::matchmaking::ContextHandle context,
         && state::matchmaking::foreign_advertisement(context, foreign) && foreign.hasDescriptor) {
         response.advertisementId = foreign.advertisementId;
         response.descriptor = std::span<const std::byte>(foreign.descriptor);
+        log_descriptor("serve", response.descriptor);
     }
 
     state::matchmaking::LatestSnapshot latest{};
