@@ -313,12 +313,14 @@ bool consume_activity_keepalive(Session& session,
         std::snprintf(line.data(),
                       line.size(),
                       "ev=activity stage=keepalive result=%s bytes=%zu membership=%u key=0x%llX "
+                      "slot=%u "
                       "spawn_state=%d teleport_state=%d teleport_slice=%d token=%u revision=%u "
                       "advert=%u",
                       published ? "ok" : "fail",
                       framedSize,
                       hasMembership ? 1U : 0U,
                       static_cast<unsigned long long>(session.activityMemberKey),
+                      static_cast<unsigned>(session.accountKey),
                       reportedSpawnState,
                       reportedTeleportState,
                       reportedTeleportSlice,
