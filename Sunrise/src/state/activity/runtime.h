@@ -78,6 +78,17 @@ enum class ForeignPeerReason : std::uint8_t {
     identity_missing,
     /** A joined+published session exists, but outside this caller's destination. */
     destination_mismatch,
+    /**
+     * Every candidate belonged to the SAME CLIENT as the caller.
+     *
+     * One client holds several BAP connections and therefore several sessions, so excluding
+     * the caller's own session id is not enough - a sibling session passes that test and the
+     * client is handed ITSELF as its fireteam member. Observed live: with only one machine
+     * booted, a second guardian rendered in the Tower carrying the caller's own member key.
+     * This is the same mistake FINDINGS 20.37 fixed in matchmaking and it was never fixed
+     * here.
+     */
+    same_client,
 };
 
 /**

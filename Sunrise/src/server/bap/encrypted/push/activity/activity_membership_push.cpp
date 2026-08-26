@@ -64,6 +64,23 @@ SweepEntry g_sweepEntries[kSweepEntryCapacity]{};
     return &free->slot;
 }
 
+/** @return Name of one absent-peer reason, for the boot record. */
+[[nodiscard]] const char* peer_reason_name(state::activity::ForeignPeerReason reason) noexcept {
+    switch (reason) {
+    case state::activity::ForeignPeerReason::found:
+        return "found";
+    case state::activity::ForeignPeerReason::identity_missing:
+        return "identity_missing";
+    case state::activity::ForeignPeerReason::destination_mismatch:
+        return "destination_mismatch";
+    case state::activity::ForeignPeerReason::same_client:
+        return "same_client";
+    case state::activity::ForeignPeerReason::none_joined:
+        return "none_joined";
+    }
+    return "unknown";
+}
+
 /**
  * Writes the full mirrored peer row.
  *
@@ -231,14 +248,7 @@ make_wire_snapshot(std::uint64_t sessionId,
                                         "ev=activity stage=wire_snapshot session=%llu peer=0 "
                                         "reason=%s",
                                         static_cast<unsigned long long>(sessionId),
-                                        peerReason == state::activity::ForeignPeerReason::
-                                                           identity_missing
-                                            ? "identity_missing"
-                                            : (peerReason ==
-                                                       state::activity::ForeignPeerReason::
-                                                           destination_mismatch
-                                                   ? "destination_mismatch"
-                                                   : "none_joined"));
+                                        peer_reason_name(peerReason));
         }
         if (writtenLine > 0) {
             core::log::write(core::log::Channel::server,

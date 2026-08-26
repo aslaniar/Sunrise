@@ -161,6 +161,18 @@ bool foreign_member_identity(const std::uint64_t ownSessionId,
                 reason = ForeignPeerReason::identity_missing;
                 continue;
             }
+            // A SIBLING SESSION OF THE SAME CLIENT is not a peer. One client holds several
+            // BAP connections, so the session-id test above lets its own other session
+            // through, and the client is then told it is its own fireteam member - it renders
+            // a second copy of the local guardian, named "You". The member key is what
+            // distinguishes machines: two sessions of one client share it, two machines do
+            // not. Same fix as FINDINGS 20.37 made for matchmaking's foreign_advertisement.
+            if (ownRecord.membership.hasIdentity
+                && record.membership.identity.memberKey
+                       == ownRecord.membership.identity.memberKey) {
+                reason = ForeignPeerReason::same_client;
+                continue;
+            }
             output = record.membership.identity;
             reason = ForeignPeerReason::found;
             found = true;
