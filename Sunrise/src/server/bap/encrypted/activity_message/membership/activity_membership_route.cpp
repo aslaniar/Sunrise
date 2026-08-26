@@ -151,13 +151,42 @@ bool prepare_refresh(const service::Request& request, ActivityPlan& plan) noexce
     return true;
 }
 
-/** Stages a matching acknowledgement update or a transactional no-op. */
+/**
+ * Stages a matching acknowledgement update or a transactional no-op.
+ *
+ * INSTRUMENT (p2(47)): the acknowledgement is the client's ONLY positive verdict on a
+ * membership body, and until now it produced no log line at all. Every boot that asked
+ * "did the client accept this body" had to infer the answer from the absence of other
+ * symptoms - which is the shape of failure lesson 13 exists to stop. Both outcomes are
+ * reported, at info, so silence means "the client sent no type-38 at all" and nothing else.
+ */
 bool prepare_acknowledgement(const service::Request& request, ActivityPlan& plan) noexcept {
     service::membership_acknowledgement::MembershipAcknowledgement parsed{};
-    if (!service::membership_acknowledgement::parse_membership_acknowledgement(request.payload,
-                                                                               parsed)
-        || !membership_state::prepare_acknowledgement(
-            request.accountHandle, parsed.membershipRevision, plan.membershipMutation)) {
+    const bool parsedOk =
+        service::membership_acknowledgement::parse_membership_acknowledgement(request.payload,
+                                                                              parsed);
+    const bool staged =
+        parsedOk
+        && membership_state::prepare_acknowledgement(
+            request.accountHandle, parsed.membershipRevision, plan.membershipMutation);
+    {
+        std::array<char, 192> line{};
+        const int written =
+            std::snprintf(line.data(),
+                          line.size(),
+                          "ev=activity stage=membership_ack result=%s revision=%u bytes=%zu "
+                          "session=%llu",
+                          staged ? "ok" : (parsedOk ? "not_staged" : "parse_failed"),
+                          parsed.membershipRevision,
+                          request.payload.size(),
+                          static_cast<unsigned long long>(request.accountHandle));
+        if (written > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::info,
+                             {line.data(), static_cast<std::size_t>(written)});
+        }
+    }
+    if (!staged) {
         return false;
     }
     plan.sessionId = request.accountHandle;
