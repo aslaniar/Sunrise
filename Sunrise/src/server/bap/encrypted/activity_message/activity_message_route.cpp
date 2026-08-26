@@ -36,6 +36,13 @@ namespace epoch_message = service::patch_epoch;
 /** Activity message type 3 starts the client join transaction. */
 constexpr std::uint32_t kJoinRequestMessageType = 3;
 
+/**
+ * Activity message type 14 is the Client releasing a peer reservation - in the capture where a
+ * foreign peer was first named, it sent one 56 ms after our first peer-bearing body, twice
+ * (FINDINGS 20.55). It is the Client's own verdict on our roster, so its payload is evidence.
+ */
+constexpr std::uint32_t kReleasePeerReservationMessageType = 14;
+
 /** One row per Client-sent message this route accepts but has no state to change for. */
 struct AcceptedMessage {
     std::uint32_t type;
@@ -44,14 +51,14 @@ struct AcceptedMessage {
 
 /**
  * The Client senders that carry no work for this host. Each is one-way, so accepting is the whole
- * contract. The names are the binary's own, so a log line says what arrived.
+ * contract. The names are the binary's own, so a log line says what arrived. Type 14 is NOT here:
+ * its payload names why the Client refused a roster, so it gets a dedicated reporter below.
  */
-constexpr std::array<AcceptedMessage, 14> kAcceptedMessages{{
+constexpr std::array<AcceptedMessage, 13> kAcceptedMessages{{
     {6, "sensor_sense_update"},
     {8, "request_activity_host"},
     {11, "start_new_activity"},
     {13, "request_peer_reservation"},
-    {14, "release_peer_reservation"},
     {15, "peer_leave_request"},
     {34, "process_debug_command"},
     {37, "connectivity_failure"},
@@ -93,6 +100,44 @@ void report_accepted(std::uint32_t messageType,
     if (written > 0) {
         core::log::write(core::log::Channel::server,
                          core::log::Level::debug,
+                         {line.data(), static_cast<std::size_t>(written)});
+    }
+}
+
+/**
+ * Reports one msg 14 release_peer_reservation with its payload. The generic accept path logs only
+ * a byte count, which discards the one verdict the Client volunteers in its own vocabulary - in
+ * the first-foreign-peer capture it released twice (56 ms and 1.6 s after the peer body) and both
+ * payloads were dropped (FINDINGS 20.55). The bytes are logged raw because no wire format for
+ * this message is known yet; reading them through a guessed schema is what the trailing-field
+ * episode cost. Directed by the 2026-08-25 evening handoff (task 4a).
+ * @param request Validated owned svc8 envelope.
+ */
+void report_reservation_release(const service::Request& request) noexcept {
+    std::array<char, core::log::kLineCapacity> line{};
+    const std::size_t dumpBytes = (std::min)(request.payload.size(), std::size_t{64});
+    int written = std::snprintf(line.data(),
+                                line.size(),
+                                "ev=activity stage=message result=accept type=%u name=%s "
+                                "handle=0x%llX bytes=%zu payload=",
+                                request.messageType,
+                                "release_peer_reservation",
+                                static_cast<unsigned long long>(request.accountHandle),
+                                request.payload.size());
+    for (std::size_t index = 0;
+         written > 0 && index < dumpBytes
+         && static_cast<std::size_t>(written) < line.size() - 4;
+         ++index) {
+        const int step =
+            std::snprintf(line.data() + written,
+                          line.size() - static_cast<std::size_t>(written),
+                          "%02X",
+                          std::to_integer<unsigned>(request.payload[index]));
+        written = step > 0 ? written + step : 0;
+    }
+    if (written > 0) {
+        core::log::write(core::log::Channel::server,
+                         core::log::Level::info,
                          {line.data(), static_cast<std::size_t>(written)});
     }
 }
@@ -393,6 +438,10 @@ bool process(std::uint64_t boundSessionId,
         if (!report_query_answer(request)) {
             report_message(request.messageType, request.accountHandle, "parse");
         }
+        return true;
+    } else if (request.messageType == kReleasePeerReservationMessageType) {
+        // One-way, but not silent: the payload is the Client naming why it refused a roster.
+        report_reservation_release(request);
         return true;
     } else if (const char* name = accepted_name(request.messageType); name != nullptr) {
         // One-way with nothing to change here. Accepting is the whole contract.

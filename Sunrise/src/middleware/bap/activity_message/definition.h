@@ -18,7 +18,11 @@ struct Request final {
     std::uint64_t accountHandle{};
     std::uint32_t messageType{};
     std::uint32_t peerHeardMask{};
-    /** Sensitive payload. Never keep, log, capture, cache or save this view. */
+    /**
+     * Sensitive payload. Borrowed caller storage: never keep, capture, cache or save beyond this
+     * call. Logging is allowed only where a named finding directs it (e.g. msg 14's verdict
+     * payload, activity_message_route.cpp).
+     */
     std::span<const std::byte> payload{};
 };
 
