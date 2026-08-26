@@ -340,6 +340,36 @@ bool append_membership_notification(Scratch& scratch,
                                      nonce,
                                      response,
                                      written);
+    // CAPTURE (FINDINGS 20.74.2): hex-dump the membership body head on every push that carries
+    // a peer row. With the schema decoded (msg12-schema-decoded.md), these bytes transcribe
+    // into exact per-field rows; local row vs foreign row diff names the field content that
+    // makes a host fixup-release a foreign peer instead of admitting it.
+    if (encoded && snapshot.peerPresent) {
+        std::array<char, 512> dump{};
+        std::size_t dumpBytes = messageSize < 160 ? messageSize : 160;
+        int dumped = std::snprintf(dump.data(),
+                                   dump.size(),
+                                   "ev=activity stage=body_capture type=12 session=%llu "
+                                   "size=%zu bytes=",
+                                   static_cast<unsigned long long>(activity.sessionId),
+                                   messageSize);
+        for (std::size_t index = 0;
+             dumped > 0 && index < dumpBytes
+             && static_cast<std::size_t>(dumped) < dump.size() - 4;
+             ++index) {
+            const int step =
+                std::snprintf(dump.data() + dumped,
+                              dump.size() - static_cast<std::size_t>(dumped),
+                              "%02X",
+                              std::to_integer<unsigned>(scratch.responseBody[index]));
+            dumped = step > 0 ? dumped + step : 0;
+        }
+        if (dumped > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::info,
+                             {dump.data(), static_cast<std::size_t>(dumped)});
+        }
+    }
     if (!encoded) {
         // A refused body used to fail silently and read as "no push was due". Name it.
         core::log::write(core::log::Channel::server,
