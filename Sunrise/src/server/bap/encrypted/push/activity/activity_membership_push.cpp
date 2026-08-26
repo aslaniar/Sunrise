@@ -75,6 +75,8 @@ SweepEntry g_sweepEntries[kSweepEntryCapacity]{};
         return "destination_mismatch";
     case state::activity::ForeignPeerReason::same_client:
         return "same_client";
+    case state::activity::ForeignPeerReason::same_account:
+        return "same_account";
     case state::activity::ForeignPeerReason::none_joined:
         return "none_joined";
     }

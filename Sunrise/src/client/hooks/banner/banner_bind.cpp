@@ -45,11 +45,11 @@ struct Identity {
 
 /** @return The account and selected-character keys State publishes, when both are set. */
 [[nodiscard]] Identity selected_identity() noexcept {
-    // The CLIENT provisions exactly one slot - its own account IS slot zero (the
-    // single-account init path, FINDINGS 20.14). The slot is named rather than defaulted
-    // so this reads as deliberate, not as one of the unkeyed serving-path calls that cost
-    // three defects (FINDINGS 20.22).
-    const state::AccountState account = state::account_snapshot(core::settings::kLegacyAccount);
+    // The CLIENT owns exactly one identity, but it is NOT always slot zero: which
+    // provisioned account this install plays as is authored as `state.local_account_key`.
+    // Assuming slot zero here is what made two machines publish the same account and the
+    // client refuse its own roster with `tried-to-join-self` (FINDINGS 20.64/20.65).
+    const state::AccountState account = state::account_snapshot(core::settings::local_account());
     if (account.primarySoid == 0) {
         return Identity{};
     }

@@ -34,7 +34,7 @@ bool collect_keys(reader::BlockKeys& keys) noexcept {
     keys = {};
     // The client provisions exactly one slot - its own account IS slot zero
     // (FINDINGS 20.14). Named, not defaulted (FINDINGS 20.22).
-    const state::SignOnState& signOn = state::sign_on(core::settings::kLegacyAccount);
+    const state::SignOnState& signOn = state::sign_on(core::settings::local_account());
     targets::game::packages::KeyTable table{};
     if (!signOn.bootstrapTokenPresent) {
         return false;

@@ -50,7 +50,7 @@ std::atomic_bool g_dumped{false};
     // single-account init path, FINDINGS 20.14). The slot is named rather than defaulted
     // so this reads as deliberate, not as one of the unkeyed serving-path calls that cost
     // three defects (FINDINGS 20.22).
-    const state::AccountState account = state::account_snapshot(core::settings::kLegacyAccount);
+    const state::AccountState account = state::account_snapshot(core::settings::local_account());
     // A backward sweep can leave the allocation on the proxy arm, so a fault ends the sweep, not
     // the process.
     __try {

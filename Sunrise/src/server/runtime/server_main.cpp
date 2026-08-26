@@ -318,6 +318,85 @@ struct GuidContext {
  * after the shared boot chain and exits with its verdict.
  * @return Zero after a clean shutdown signal, or nonzero when a boot stage fails.
  */
+/**
+ * Reports which provisioned account this install plays as, and proves it resolves.
+ *
+ * This install's identity used to be an unstated default - `kLegacyAccount`, hardcoded at
+ * every client-side read. Both machines ship the same `state.accounts` array, so both
+ * published `acct=0x9EAA300100100100`; the rig's install was activated with accounts[1]'s
+ * bootstrap token and its sign-on matched slot 1, but its IDENTITY was slot 0's. The client
+ * caught what we did not, releasing our reservation with `tried-to-join-self`
+ * (FINDINGS 20.64/20.65).
+ *
+ * @return Zero when the configured key names a provisioned account and resolves to it.
+ */
+[[nodiscard]] int run_local_account_test() noexcept {
+    const auto& settings = sunrise::core::settings::get();
+    const auto configured = settings.localAccountKey;
+    const auto resolved = sunrise::core::settings::local_account();
+    const auto provisioned = settings.provisionedAccountCount;
+    std::uint64_t failures = 0;
+
+    if (provisioned == 0) {
+        std::printf("ev=local_account stage=check result=fail what=no_provisioned_accounts\n");
+        ++failures;
+    } else if (configured >= provisioned) {
+        std::printf("ev=local_account stage=check result=fail what=key_beyond_provisioned "
+                    "key=%u provisioned=%zu\n",
+                    static_cast<unsigned>(configured),
+                    provisioned);
+        ++failures;
+    } else if (resolved != configured) {
+        std::printf("ev=local_account stage=check result=fail what=resolution_disagrees "
+                    "configured=%u resolved=%u\n",
+                    static_cast<unsigned>(configured),
+                    static_cast<unsigned>(resolved));
+        ++failures;
+    }
+
+    // NOTE ON SCOPE: this gate runs before state::initialize, so it cannot compare against a
+    // live account snapshot - an earlier draft did and failed on an empty one, which is the
+    // gate correctly refusing to assert something it could not see. It checks what settings
+    // alone can answer, which is precisely where the defect lived: the key, whether it names
+    // a provisioned slot, and which identity that slot authors.
+    const std::uint64_t authored =
+        provisioned != 0 && resolved < provisioned
+            ? settings.accounts[resolved].account.primarySoid
+            : 0;
+    if (failures == 0 && authored == 0) {
+        std::printf("ev=local_account stage=check result=fail what=slot_authors_no_identity "
+                    "key=%u\n",
+                    static_cast<unsigned>(resolved));
+        ++failures;
+    }
+
+    // Every provisioned identity must be DISTINCT, or "which slot am I" cannot separate two
+    // installs however carefully each one answers.
+    for (std::size_t i = 0; failures == 0 && i < provisioned; ++i) {
+        for (std::size_t j = i + 1; j < provisioned; ++j) {
+            if (settings.accounts[i].account.primarySoid
+                == settings.accounts[j].account.primarySoid) {
+                std::printf("ev=local_account stage=check result=fail what=duplicate_identity "
+                            "slots=%zu,%zu primary=0x%016llX\n",
+                            i,
+                            j,
+                            static_cast<unsigned long long>(
+                                settings.accounts[i].account.primarySoid));
+                ++failures;
+            }
+        }
+    }
+
+    std::printf("ev=local_account stage=done result=%s key=%u provisioned=%zu "
+                "primary=0x%016llX failures=%llu\n",
+                failures == 0 ? "ok" : "fail",
+                static_cast<unsigned>(resolved),
+                provisioned,
+                static_cast<unsigned long long>(authored),
+                static_cast<unsigned long long>(failures));
+    return failures == 0 ? 0 : 1;
+}
+
 int main(int argc, char** argv) {
     const bool s1Test = argc > 1 && std::strcmp(argv[1], "--s1-test") == 0;
     const bool equipDiff = argc > 1 && std::strcmp(argv[1], "--equip-diff") == 0;
@@ -340,6 +419,13 @@ int main(int argc, char** argv) {
     // cannot catch a wrong pair, so this gate encodes real bodies and reads the trailer back.
     const bool membershipWireTest =
         argc > 1 && std::strcmp(argv[1], "--membership-wire-test") == 0;
+    // Which account this install plays as was a SILENT default until FINDINGS 20.65: every
+    // client-side read took slot 0 outright, both machines shipped the same accounts array,
+    // and so two machines with distinct Steam identities and distinct bootstrap tokens
+    // published one account and the client refused its own roster. A wrong answer here can
+    // never be silent again.
+    const bool localAccountTest =
+        argc > 1 && std::strcmp(argv[1], "--local-account-test") == 0;
     const HMODULE module = GetModuleHandleW(nullptr);
     if (!sunrise::core::settings::initialize(module)) {
         // Settings name their own failure; the sinks do not exist yet to carry a second line.
@@ -350,6 +436,9 @@ int main(int argc, char** argv) {
     }
     if (membershipWireTest) {
         return sunrise::server::bap::encrypted::push::activity::run_membership_wire_test();
+    }
+    if (localAccountTest) {
+        return run_local_account_test();
     }
     if (printProvisionedHash) {
         const auto hash = sunrise::state::runtime::equipment::

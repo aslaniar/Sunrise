@@ -89,6 +89,21 @@ enum class ForeignPeerReason : std::uint8_t {
      * here.
      */
     same_client,
+    /**
+     * Every candidate belonged to the SAME ACCOUNT as the caller.
+     *
+     * One level up from `same_client`, and the level neither earlier fix reached. Two
+     * MACHINES with distinct Steam identities, distinct sign-on slots and distinct member
+     * keys can still be playing two characters of ONE account - and then they are not peers
+     * either. The client says so itself: FINDINGS 20.64 caught it releasing our reservation
+     * with reason 1, `tried-to-join-self`, out of its own peer-link failure enum, and both
+     * machines had published `acct=0x9EAA300100100100`.
+     *
+     * Publishing such a row costs a hard client freeze on BOTH machines. Refusing it costs
+     * this log line. 20.37 fixed this shape on session id, p2(45) on member key; the account
+     * is where it actually lives.
+     */
+    same_account,
 };
 
 /**

@@ -268,4 +268,18 @@ const Settings& get() noexcept {
     return g_settings;
 }
 
+/** @return The provisioned account this install plays as. */
+AccountKey local_account() noexcept {
+    const Settings& settings = get();
+    // A key naming a slot this file does not provision would silently mean slot 0, which is
+    // the failure this accessor exists to end. The parser already refuses out-of-range keys;
+    // this clamps against a file that names a slot inside the capacity but beyond the array
+    // it actually authored.
+    if (settings.provisionedAccountCount != 0
+        && settings.localAccountKey >= settings.provisionedAccountCount) {
+        return kLegacyAccount;
+    }
+    return settings.localAccountKey;
+}
+
 } // namespace sunrise::core::settings

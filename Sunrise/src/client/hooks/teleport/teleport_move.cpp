@@ -147,7 +147,7 @@ void begin_press() noexcept {
     // single-account init path, FINDINGS 20.14). The slot is named rather than defaulted
     // so this reads as deliberate, not as one of the unkeyed serving-path calls that cost
     // three defects (FINDINGS 20.22).
-    const state::AccountState account = state::account_snapshot(core::settings::kLegacyAccount);
+    const state::AccountState account = state::account_snapshot(core::settings::local_account());
     const auto& binding = account.settings.keyBindings.values[kForwardAction];
     if (!binding.primary.has_value()) {
         return;

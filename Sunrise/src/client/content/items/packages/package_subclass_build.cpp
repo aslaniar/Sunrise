@@ -78,7 +78,7 @@ bool build_character_abilities(const reader::Source& source,
     }
     // The client provisions exactly one slot - its own account IS slot zero
     // (FINDINGS 20.14). Named, not defaulted (FINDINGS 20.22).
-    const state::AccountState account = state::account_snapshot(core::settings::kLegacyAccount);
+    const state::AccountState account = state::account_snapshot(core::settings::local_account());
     for (std::size_t character = 0; character < account.characterCount && count < output.size();
          ++character) {
         domain::Definition row{};

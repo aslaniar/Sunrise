@@ -164,6 +164,15 @@ bool Parser::state_settings(Settings& output) noexcept {
             if (!account(output.initialAccount)) {
                 return false;
             }
+        } else if (key == "local_account_key") {
+            // Which provisioned account THIS install plays as. Must name a slot the file
+            // actually provisions, so a typo fails the load instead of silently serving
+            // slot 0 - which is exactly how the two machines ended up sharing an identity.
+            std::uint64_t value = 0;
+            if (!unsigned_integer(value) || value >= kAccountCapacity) {
+                return false;
+            }
+            output.localAccountKey = static_cast<AccountKey>(value);
         } else if (key == "accounts") {
             // P2 provisioned accounts. An explicit array replaces the legacy block entirely.
             if (output.provisionedAccountCount != 0 || !consume('[')) {

@@ -61,6 +61,23 @@ struct Settings {
      */
     std::array<ProvisionedAccount, kAccountCapacity> accounts{};
     std::size_t provisionedAccountCount{};
+    /**
+     * WHICH provisioned account THIS INSTALL plays as. Defaults to slot 0.
+     *
+     * The client is structurally single-account: every client-side read took
+     * `kLegacyAccount` outright, so an install's identity WAS whatever sat at
+     * `accounts[0]` - and both machines ship the same accounts array. Two machines with
+     * distinct Steam identities and distinct bootstrap tokens therefore both published
+     * `acct=0x9EAA300100100100`, and the client refused its own roster naming
+     * `tried-to-join-self` (FINDINGS 20.64). The server never had this problem: it keys
+     * each session off the sign-on token it matched.
+     *
+     * This is the install's answer to "who am I", and it must agree with the bootstrap
+     * token the installed client was activated with - the rig's install carries
+     * accounts[1]'s token, so the rig sets this to 1. Reordering the accounts array to
+     * fake it would work and would be invisible to the next reader; this is not.
+     */
+    AccountKey localAccountKey{kLegacyAccount};
 };
 
 /** @return The complete default settings. */

@@ -173,6 +173,25 @@ bool foreign_member_identity(const std::uint64_t ownSessionId,
                 reason = ForeignPeerReason::same_client;
                 continue;
             }
+            // TWO CHARACTERS OF ONE ACCOUNT ARE NOT PEERS EITHER, even on two machines with
+            // distinct Steam identities, distinct sign-on slots and distinct member keys -
+            // all three were true the night this cost two hard client freezes. The client
+            // refuses such a roster and NAMES the reason: it released our reservation citing
+            // `tried-to-join-self` from its own peer-link failure enum, with both machines
+            // publishing acct=0x9EAA300100100100 (FINDINGS 20.64).
+            //
+            // The member-key test above cannot catch it. Member keys are per-session and
+            // differed; the ACCOUNT is what the client compares. Guarding here turns a freeze
+            // on both machines into one log line, and is the reason it must stay even after
+            // the account routing itself is fixed - a regression there would otherwise be
+            // silent again.
+            if (ownRecord.membership.hasIdentity
+                && record.membership.identity.accountSoid != 0
+                && record.membership.identity.accountSoid
+                       == ownRecord.membership.identity.accountSoid) {
+                reason = ForeignPeerReason::same_account;
+                continue;
+            }
             output = record.membership.identity;
             reason = ForeignPeerReason::found;
             found = true;

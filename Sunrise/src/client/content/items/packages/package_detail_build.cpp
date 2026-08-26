@@ -136,7 +136,7 @@ bool collect_authored_hashes(AuthoredHashes& output) noexcept {
     }
     // The client provisions exactly one slot - its own account IS slot zero
     // (FINDINGS 20.14). Named, not defaulted (FINDINGS 20.22).
-    const state::AccountState live = state::account_snapshot(core::settings::kLegacyAccount);
+    const state::AccountState live = state::account_snapshot(core::settings::local_account());
     if (state::account::valid(live)) {
         walk_account(live, output);
     }
