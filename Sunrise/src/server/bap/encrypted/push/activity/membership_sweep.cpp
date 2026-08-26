@@ -1,6 +1,10 @@
 #include "membership_sweep.h"
 
+#include <array>
 #include <cstdio>
+
+#include "../../../../../middleware/bap/activity_message/replicate_membership.h"
+#include "../../../../../middleware/encoding/bit_reader.h"
 
 namespace sunrise::server::bap::encrypted::push::activity {
 
@@ -164,6 +168,116 @@ int run_membership_sweep_test() noexcept {
                 failures == 0 ? "ok" : "fail",
                 static_cast<unsigned long long>(failures),
                 static_cast<unsigned long long>(advancesSeen));
+    return failures == 0 ? 0 : 1;
+}
+
+namespace {
+
+namespace message = middleware::bap::activity_message::replicate_membership;
+
+/** Storage for one encoded body, with room for the peer row and a citizen descriptor. */
+std::array<std::byte, message::kCitizenEncodedSize + 256> gWireBuffer{};
+
+/**
+ * Encodes one body and checks its size and its four trailing fields.
+ * @param label Reported name of the case.
+ * @param peerPresent Whether the body carries a peer row.
+ * @return Number of failures found.
+ */
+std::uint64_t check_wire_case(const char* label, const bool peerPresent) noexcept {
+    namespace bits = middleware::encoding::bits;
+
+    // Distinct values, so a dropped, duplicated or swapped field is visible as a WRONG value
+    // rather than merely a missing one. Non-zero matters: zero means "keep the historical
+    // value" to the encoder, which would silently turn this into a test of the old behaviour.
+    constexpr std::uint32_t kValues[4] = {0x11111111U, 0x22222222U, 0x33333333U, 0x44444444U};
+
+    message::MembershipSnapshot snapshot{};
+    snapshot.revision = 7;
+    snapshot.epoch = 9;
+    snapshot.peerPresent = peerPresent;
+    snapshot.identity.memberKey = 0xAAAA'0000'0000'0001ULL;
+    snapshot.peer.memberKey = 0xBBBB'0000'0000'0002ULL;
+    snapshot.trailingFirst = kValues[0];
+    snapshot.trailingSecond = kValues[1];
+    snapshot.trailingThird = kValues[2];
+    snapshot.trailingFourth = kValues[3];
+
+    std::uint64_t failures = 0;
+    const std::size_t expected = message::encoded_size(snapshot);
+    std::size_t written = 0;
+    if (!message::encode_replicate_membership(snapshot, gWireBuffer, written)) {
+        std::printf("ev=wire_test stage=check result=fail case=%s what=encode_refused\n", label);
+        return 1;
+    }
+    if (written != expected) {
+        std::printf("ev=wire_test stage=check result=fail case=%s what=size got=%llu want=%llu\n",
+                    label,
+                    static_cast<unsigned long long>(written),
+                    static_cast<unsigned long long>(expected));
+        ++failures;
+    }
+
+    // Read the trailer back from where the region block ends.
+    bits::Reader reader{std::span<const std::byte>(gWireBuffer).first(written)};
+    if (!reader.skip(message::region_block_end_bit(snapshot))) {
+        std::printf("ev=wire_test stage=check result=fail case=%s what=skip_to_trailer\n", label);
+        return failures + 1;
+    }
+    for (std::size_t field = 0; field < 4; ++field) {
+        std::uint64_t present = 0;
+        std::uint64_t value = 0;
+        if (!reader.read(1, present) || !reader.read(32, value)) {
+            std::printf("ev=wire_test stage=check result=fail case=%s what=truncated field=%llu\n",
+                        label,
+                        static_cast<unsigned long long>(field));
+            return failures + 1;
+        }
+        if (present != 1 || value != kValues[field]) {
+            std::printf("ev=wire_test stage=check result=fail case=%s what=field field=%llu "
+                        "present=%llu got=0x%08llX want=0x%08llX\n",
+                        label,
+                        static_cast<unsigned long long>(field),
+                        static_cast<unsigned long long>(present),
+                        static_cast<unsigned long long>(value),
+                        static_cast<unsigned long long>(kValues[field]));
+            ++failures;
+        }
+    }
+    // The body must end exactly on the final absent-bit and its byte padding - no more.
+    std::uint64_t tail = 0;
+    if (!reader.read(1, tail) || tail != 0) {
+        std::printf("ev=wire_test stage=check result=fail case=%s what=tail_bit got=%llu\n",
+                    label,
+                    static_cast<unsigned long long>(tail));
+        ++failures;
+    }
+    if (reader.remaining_bits() >= 8) {
+        std::printf("ev=wire_test stage=check result=fail case=%s what=trailing_slack bits=%llu\n",
+                    label,
+                    static_cast<unsigned long long>(reader.remaining_bits()));
+        ++failures;
+    }
+    std::printf("ev=wire_test stage=case case=%s bytes=%llu trailer_bit=%llu failures=%llu\n",
+                label,
+                static_cast<unsigned long long>(written),
+                static_cast<unsigned long long>(message::region_block_end_bit(snapshot)),
+                static_cast<unsigned long long>(failures));
+    return failures;
+}
+
+} // namespace
+
+/** Encodes real bodies and reads their top-level trailer back out of the bits. */
+int run_membership_wire_test() noexcept {
+    std::uint64_t failures = check_wire_case("solo", false);
+    failures += check_wire_case("peer", true);
+    std::printf("ev=wire_test stage=done result=%s failures=%llu declared_bits=%llu "
+                "declared_bytes=%llu\n",
+                failures == 0 ? "ok" : "fail",
+                static_cast<unsigned long long>(failures),
+                static_cast<unsigned long long>(message::kMeaningfulBitCount),
+                static_cast<unsigned long long>(message::kEncodedSize));
     return failures == 0 ? 0 : 1;
 }
 

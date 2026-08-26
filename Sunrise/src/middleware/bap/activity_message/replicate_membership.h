@@ -13,10 +13,20 @@ namespace sunrise::middleware::bap::activity_message::replicate_membership {
 
 /** Membership snapshots use activity message type 12. */
 inline constexpr std::uint32_t kMessageType = 12;
-/** One local player plus a reflected host is 29,968 meaningful bits. */
-inline constexpr std::size_t kMeaningfulBitCount = 29'968;
-/** The host-present snapshot is byte-aligned at 3,746 bytes. */
-inline constexpr std::size_t kEncodedSize = 3'746;
+/**
+ * One local player plus a reflected host is 30,032 meaningful bits.
+ *
+ * Was 29,968 through p2(46). The client's own schema for type 12 (packed key 0x808086A8,
+ * read out of the registry in FINDINGS 20.61/20.62) declares FOUR presence-flagged 32-bit
+ * fields after the region block - presence indices 996, 997, 998, 999 - and we published
+ * only TWO of them, marking the other two absent. Lane M's parsed-struct field registry
+ * names exactly four in that order: peer_and_player_counts, peer_updates, player_updates,
+ * player_seq_number. Publishing all four adds 2 x (1 presence bit + 32 value bits) and
+ * removes the 2 absent-bits they replaced: +64 bits.
+ */
+inline constexpr std::size_t kMeaningfulBitCount = 30'032;
+/** The host-present snapshot is byte-aligned at 3,754 bytes. */
+inline constexpr std::size_t kEncodedSize = 3'754;
 /** One filled descriptor makes its record 1,024 bits longer and shifts every later field. */
 inline constexpr std::size_t kDescriptorBitCount = gameplay::descriptor::kDescriptorSize * 8U;
 /** Byte size once one record carries a descriptor. */
@@ -79,6 +89,17 @@ struct MembershipSnapshot final {
     std::uint32_t trailingFirst{};
     /** Override for the second trailing 32-bit field. Zero keeps the historical value. */
     std::uint32_t trailingSecond{};
+    /**
+     * Override for the THIRD trailing 32-bit field. Zero keeps the historical value.
+     *
+     * This field and the next were never published at all before p2(47) - the encoder wrote
+     * an absent-bit for each. The client's schema declares them (presence indices 998 and
+     * 999) and lesson 17 says a declared field we never send is a missing requirement, not
+     * a spare. Under the field-registry order this is `player_updates`.
+     */
+    std::uint32_t trailingThird{};
+    /** Override for the fourth trailing 32-bit field; `player_seq_number` by the same order. */
+    std::uint32_t trailingFourth{};
 };
 
 /** @return Bits the whole body carries before byte padding. */

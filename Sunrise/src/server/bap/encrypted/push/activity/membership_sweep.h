@@ -130,4 +130,20 @@ void sweep_apply(SweepSlot& slot, const SweepDecision& decision, std::uint64_t n
  */
 [[nodiscard]] int run_membership_sweep_test() noexcept;
 
+/**
+ * Encodes real bodies and reads their top-level trailer back out of the bits.
+ *
+ * WHY THIS GATE EXISTS. p2(47) changed the wire: the client's schema declares FOUR flagged
+ * 32-bit fields after the region block and we shipped two (FINDINGS 20.62). Everything that
+ * could have caught a mistake in that change was a constant compared against another constant
+ * - `static_assert(kMeaningfulBitCount == kEncodedSize * 8)` passes just as happily for a
+ * wrong pair as a right one. This reads the ACTUAL emitted buffer at the ACTUAL trailer
+ * offset and checks each field came back with the distinct value it went in with, so a
+ * dropped field, a swapped pair, or an off-by-one presence bit fails the deploy instead of
+ * a boot. The pre-boot checklist's provenance rule, applied to a wire format.
+ *
+ * @return Zero when solo and peer bodies both round-trip at their declared sizes.
+ */
+[[nodiscard]] int run_membership_wire_test() noexcept;
+
 } // namespace sunrise::server::bap::encrypted::push::activity

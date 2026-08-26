@@ -335,6 +335,11 @@ int main(int argc, char** argv) {
     // gate a deploy now (AGENTS.md lesson 13: instrument the boring path).
     const bool membershipSweepTest =
         argc > 1 && std::strcmp(argv[1], "--membership-sweep-test") == 0;
+    // p2(47) changed the type-12 wire (a two-field top-level trailer became the four fields
+    // the client's schema declares). A size constant checked against another size constant
+    // cannot catch a wrong pair, so this gate encodes real bodies and reads the trailer back.
+    const bool membershipWireTest =
+        argc > 1 && std::strcmp(argv[1], "--membership-wire-test") == 0;
     const HMODULE module = GetModuleHandleW(nullptr);
     if (!sunrise::core::settings::initialize(module)) {
         // Settings name their own failure; the sinks do not exist yet to carry a second line.
@@ -342,6 +347,9 @@ int main(int argc, char** argv) {
     }
     if (membershipSweepTest) {
         return sunrise::server::bap::encrypted::push::activity::run_membership_sweep_test();
+    }
+    if (membershipWireTest) {
+        return sunrise::server::bap::encrypted::push::activity::run_membership_wire_test();
     }
     if (printProvisionedHash) {
         const auto hash = sunrise::state::runtime::equipment::
