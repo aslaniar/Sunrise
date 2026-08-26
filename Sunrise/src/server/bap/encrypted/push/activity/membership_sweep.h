@@ -5,35 +5,53 @@
 namespace sunrise::server::bap::encrypted::push::activity {
 
 /**
- * INSTRUMENT: the readings of the two trailing 32-bit fields, swept.
+ * INSTRUMENT: the readings of the FOUR trailing 32-bit fields, swept.
  *
  * WHY THIS IS THE VARIABLE NOW. The row SHAPE was swept first and made no difference at all
  * (FINDINGS 20.51): key_only and full_mirror behaved identically, which says the row is not
- * being read. Lane M's field registry names `peer_and_player_counts` AHEAD of `peer_updates`
- * and `player_updates`, and its section 4 records U2 - whether those trailing fields carry
- * COUNTS or BITMASKS - as an open question.
+ * being read. And 20.62 read the client's own schema and found the roster ALREADY matches our
+ * encoder exactly - 32 slots, a member row costing 3 presence bits. The row was never it.
  *
- * With ONE member the two readings are the same number: mask 0b1 == count 1. That is exactly
- * why months of solo bodies could never distinguish them. With TWO members they diverge for
- * the first time - a mask is 0b11 (3), a count is 2 - and we have been shipping 3.
+ * The gap the schema did find is here. Type 12 declares FOUR presence-flagged 32-bit fields
+ * at presence indices 996-999 and we shipped TWO until p2(47). Lane M's parsed-struct field
+ * registry names exactly four in that order:
+ *
+ *     [4] peer_and_player_counts   [5] peer_updates   [6] player_updates   [7] player_seq_number
+ *
+ * With ONE member every reading of every one of them is the number 1: mask 0b1 == count 1.
+ * That is why months of solo bodies could never distinguish them, and why p2(47)'s solo boot
+ * (20.63) could confirm the SHAPE while testing no semantics at all. With TWO members they
+ * diverge for the first time - a mask is 0b11 (3), a count is 2 - and every peer-bearing body
+ * we have ever shipped put 3 in a field named `counts`.
+ *
+ * That is the freeze hypothesis in one line: if the client reads [4] as a count, we told it
+ * THREE members while the roster held two, and it walked into an absent slot.
  *
  * The client's own failure vocabulary contains `player-count-zero`, so counts are load-bearing
  * to this client.
  *
- * `solo` stays LAST for the same reason as the shape sweep: an acknowledgement ends the
- * republish loop, so the known-good body must not be tried before the candidates.
+ * ORDER MATTERS AND IT IS NOT THE OBVIOUS ONE. A peer row has hard-frozen the client well
+ * inside six bodies, so a sweep can run out of client before it reaches a late reading. The
+ * readings are therefore ordered MOST-LIKELY-CORRECT FIRST, and the historical
+ * all-masks reading - the one already known to freeze - sits near the END rather than at the
+ * front where a control would normally go. `solo` stays last regardless: an acknowledgement
+ * ends the republish loop, so the known-good body must not be tried before the candidates.
+ *
+ * NOTE FOR ANY NEW READING: zero is not expressible. The encoder treats a zero override as
+ * "keep the historical value", so a reading that wants to send 0 silently sends the mask
+ * instead. `run_membership_sweep_test` asserts no peer-bearing reading carries a zero.
  */
 enum class TrailingVariant : std::uint8_t {
-    /** 3 / 3 - both fields as slot masks. Every body ever shipped. The control. */
-    maskMask,
-    /** 2 / 3 - first field a plain member count, second still a mask. */
-    countMask,
-    /** 0x00020002 / 3 - first field two packed 16-bit counts (peers, players). */
-    packedMask,
-    /** 2 / 2 - both fields plain counts. */
-    countCount,
-    /** 0x00020002 / 0x00020002 - both fields packed counts. */
-    packedPacked,
+    /** 0x00020002 / 3 / 3 / 1 - counts packed as 16-bit halves, both update masks. LIKELIEST. */
+    packedMasks,
+    /** 2 / 3 / 3 / 1 - counts as one plain member count, both update masks. */
+    countMasks,
+    /** 0x00020002 / 3 / 3 / 3 - as packedMasks, with the sequence field also a mask. */
+    packedMasksSeq,
+    /** 2 / 3 / 3 / 3 - as countMasks, with the sequence field also a mask. */
+    countMasksSeq,
+    /** 3 / 3 / 3 / 3 - every field a slot mask. The historical reading, and it froze. */
+    allMask,
     /** No peer row. Known ACCEPTED - the terminal positive control. */
     solo,
 };
@@ -45,17 +63,26 @@ inline constexpr std::uint64_t kDefaultSweepBodies = 4;
 /** Milliseconds one reading must also hold, so a burst cannot skip readings. */
 inline constexpr std::uint64_t kDefaultSweepFloorMs = 10'000;
 
-/** The two 32-bit values one reading publishes. */
+/**
+ * The four 32-bit values one reading publishes.
+ *
+ * Named for the schema positions they occupy, not for what we believe they mean - the
+ * belief is Lane M's field-registry inference and it is what the peer boot tests.
+ */
 struct TrailingValues final {
-    /** First trailing field. Zero tells the encoder to keep its historical value. */
+    /** Presence index 996; `peer_and_player_counts`. Zero keeps the historical value. */
     std::uint32_t first{};
-    /** Second trailing field. Zero tells the encoder to keep its historical value. */
+    /** Presence index 997; `peer_updates`. Zero keeps the historical value. */
     std::uint32_t second{};
+    /** Presence index 998; `player_updates`. Never sent at all before p2(47). */
+    std::uint32_t third{};
+    /** Presence index 999; `player_seq_number`. Never sent at all before p2(47). */
+    std::uint32_t fourth{};
     /** False for `solo`, which publishes no peer row at all. */
     bool peerPresent{true};
 };
 
-/** @return The two field values one reading publishes. */
+/** @return The four field values one reading publishes. */
 [[nodiscard]] TrailingValues trailing_values(TrailingVariant variant) noexcept;
 
 /** One session's place in the sweep. Sessions advance independently. */
@@ -86,7 +113,7 @@ struct SweepSlot final {
 /** What one peer-bearing body publishes, and what happens after it. */
 struct SweepDecision final {
     /** Reading THIS body carries. */
-    TrailingVariant variant{TrailingVariant::maskMask};
+    TrailingVariant variant{TrailingVariant::packedMasks};
     /**
      * True when the sweep retires this reading after this body.
      *

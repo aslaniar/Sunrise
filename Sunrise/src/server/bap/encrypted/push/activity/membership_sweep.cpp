@@ -39,16 +39,16 @@ void sweep_apply(SweepSlot& slot, const SweepDecision& decision, const std::uint
 /** @return Human-readable reading name, for the boot record. */
 const char* variant_name(const TrailingVariant variant) noexcept {
     switch (variant) {
-    case TrailingVariant::maskMask:
-        return "mask_mask";
-    case TrailingVariant::countMask:
-        return "count_mask";
-    case TrailingVariant::packedMask:
-        return "packed_mask";
-    case TrailingVariant::countCount:
-        return "count_count";
-    case TrailingVariant::packedPacked:
-        return "packed_packed";
+    case TrailingVariant::packedMasks:
+        return "packed_masks";
+    case TrailingVariant::countMasks:
+        return "count_masks";
+    case TrailingVariant::packedMasksSeq:
+        return "packed_masks_seq";
+    case TrailingVariant::countMasksSeq:
+        return "count_masks_seq";
+    case TrailingVariant::allMask:
+        return "all_mask";
     case TrailingVariant::solo:
         return "solo";
     }
@@ -59,27 +59,38 @@ const char* variant_name(const TrailingVariant variant) noexcept {
 constexpr std::uint32_t kTwoMemberMask = 0b11;
 /** Two members as a plain count. */
 constexpr std::uint32_t kTwoMemberCount = 2;
-/** Two peers and two players, packed as 16-bit halves - the name says "counts", plural. */
+/**
+ * Two peers and two players, packed as 16-bit halves - the name says "counts", plural.
+ *
+ * Which half is peers and which is players is UNKNOWN, and this value deliberately does not
+ * depend on the answer: with two of each it is 0x00020002 either way. The ambiguity only bites
+ * when the counts differ, which is not this boot.
+ */
 constexpr std::uint32_t kTwoPackedCounts = (kTwoMemberCount << 16) | kTwoMemberCount;
+/**
+ * A sequence field's least surprising non-zero value.
+ * Zero is not expressible - the encoder reads it as "keep the historical value".
+ */
+constexpr std::uint32_t kSequenceOne = 1;
 
-/** @return The two field values one reading publishes. */
+/** @return The four field values one reading publishes. */
 TrailingValues trailing_values(const TrailingVariant variant) noexcept {
     switch (variant) {
-    case TrailingVariant::maskMask:
-        return {kTwoMemberMask, kTwoMemberMask, true};
-    case TrailingVariant::countMask:
-        return {kTwoMemberCount, kTwoMemberMask, true};
-    case TrailingVariant::packedMask:
-        return {kTwoPackedCounts, kTwoMemberMask, true};
-    case TrailingVariant::countCount:
-        return {kTwoMemberCount, kTwoMemberCount, true};
-    case TrailingVariant::packedPacked:
-        return {kTwoPackedCounts, kTwoPackedCounts, true};
+    case TrailingVariant::packedMasks:
+        return {kTwoPackedCounts, kTwoMemberMask, kTwoMemberMask, kSequenceOne, true};
+    case TrailingVariant::countMasks:
+        return {kTwoMemberCount, kTwoMemberMask, kTwoMemberMask, kSequenceOne, true};
+    case TrailingVariant::packedMasksSeq:
+        return {kTwoPackedCounts, kTwoMemberMask, kTwoMemberMask, kTwoMemberMask, true};
+    case TrailingVariant::countMasksSeq:
+        return {kTwoMemberCount, kTwoMemberMask, kTwoMemberMask, kTwoMemberMask, true};
+    case TrailingVariant::allMask:
+        return {kTwoMemberMask, kTwoMemberMask, kTwoMemberMask, kTwoMemberMask, true};
     case TrailingVariant::solo:
         // Zeroes tell the encoder to keep its historical single-member value.
-        return {0, 0, false};
+        return {0, 0, 0, 0, false};
     }
-    return {kTwoMemberMask, kTwoMemberMask, true};
+    return {kTwoMemberMask, kTwoMemberMask, kTwoMemberMask, kTwoMemberMask, true};
 }
 
 namespace {
@@ -106,7 +117,7 @@ int run_membership_sweep_test() noexcept {
 
     std::uint64_t bodiesFor[kTrailingVariantCount] = {};
     std::uint64_t advancesSeen = 0;
-    TrailingVariant lastVariant = TrailingVariant::maskMask;
+    TrailingVariant lastVariant = TrailingVariant::packedMasks;
     bool sawVariant[kTrailingVariantCount] = {};
 
     // Enough bodies to retire all six shapes at this cadence, with headroom.
@@ -116,8 +127,10 @@ int run_membership_sweep_test() noexcept {
 
         // INVARIANT 1: readings are visited in order, each exactly once. The shape sweep's
         // first live run OPENED on index 4 because its phase was anchored to the wrong event.
-        if (body == 0 && decision.variant != TrailingVariant::maskMask) {
-            fail("opens_on_mask_mask", index);
+        // The opening reading is the LIKELIEST one, not the control - a peer row can freeze
+        // the client before a late reading is ever reached (see the header's ORDER note).
+        if (body == 0 && decision.variant != TrailingVariant::packedMasks) {
+            fail("opens_on_packed_masks", index);
             ++failures;
         }
         if (index != static_cast<std::uint64_t>(lastVariant)
@@ -159,10 +172,33 @@ int run_membership_sweep_test() noexcept {
         ++failures;
     }
 
+    // INVARIANT 5: no peer-bearing reading may carry a zero in any of the four fields. The
+    // encoder reads a zero override as "keep the historical value", so such a reading would
+    // silently publish the mask it was written to replace - a sweep step that measures the
+    // control while reporting its own name. Cheap to assert, invisible in a boot record.
     for (std::uint64_t index = 0; index < kTrailingVariantCount; ++index) {
-        std::printf("ev=sweep_test stage=reading variant=%s bodies=%llu\n",
+        const TrailingValues values = trailing_values(static_cast<TrailingVariant>(index));
+        if (!values.peerPresent) {
+            continue;
+        }
+        if (values.first == 0 || values.second == 0 || values.third == 0
+            || values.fourth == 0) {
+            fail("zero_is_not_expressible", index);
+            ++failures;
+        }
+    }
+
+    for (std::uint64_t index = 0; index < kTrailingVariantCount; ++index) {
+        const TrailingValues values = trailing_values(static_cast<TrailingVariant>(index));
+        std::printf("ev=sweep_test stage=reading variant=%s bodies=%llu "
+                    "fields=0x%08X/0x%08X/0x%08X/0x%08X peer=%d\n",
                     variant_name(static_cast<TrailingVariant>(index)),
-                    static_cast<unsigned long long>(bodiesFor[index]));
+                    static_cast<unsigned long long>(bodiesFor[index]),
+                    values.first,
+                    values.second,
+                    values.third,
+                    values.fourth,
+                    values.peerPresent ? 1 : 0);
     }
     std::printf("ev=sweep_test stage=done result=%s failures=%llu advances=%llu\n",
                 failures == 0 ? "ok" : "fail",

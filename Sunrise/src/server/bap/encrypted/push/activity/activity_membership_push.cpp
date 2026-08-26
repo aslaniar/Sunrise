@@ -169,7 +169,7 @@ make_wire_snapshot(std::uint64_t sessionId,
     // Only a body that HAS a peer to publish advances the sweep - a solo body carries no shape
     // under test, and counting it would spend shapes on nothing.
     const core::settings::server::Settings& serverSettings = core::settings::get().server;
-    TrailingVariant variant = TrailingVariant::maskMask;
+    TrailingVariant variant = TrailingVariant::packedMasks;
     SweepDecision decision{};
     SweepSlot* slot = nullptr;
     // A PINNED reading never advances: it is how a candidate the sweep implicated gets
@@ -228,6 +228,8 @@ make_wire_snapshot(std::uint64_t sessionId,
         // Zero leaves the encoder on its historical value, which is what `solo` wants.
         wire.trailingFirst = values.first;
         wire.trailingSecond = values.second;
+        wire.trailingThird = values.third;
+        wire.trailingFourth = values.fourth;
         if (retry != nullptr) {
             ++retry->unackedPeerBodies;
         }
