@@ -99,6 +99,26 @@ bool consume_activity_keepalive(Session& session,
     }
     touchesScratch = true;
 
+    // FINDINGS 20.48: the client drops a repeated revision even when its content changed.
+    // A peer gain or loss is exactly such a change, so the revision advances once per flip
+    // and the next body below carries the new revision instead of being ignored as a repeat.
+    if (!session.activityJoinedForeignSession) {
+        state::activity::membership::Identity peerProbe{};
+        state::activity::ForeignPeerReason peerReason{};
+
+        const bool havePeerNow =
+            state::activity::foreign_member_identity(session.activitySessionId, peerProbe,
+                                                     peerReason);
+        if (havePeerNow != session.activityPeerWasPublished
+            && state::activity::membership::republish(session.activitySessionId)) {
+            session.activityPeerWasPublished = havePeerNow;
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::info,
+                             havePeerNow ? "ev=activity stage=membership_peer result=gained"
+                                         : "ev=activity stage=membership_peer result=lost");
+        }
+    }
+
     auto nextSendNonce = session.sendNonce;
     std::size_t framedSize = 0;
     // P2-C1 fix (was state::bap() - the legacy default): the activity-link pushes must

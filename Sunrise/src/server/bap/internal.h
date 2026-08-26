@@ -145,6 +145,12 @@ struct Session {
     std::uint64_t activityPublicGroupSession{};
     /** Cleared once the public link has published its single membership body. */
     bool activityPublicMembershipSent{};
+    /**
+     * FINDINGS 20.48: the client drops a repeated revision even when its content changed, so
+     * whenever this link's published membership gains or loses the peer row, the revision
+     * must advance first. This flag remembers what the last shipped body contained.
+     */
+    bool activityPeerWasPublished{};
     /** Latest shared-account generation this peer has received. */
     std::uint64_t accountGeneration{};
     /** Newest shared-account generation owed as a full cross-peer refresh. */
