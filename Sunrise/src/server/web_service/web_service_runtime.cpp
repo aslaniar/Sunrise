@@ -178,42 +178,38 @@ bool consume(std::span<const std::byte> request,
         middleware::web_service::messages::opcode503::Request bootstrap;
         const bool parsed =
             middleware::web_service::messages::opcode503::parse_request(message, bootstrap);
-        // The request's own key is echoed and adopted. An authored id here costs the ship and the
-        // banner.
-        const bool client_proposed = parsed && bootstrap.hasPrimarySoid;
-        if (!bootstrap.hasPrimarySoid) {
-            bootstrap.primarySoid = state::account_snapshot(accountKey).primarySoid;
-        }
-        // WHO said which account: an explicit client proposal overrides provisioning, so every
-        // 503 names its origin - proposed / slot-filled - and the value the slot ends up with
-        // (FINDINGS 20.67: this adoption is how slot 1 became account 0).
+        // WHO said which account: an explicit client proposal overriding the provisioned slot is
+        // what overwrote freshly selected accounts with account 0 (FINDINGS 20.67). This server
+        // owns identity: the answered SOID is always the calling slot's provisioned one, and a
+        // disagreeing proposal is logged, not adopted.
+        const bool client_proposed = parsed && bootstrap.hasPrimarySoid
+                                     && bootstrap.primarySoid != 0;
+        const std::uint64_t servedSoid = state::account_snapshot(accountKey).primarySoid;
         {
-            std::array<char, 128> line{};
+            std::array<char, 160> line{};
             const int logged =
                 std::snprintf(line.data(),
                               line.size(),
-                              "ev=ws503 stage=adopt slot=%u origin=%s soid=0x%016llX",
+                              "ev=ws503 stage=adopt slot=%u origin=%s proposed=0x%016llX "
+                              "answered=0x%016llX",
                               static_cast<unsigned>(accountKey),
                               client_proposed ? "client" : "slot_fill",
-                              static_cast<unsigned long long>(bootstrap.primarySoid));
+                              static_cast<unsigned long long>(
+                                  client_proposed ? bootstrap.primarySoid : 0),
+                              static_cast<unsigned long long>(servedSoid));
             if (logged > 0) {
                 core::log::write(core::log::Channel::server,
                                  core::log::Level::info,
                                  {line.data(), static_cast<std::size_t>(logged)});
             }
         }
+        bootstrap.primarySoid = servedSoid;
+        bootstrap.hasPrimarySoid = true;
         const auto investment = state::investment_snapshot(accountKey);
         if (!parsed
             || !middleware::web_service::messages::opcode503::encode_response(
                 message, bootstrap, investment, response, written)) {
             return encode_echo(message, response, written);
-        }
-        // P2: adoption lands in the CALLING peer's account, never across the provisioned set.
-        if (bootstrap.hasPrimarySoid
-            && !state::set_primary_soid(bootstrap.primarySoid, accountKey)) {
-            core::log::write(core::log::Channel::server,
-                             core::log::Level::warn,
-                             "ev=ws503 stage=adopt result=fail");
         }
         return true;
     }
