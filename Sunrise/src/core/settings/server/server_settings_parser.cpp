@@ -99,6 +99,7 @@ bool Parser::server_settings(server::Settings& output) noexcept {
     bool hasMembershipSweepDwell = false;
     bool hasMembershipSweepBodies = false;
     bool hasMembershipSweepPin = false;
+    bool hasMembershipPeerRetryCap = false;
     bool hasGameplay = false;
     bool hasActivation = false;
     for (;;) {
@@ -250,6 +251,14 @@ bool Parser::server_settings(server::Settings& output) noexcept {
             }
             output.membershipSweepDwellMs = static_cast<std::uint32_t>(value);
             hasMembershipSweepDwell = true;
+        } else if (key == "membership_peer_retry_cap") {
+            std::uint64_t value = 0;
+            if (hasMembershipPeerRetryCap || !unsigned_integer(value)
+                || value > 0xFFFFFFFFULL) {
+                return false;
+            }
+            output.membershipPeerRetryCap = static_cast<std::uint32_t>(value);
+            hasMembershipPeerRetryCap = true;
         } else if (key == "membership_sweep_pin") {
             std::int64_t value = 0;
             if (hasMembershipSweepPin || !signed_integer(value) || value < -1 || value > 5) {

@@ -66,6 +66,21 @@ struct SweepSlot final {
     std::uint64_t bodiesThisStep{};
     /** Tick the live reading became live. */
     std::uint64_t lastAdvanceMs{};
+    /**
+     * Peer-bearing bodies published since the client last acknowledged one.
+     *
+     * Without a cap the server republishes a refused body every ~5 s forever - 127 of them
+     * in one observed run - which starves the client and blocks its destination load. A
+     * refusal must cost a clean negative, never a hung client.
+     */
+    std::uint64_t unackedPeerBodies{};
+    /**
+     * Set once the cap trips and the peer row is withdrawn for this session.
+     * STICKY for the session's lifetime: withdrawing publishes a solo body, the client
+     * acknowledges that, and clearing the flag on an acknowledgement would immediately
+     * re-add the peer and start the storm again.
+     */
+    bool peerWithdrawn{};
 };
 
 /** What one peer-bearing body publishes, and what happens after it. */

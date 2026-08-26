@@ -106,6 +106,12 @@ struct Settings {
      * packed_packed, solo).
      */
     std::int32_t membershipSweepPin{-1};
+    /**
+     * Peer-bearing bodies published without an acknowledgement before the peer row is
+     * withdrawn for that session. Zero disables the cap, which is how the 127-body storm
+     * that blocked a client's Tower load became possible. A refusal must be cheap.
+     */
+    std::uint32_t membershipPeerRetryCap{6};
     /** Peer-bearing bodies one shape carries before advancing. Zero takes the default. */
     std::uint64_t membershipSweepBodies{4};
     /** Milliseconds one shape must also hold, so a burst cannot skip shapes. Zero = default. */

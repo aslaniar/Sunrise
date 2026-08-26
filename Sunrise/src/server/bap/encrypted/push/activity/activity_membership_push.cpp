@@ -162,8 +162,13 @@ make_wire_snapshot(std::uint64_t sessionId,
                                < static_cast<std::int32_t>(kTrailingVariantCount);
     if (pinned) {
         variant = static_cast<TrailingVariant>(serverSettings.membershipSweepPin);
-    } else if (havePeer && serverSettings.membershipSweep) {
-        slot = sweep_slot(sessionId);
+    }
+    // The slot is claimed whenever there IS a peer, not only while sweeping: it now also
+    // carries the retry counters, which apply to every peer body however the reading was
+    // chosen.
+    SweepSlot* retry = havePeer ? sweep_slot(sessionId) : nullptr;
+    if (!pinned && havePeer && serverSettings.membershipSweep) {
+        slot = retry;
     }
     if (slot != nullptr) {
         decision = sweep_decide(*slot,
@@ -173,12 +178,42 @@ make_wire_snapshot(std::uint64_t sessionId,
         variant = decision.variant;
     }
     const TrailingValues values = trailing_values(variant);
-    if (havePeer && values.peerPresent) {
+    // An acknowledgement means the last body landed, so the retry budget starts over. The
+    // withdrawal flag is NOT cleared here: after a withdrawal the solo body gets acknowledged,
+    // and clearing on that would re-add the peer and restart the storm the cap exists to stop.
+    if (retry != nullptr && state::activity::membership::acknowledged(sessionId)) {
+        retry->unackedPeerBodies = 0;
+    }
+    bool publishPeer = havePeer && values.peerPresent && (retry == nullptr
+                                                          || !retry->peerWithdrawn);
+    if (publishPeer && retry != nullptr && serverSettings.membershipPeerRetryCap != 0
+        && retry->unackedPeerBodies >= serverSettings.membershipPeerRetryCap) {
+        retry->peerWithdrawn = true;
+        publishPeer = false;
+        std::array<char, 192> withdrawn{};
+        const int withdrawnLine =
+            std::snprintf(withdrawn.data(),
+                          withdrawn.size(),
+                          "ev=activity stage=membership_peer result=withdrawn variant=%s "
+                          "unacked=%llu session=%llu",
+                          variant_name(variant),
+                          static_cast<unsigned long long>(retry->unackedPeerBodies),
+                          static_cast<unsigned long long>(sessionId));
+        if (withdrawnLine > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             {withdrawn.data(), static_cast<std::size_t>(withdrawnLine)});
+        }
+    }
+    if (publishPeer) {
         apply_peer_row(peerIdentity, wire);
         wire.peerPresent = true;
         // Zero leaves the encoder on its historical value, which is what `solo` wants.
         wire.trailingFirst = values.first;
         wire.trailingSecond = values.second;
+        if (retry != nullptr) {
+            ++retry->unackedPeerBodies;
+        }
     }
     {
         // INSTRUMENT (FINDINGS 20.47): every type-12 body built anywhere converges here, so
@@ -211,7 +246,7 @@ make_wire_snapshot(std::uint64_t sessionId,
                              {line.data(), static_cast<std::size_t>(writtenLine)});
         }
     }
-    if (havePeer) {
+    if (publishPeer) {
         std::array<char, 224> line{};
         // ack= is the PREVIOUS body's verdict, which is exactly the correlation wanted: the
         // shape named here is the one the client was holding when it decided. A flip to ack=1
