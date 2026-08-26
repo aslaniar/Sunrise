@@ -3,35 +3,36 @@
 #include <intrin.h>
 #include <string_view>
 
+#include "../resolver/redirect.h"
 #include "../internal.h"
 #include "../policy/policy.h"
 
 namespace sunrise::client::hooks::egress::dns {
 namespace {
 
-/** DNS refusal is the SDK status for a resolver that rejects the request. */
-constexpr DNS_STATUS kBlockedDnsStatus = DNS_ERROR_RCODE_REFUSED;
-/** Wide substitute name; the resolver answers it from the local table. */
-constexpr wchar_t kLoopbackNameW[] = L"localhost";
-/** Narrow substitute name used by the ANSI and UTF-8 entry points. */
-constexpr char kLoopbackNameA[] = "localhost";
-/** Cache and local tables only, so a substituted query can never reach the wire. */
-constexpr DWORD kLocalOnlyOptions = DNS_QUERY_NO_WIRE_QUERY | DNS_QUERY_NO_NETBT;
-/** Caller flags that would defeat the local answer. Together they give no records at all. */
-constexpr DWORD kConflictingOptions = DNS_QUERY_BYPASS_CACHE | DNS_QUERY_NO_LOCAL_NAME
-                                      | DNS_QUERY_NO_HOSTS_FILE | DNS_QUERY_WIRE_ONLY;
-
 /**
- * A caller-supplied server list clashes with a cache-only query. The resolver then returns
- * ERROR_INVALID_PARAMETER instead of answering locally.
- * @param extra Caller resolver state; a server list when present.
- * @return Options that can be answered locally.
+ * The numeric host every redirected operation reaches. Substituting THIS name for
+ * non-numeric lookups keeps the local-table contract while answering with the
+ * configured server address: a plain "localhost" substitution hangs the caller's
+ * NAT-discovery phase under Wine, where `DnsQuery localhost` + cache-only options
+ * returns no records (FINDINGS 20.73 addendum 2 - the mac's stun never started).
  */
-[[nodiscard]] DWORD local_options(DWORD options, const void* extra) noexcept {
-    const DWORD cleared = options & ~kConflictingOptions;
-    return extra != nullptr ? cleared : cleared | kLocalOnlyOptions;
+const char* substitute_host_a() noexcept {
+    return egress::resolver::redirect_host_a();
 }
 
+const wchar_t* substitute_host_w() noexcept {
+    return egress::resolver::redirect_host_w();
+}
+
+/** DNS refusal is the SDK status for a resolver that rejects the request. */
+constexpr DNS_STATUS kBlockedDnsStatus = DNS_ERROR_RCODE_REFUSED;
+/**
+ * A numeric literal never passes through the resolver as a name, so the local-table and
+ * cache-only restrictions that guarded the localhost substitution are unnecessary here -
+ * and dropping them avoids the Wine-side option clashes that made "localhost" hang.
+ */
+constexpr DWORD kNumericQueryOptions = 0;
 /**
  * An address literal needs no lookup and cannot name a remote host, so it is passed on
  * untouched. Replacing it is what produced the rejected query.
@@ -93,7 +94,7 @@ DNS_STATUS WINAPI query_a(PCSTR name,
         return allow_query(call(name, type, options, extra, results, reserved), name, type, caller);
     }
     return allow_query(
-        call(kLoopbackNameA, type, local_options(options, extra), extra, results, reserved),
+        call(substitute_host_a(), type, kNumericQueryOptions, extra, results, reserved),
         name,
         type,
         caller);
@@ -116,7 +117,7 @@ DNS_STATUS WINAPI query_w(PCWSTR name,
         return allow_query(call(name, type, options, extra, results, reserved), name, type, caller);
     }
     return allow_query(
-        call(kLoopbackNameW, type, local_options(options, extra), extra, results, reserved),
+        call(substitute_host_w(), type, kNumericQueryOptions, extra, results, reserved),
         name,
         type,
         caller);
@@ -139,7 +140,7 @@ DNS_STATUS WINAPI query_utf8(PCSTR name,
         return allow_query(call(name, type, options, extra, results, reserved), name, type, caller);
     }
     return allow_query(
-        call(kLoopbackNameA, type, local_options(options, extra), extra, results, reserved),
+        call(substitute_host_a(), type, kNumericQueryOptions, extra, results, reserved),
         name,
         type,
         caller);
@@ -167,9 +168,8 @@ DNS_STATUS WINAPI query_ex(PDNS_QUERY_REQUEST request,
     }
     DNS_QUERY_REQUEST forwarded = *request;
     if (!is_numeric(request->QueryName)) {
-        forwarded.QueryName = kLoopbackNameW;
-        forwarded.QueryOptions =
-            local_options(static_cast<DWORD>(request->QueryOptions), request->pDnsServerList);
+        forwarded.QueryName = substitute_host_w();
+        forwarded.QueryOptions = kNumericQueryOptions;
     }
     return allow_query(
         call(&forwarded, results, cancel), request->QueryName, request->QueryType, caller);
