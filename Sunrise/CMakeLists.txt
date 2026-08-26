@@ -383,6 +383,7 @@ add_library(steam_api64 SHARED
     src/server/bap/encrypted/push/activity/activity_keepalive_seed.cpp
     src/server/bap/encrypted/bap_connection_publication.cpp
     src/server/bap/encrypted/push/activity/activity_membership_push.cpp
+    src/server/bap/encrypted/push/activity/membership_sweep.cpp
     src/server/bap/encrypted/push/activity/activity_global_state_push.cpp
     src/server/bap/encrypted/push/activity/activity_keepalive_push.cpp
     src/server/bap/encrypted/push/activity/activity_notification_frame.cpp
@@ -898,6 +899,7 @@ add_executable(sunrise-server
     src/server/bap/encrypted/push/activity/activity_keepalive_push.cpp
     src/server/bap/encrypted/push/activity/activity_keepalive_seed.cpp
     src/server/bap/encrypted/push/activity/activity_membership_push.cpp
+    src/server/bap/encrypted/push/activity/membership_sweep.cpp
     src/server/bap/encrypted/push/activity/activity_message_push.cpp
     src/server/bap/encrypted/push/activity/activity_notification_frame.cpp
     src/server/bap/encrypted/push/activity/activity_roster_push.cpp

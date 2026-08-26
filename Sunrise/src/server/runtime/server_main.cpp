@@ -31,6 +31,7 @@
 #include "../persistence/selection_version_test.h"
 #include "../transport/discovery_listener.h"
 #include "server_runtime.h"
+#include "../bap/encrypted/push/activity/membership_sweep.h"
 
 namespace sunrise::server {
 namespace {
@@ -329,10 +330,18 @@ int main(int argc, char** argv) {
     // cannot regenerate details) and the catalog boots empty.
     const bool printProvisionedHash =
         argc > 1 && std::strcmp(argv[1], "--print-provisioned-hash") == 0;
+    // The sweep's first live run tested ONE shape while its boot record looked like two. That
+    // failure was invisible in a log and trivial to see here, so the sweep's own invariants
+    // gate a deploy now (AGENTS.md lesson 13: instrument the boring path).
+    const bool membershipSweepTest =
+        argc > 1 && std::strcmp(argv[1], "--membership-sweep-test") == 0;
     const HMODULE module = GetModuleHandleW(nullptr);
     if (!sunrise::core::settings::initialize(module)) {
         // Settings name their own failure; the sinks do not exist yet to carry a second line.
         return 1;
+    }
+    if (membershipSweepTest) {
+        return sunrise::server::bap::encrypted::push::activity::run_membership_sweep_test();
     }
     if (printProvisionedHash) {
         const auto hash = sunrise::state::runtime::equipment::
