@@ -25,15 +25,21 @@ bool encode_replicate_membership(const MembershipSnapshot& snapshot,
         return false;
     }
 
-    const std::uint32_t masks = snapshot.peerPresent ? kPeerMemberMask : kLocalMemberMask;
+    const std::uint32_t historical = snapshot.peerPresent ? kPeerMemberMask : kLocalMemberMask;
+    // Zero means "unchanged", so a caller that sets neither field reproduces every body this
+    // encoder has ever produced, byte for byte.
+    const std::uint32_t first =
+        snapshot.trailingFirst != 0 ? snapshot.trailingFirst : historical;
+    const std::uint32_t second =
+        snapshot.trailingSecond != 0 ? snapshot.trailingSecond : historical;
     encoding::bits::Writer writer(output.first(size));
     const bool encoded = writer.write(1, 1) && writer.write(snapshot.revision, 32)
                          && writer.write(snapshot.epoch, 32)
                          && write_member_table(writer, snapshot.identity, snapshot.peer,
                                                snapshot.peerPresent)
                          && writer.write(1, 1) && write_region_block(writer, snapshot)
-                         && writer.write(1, 1) && writer.write(masks, 32) && writer.write(1, 1)
-                         && writer.write(masks, 32) && writer.write(0, 1)
+                         && writer.write(1, 1) && writer.write(first, 32) && writer.write(1, 1)
+                         && writer.write(second, 32) && writer.write(0, 1)
                          && writer.write(0, 1) && writer.write(0, 1);
     std::size_t encodedSize = 0;
     const std::size_t meaningfulBits = meaningful_bit_count(snapshot);

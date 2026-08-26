@@ -5,70 +5,91 @@
 namespace sunrise::server::bap::encrypted::push::activity {
 
 /**
- * INSTRUMENT: the shapes member slot 1 is swept through.
+ * INSTRUMENT: the readings of the two trailing 32-bit fields, swept.
  *
- * The known-ACCEPTED artifact is our own solo body; the known-REJECTED one is the full
- * mirrored row (FINDINGS 20.48). Everything between is a cumulative build-up, so the first
- * shape the client applies names the field that was breaking it.
+ * WHY THIS IS THE VARIABLE NOW. The row SHAPE was swept first and made no difference at all
+ * (FINDINGS 20.51): key_only and full_mirror behaved identically, which says the row is not
+ * being read. Lane M's field registry names `peer_and_player_counts` AHEAD of `peer_updates`
+ * and `player_updates`, and its section 4 records U2 - whether those trailing fields carry
+ * COUNTS or BITMASKS - as an open question.
  *
- * ORDER IS DELIBERATE. `solo` sits LAST: an acknowledgement stops the republish loop and ends
- * the sweep, so the known-good shape first would close the harness before any peer-bearing
- * shape was tried.
+ * With ONE member the two readings are the same number: mask 0b1 == count 1. That is exactly
+ * why months of solo bodies could never distinguish them. With TWO members they diverge for
+ * the first time - a mask is 0b11 (3), a count is 2 - and we have been shipping 3.
+ *
+ * The client's own failure vocabulary contains `player-count-zero`, so counts are load-bearing
+ * to this client.
+ *
+ * `solo` stays LAST for the same reason as the shape sweep: an acknowledgement ends the
+ * republish loop, so the known-good body must not be tried before the candidates.
  */
-enum class PeerVariant : std::uint8_t {
-    /** memberKey alone. Tests whether ANY second row is structurally acceptable. */
-    keyOnly,
-    /** + accountSoid. */
-    keyAccount,
-    /** + joinIdentity. */
-    keyAccountJoin,
-    /** + the two int32 opaques. */
-    keyAccountJoinOpaque,
-    /** Every field, byte-identical to p2(35). Known REJECTED - the negative control. */
-    fullMirror,
-    /** No peer row at all. Known ACCEPTED - the terminal positive control. */
+enum class TrailingVariant : std::uint8_t {
+    /** 3 / 3 - both fields as slot masks. Every body ever shipped. The control. */
+    maskMask,
+    /** 2 / 3 - first field a plain member count, second still a mask. */
+    countMask,
+    /** 0x00020002 / 3 - first field two packed 16-bit counts (peers, players). */
+    packedMask,
+    /** 2 / 2 - both fields plain counts. */
+    countCount,
+    /** 0x00020002 / 0x00020002 - both fields packed counts. */
+    packedPacked,
+    /** No peer row. Known ACCEPTED - the terminal positive control. */
     solo,
 };
 
-/** Shapes in the sweep. Beside the enum because both must move together. */
-inline constexpr std::uint64_t kPeerVariantCount = 6;
-/** Peer-bearing bodies one shape carries before the sweep may advance. */
+/** Readings in the sweep. Beside the enum because both must move together. */
+inline constexpr std::uint64_t kTrailingVariantCount = 6;
+/** Peer-bearing bodies one reading carries before the sweep may advance. */
 inline constexpr std::uint64_t kDefaultSweepBodies = 4;
-/** Milliseconds one shape must also hold, so a burst cannot skip shapes. */
+/** Milliseconds one reading must also hold, so a burst cannot skip readings. */
 inline constexpr std::uint64_t kDefaultSweepFloorMs = 10'000;
+
+/** The two 32-bit values one reading publishes. */
+struct TrailingValues final {
+    /** First trailing field. Zero tells the encoder to keep its historical value. */
+    std::uint32_t first{};
+    /** Second trailing field. Zero tells the encoder to keep its historical value. */
+    std::uint32_t second{};
+    /** False for `solo`, which publishes no peer row at all. */
+    bool peerPresent{true};
+};
+
+/** @return The two field values one reading publishes. */
+[[nodiscard]] TrailingValues trailing_values(TrailingVariant variant) noexcept;
 
 /** One session's place in the sweep. Sessions advance independently. */
 struct SweepSlot final {
-    /** Shapes retired so far. The live shape is `step % kPeerVariantCount`. */
+    /** Readings retired so far. The live one is `step % kTrailingVariantCount`. */
     std::uint64_t step{};
-    /** Peer-bearing bodies the live shape has carried. */
+    /** Peer-bearing bodies the live reading has carried. */
     std::uint64_t bodiesThisStep{};
-    /** Tick the live shape became live. */
+    /** Tick the live reading became live. */
     std::uint64_t lastAdvanceMs{};
 };
 
 /** What one peer-bearing body publishes, and what happens after it. */
 struct SweepDecision final {
-    /** Shape THIS body carries. */
-    PeerVariant variant{PeerVariant::keyOnly};
+    /** Reading THIS body carries. */
+    TrailingVariant variant{TrailingVariant::maskMask};
     /**
-     * True when the sweep retires this shape after this body.
+     * True when the sweep retires this reading after this body.
      *
      * The caller must then advance the published revision. The client applies one update per
-     * revision and DROPS every repeat (Lane M, opencode's p2(39)), so a shape change that
-     * reuses a revision is discarded unread - which is exactly how the first sweep run
-     * measured nothing after its opening shape.
+     * revision and DROPS every repeat (Lane M, opencode's p2(39)), so a change that reuses
+     * a revision is discarded unread - which is exactly how the shape sweep's first run
+     * measured nothing after its opening reading.
      */
     bool advance{};
 };
 
 /**
- * Decides one body's shape without mutating anything.
+ * Decides one body's reading without mutating anything.
  * @param slot This session's current place in the sweep.
  * @param nowMs Monotonic tick.
- * @param bodiesNeeded Bodies one shape must carry. Zero takes the default.
- * @param floorMs Milliseconds one shape must hold. Zero takes the default.
- * @return The shape to publish and whether it is retired afterwards.
+ * @param bodiesNeeded Bodies one reading must carry. Zero takes the default.
+ * @param floorMs Milliseconds one reading must hold. Zero takes the default.
+ * @return The reading to publish and whether it is retired afterwards.
  */
 [[nodiscard]] SweepDecision sweep_decide(const SweepSlot& slot,
                                          std::uint64_t nowMs,
@@ -77,18 +98,18 @@ struct SweepDecision final {
 
 /**
  * Records one published body against the slot.
- * @param slot Receives the body count, and the next shape when the decision retires this one.
+ * @param slot Receives the body count, and the next reading when this one is retired.
  * @param decision The decision that produced the body just published.
- * @param nowMs Monotonic tick, stored as the new shape's start.
+ * @param nowMs Monotonic tick, stored as the new reading's start.
  */
 void sweep_apply(SweepSlot& slot, const SweepDecision& decision, std::uint64_t nowMs) noexcept;
 
-/** @return Human-readable shape name, for the boot record. */
-[[nodiscard]] const char* variant_name(PeerVariant variant) noexcept;
+/** @return Human-readable reading name, for the boot record. */
+[[nodiscard]] const char* variant_name(TrailingVariant variant) noexcept;
 
 /**
  * Drives the sweep through a full pass and checks its invariants.
- * Exists because the first live run tested ONE shape and looked like it had tested two - the
+ * Exists because the shape sweep's first run tested ONE reading and looked like two - the
  * failure was invisible in a boot record and trivially visible here.
  * @return Zero when every invariant holds.
  */

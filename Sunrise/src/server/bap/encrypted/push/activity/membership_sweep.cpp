@@ -12,7 +12,7 @@ SweepDecision sweep_decide(const SweepSlot& slot,
     const std::uint64_t needed = bodiesNeeded == 0 ? kDefaultSweepBodies : bodiesNeeded;
     const std::uint64_t floor = floorMs == 0 ? kDefaultSweepFloorMs : floorMs;
     SweepDecision decision{};
-    decision.variant = static_cast<PeerVariant>(slot.step % kPeerVariantCount);
+    decision.variant = static_cast<TrailingVariant>(slot.step % kTrailingVariantCount);
     // Counted with THIS body included: the shape is retired once it has carried `needed`
     // bodies and held for `floor`. Both, not either - bodies arrive in bursts (three inside
     // one second, observed), so a count alone skips shapes the client never saw settle, and a
@@ -32,23 +32,50 @@ void sweep_apply(SweepSlot& slot, const SweepDecision& decision, const std::uint
     slot.lastAdvanceMs = nowMs;
 }
 
-/** @return Human-readable shape name, for the boot record. */
-const char* variant_name(const PeerVariant variant) noexcept {
+/** @return Human-readable reading name, for the boot record. */
+const char* variant_name(const TrailingVariant variant) noexcept {
     switch (variant) {
-    case PeerVariant::keyOnly:
-        return "key_only";
-    case PeerVariant::keyAccount:
-        return "key_account";
-    case PeerVariant::keyAccountJoin:
-        return "key_account_join";
-    case PeerVariant::keyAccountJoinOpaque:
-        return "key_account_join_opaque";
-    case PeerVariant::fullMirror:
-        return "full_mirror";
-    case PeerVariant::solo:
+    case TrailingVariant::maskMask:
+        return "mask_mask";
+    case TrailingVariant::countMask:
+        return "count_mask";
+    case TrailingVariant::packedMask:
+        return "packed_mask";
+    case TrailingVariant::countCount:
+        return "count_count";
+    case TrailingVariant::packedPacked:
+        return "packed_packed";
+    case TrailingVariant::solo:
         return "solo";
     }
     return "unknown";
+}
+
+/** Two members as a slot mask: bits 0 and 1 set. */
+constexpr std::uint32_t kTwoMemberMask = 0b11;
+/** Two members as a plain count. */
+constexpr std::uint32_t kTwoMemberCount = 2;
+/** Two peers and two players, packed as 16-bit halves - the name says "counts", plural. */
+constexpr std::uint32_t kTwoPackedCounts = (kTwoMemberCount << 16) | kTwoMemberCount;
+
+/** @return The two field values one reading publishes. */
+TrailingValues trailing_values(const TrailingVariant variant) noexcept {
+    switch (variant) {
+    case TrailingVariant::maskMask:
+        return {kTwoMemberMask, kTwoMemberMask, true};
+    case TrailingVariant::countMask:
+        return {kTwoMemberCount, kTwoMemberMask, true};
+    case TrailingVariant::packedMask:
+        return {kTwoPackedCounts, kTwoMemberMask, true};
+    case TrailingVariant::countCount:
+        return {kTwoMemberCount, kTwoMemberCount, true};
+    case TrailingVariant::packedPacked:
+        return {kTwoPackedCounts, kTwoPackedCounts, true};
+    case TrailingVariant::solo:
+        // Zeroes tell the encoder to keep its historical single-member value.
+        return {0, 0, false};
+    }
+    return {kTwoMemberMask, kTwoMemberMask, true};
 }
 
 namespace {
@@ -73,20 +100,20 @@ int run_membership_sweep_test() noexcept {
     std::uint64_t nowMs = 0;
     std::uint64_t failures = 0;
 
-    std::uint64_t bodiesFor[kPeerVariantCount] = {};
+    std::uint64_t bodiesFor[kTrailingVariantCount] = {};
     std::uint64_t advancesSeen = 0;
-    PeerVariant lastVariant = PeerVariant::keyOnly;
-    bool sawVariant[kPeerVariantCount] = {};
+    TrailingVariant lastVariant = TrailingVariant::maskMask;
+    bool sawVariant[kTrailingVariantCount] = {};
 
     // Enough bodies to retire all six shapes at this cadence, with headroom.
-    for (std::uint64_t body = 0; body < 200 && slot.step < kPeerVariantCount; ++body) {
+    for (std::uint64_t body = 0; body < 200 && slot.step < kTrailingVariantCount; ++body) {
         const SweepDecision decision = sweep_decide(slot, nowMs, kBodies, kFloorMs);
         const auto index = static_cast<std::uint64_t>(decision.variant);
 
-        // INVARIANT 1: shapes are visited in order, each exactly once. The first live run
-        // OPENED on index 4 because its phase was anchored to the wrong event.
-        if (body == 0 && decision.variant != PeerVariant::keyOnly) {
-            fail("opens_on_key_only", index);
+        // INVARIANT 1: readings are visited in order, each exactly once. The shape sweep's
+        // first live run OPENED on index 4 because its phase was anchored to the wrong event.
+        if (body == 0 && decision.variant != TrailingVariant::maskMask) {
+            fail("opens_on_mask_mask", index);
             ++failures;
         }
         if (index != static_cast<std::uint64_t>(lastVariant)
@@ -115,22 +142,22 @@ int run_membership_sweep_test() noexcept {
         nowMs += kBodyIntervalMs;
     }
 
-    // INVARIANT 3: every shape actually shipped. The first live run shipped two of six.
-    for (std::uint64_t index = 0; index < kPeerVariantCount; ++index) {
+    // INVARIANT 3: every reading actually shipped. The shape sweep shipped two of six.
+    for (std::uint64_t index = 0; index < kTrailingVariantCount; ++index) {
         if (!sawVariant[index]) {
             fail("variant_never_shipped", index);
             ++failures;
         }
     }
-    // INVARIANT 4: one advance retires one shape, so a full pass advances exactly six times.
-    if (advancesSeen != kPeerVariantCount) {
+    // INVARIANT 4: one advance retires one reading, so a full pass advances six times.
+    if (advancesSeen != kTrailingVariantCount) {
         fail("advance_count", advancesSeen);
         ++failures;
     }
 
-    for (std::uint64_t index = 0; index < kPeerVariantCount; ++index) {
-        std::printf("ev=sweep_test stage=shape variant=%s bodies=%llu\n",
-                    variant_name(static_cast<PeerVariant>(index)),
+    for (std::uint64_t index = 0; index < kTrailingVariantCount; ++index) {
+        std::printf("ev=sweep_test stage=reading variant=%s bodies=%llu\n",
+                    variant_name(static_cast<TrailingVariant>(index)),
                     static_cast<unsigned long long>(bodiesFor[index]));
     }
     std::printf("ev=sweep_test stage=done result=%s failures=%llu advances=%llu\n",

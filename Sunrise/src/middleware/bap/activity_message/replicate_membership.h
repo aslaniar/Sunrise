@@ -69,6 +69,16 @@ struct MembershipSnapshot final {
      */
     client_identity::ClientIdentity peer{};
     bool peerPresent{};
+    /**
+     * INSTRUMENT (Track 1): override for the first trailing 32-bit field, zero meaning
+     * "keep the historical value". With ONE member a slot MASK and a member COUNT are the
+     * same number (1), which is why the two readings were indistinguishable for months;
+     * with two members a mask is 3 and a count is 2. Lane M U2 records the ambiguity, and
+     * its field registry names `peer_and_player_counts` ahead of `peer_updates`.
+     */
+    std::uint32_t trailingFirst{};
+    /** Override for the second trailing 32-bit field. Zero keeps the historical value. */
+    std::uint32_t trailingSecond{};
 };
 
 /** @return Bits the whole body carries before byte padding. */

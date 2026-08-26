@@ -65,38 +65,23 @@ SweepEntry g_sweepEntries[kSweepEntryCapacity]{};
 }
 
 /**
- * Writes one swept shape into the body.
- * @param variant Shape to publish.
+ * Writes the full mirrored peer row.
+ *
+ * The row shape is no longer a variable: it was swept across six shapes and made no
+ * difference at all (FINDINGS 20.51), so the most complete row is published every time and
+ * the sweep varies the trailing fields instead.
+ *
  * @param peer The other joined session's identity.
- * @param wire Receives the peer row and its presence flag.
+ * @param wire Receives the peer row.
  */
-void apply_peer_variant(PeerVariant variant,
-                        const state::activity::membership::Identity& peer,
-                        message::MembershipSnapshot& wire) noexcept {
+void apply_peer_row(const state::activity::membership::Identity& peer,
+                    message::MembershipSnapshot& wire) noexcept {
     wire.peer = {};
-    wire.peerPresent = variant != PeerVariant::solo;
-    if (!wire.peerPresent) {
-        return;
-    }
-    // Cumulative by design: every case falls through to the next, so the shapes differ by
-    // exactly one addition and the first acknowledged one names the field.
     wire.peer.memberKey = peer.memberKey;
-    if (variant == PeerVariant::keyOnly) {
-        return;
-    }
-    wire.peer.accountSoid = peer.accountSoid;
-    if (variant == PeerVariant::keyAccount) {
-        return;
-    }
-    wire.peer.field3 = peer.joinIdentity;
-    if (variant == PeerVariant::keyAccountJoin) {
-        return;
-    }
     wire.peer.field1 = peer.smallOpaque;
     wire.peer.field2 = peer.signedOpaque;
-    if (variant == PeerVariant::keyAccountJoinOpaque) {
-        return;
-    }
+    wire.peer.field3 = peer.joinIdentity;
+    wire.peer.accountSoid = peer.accountSoid;
     wire.peer.field5 = peer.opaqueSoid;
     wire.peer.field6 = peer.secondaryOpaque;
 }
@@ -167,7 +152,7 @@ make_wire_snapshot(std::uint64_t sessionId,
     // Only a body that HAS a peer to publish advances the sweep - a solo body carries no shape
     // under test, and counting it would spend shapes on nothing.
     const core::settings::server::Settings& serverSettings = core::settings::get().server;
-    PeerVariant variant = PeerVariant::fullMirror;
+    TrailingVariant variant = TrailingVariant::maskMask;
     SweepDecision decision{};
     SweepSlot* slot = nullptr;
     if (havePeer && serverSettings.membershipSweep) {
@@ -180,8 +165,13 @@ make_wire_snapshot(std::uint64_t sessionId,
                                 serverSettings.membershipSweepDwellMs);
         variant = decision.variant;
     }
-    if (havePeer) {
-        apply_peer_variant(variant, peerIdentity, wire);
+    const TrailingValues values = trailing_values(variant);
+    if (havePeer && values.peerPresent) {
+        apply_peer_row(peerIdentity, wire);
+        wire.peerPresent = true;
+        // Zero leaves the encoder on its historical value, which is what `solo` wants.
+        wire.trailingFirst = values.first;
+        wire.trailingSecond = values.second;
     }
     {
         // INSTRUMENT (FINDINGS 20.47): every type-12 body built anywhere converges here, so
@@ -224,12 +214,14 @@ make_wire_snapshot(std::uint64_t sessionId,
             std::snprintf(line.data(),
                           line.size(),
                           "ev=activity stage=membership_peer result=included key=0x%016llX "
-                          "variant=%s step=%llu ack=%d peer_row=%d",
+                          "variant=%s step=%llu ack=%d peer_row=%d first=0x%08X second=0x%08X",
                           static_cast<unsigned long long>(peerIdentity.memberKey),
                           variant_name(variant),
                           static_cast<unsigned long long>(slot == nullptr ? 0 : slot->step),
                           state::activity::membership::acknowledged(sessionId) ? 1 : 0,
-                          wire.peerPresent ? 1 : 0);
+                          wire.peerPresent ? 1 : 0,
+                          values.first,
+                          values.second);
         if (includedLine > 0) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::info,
@@ -252,8 +244,8 @@ make_wire_snapshot(std::uint64_t sessionId,
                               "ev=activity stage=membership_sweep result=retired variant=%s "
                               "next=%s",
                               variant_name(decision.variant),
-                              variant_name(static_cast<PeerVariant>(slot->step
-                                                                    % kPeerVariantCount)));
+                              variant_name(static_cast<TrailingVariant>(
+                                  slot->step % kTrailingVariantCount)));
             if (retireLine > 0) {
                 core::log::write(core::log::Channel::server,
                                  core::log::Level::info,
