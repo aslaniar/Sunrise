@@ -139,9 +139,18 @@ bool initialize(void* module) noexcept {
             stage = "ui_logs";
         } else if (!state::entitlements::publish(settings::get().server.entitlements)) {
             stage = "entitlements";
-        } else if (!state::initialize(module,
-                                      settings::get().initialAccount,
-                                      settings::get().initialActivityDefaults)) {
+        } else if (!(
+                        // A file that authors accounts[] provisions every slot it names, so
+                        // local_account_key can select among them; a legacy file keeps the
+                        // exact single-account flow. Seeding from initialAccount alone is
+                        // what collapsed both machines onto account 0 (20.64/20.66).
+                        settings::get().provisionedAccountCount != 0u
+                            ? state::initialize_provisioned(
+                                module, settings::get().initialActivityDefaults)
+                            : state::initialize(module,
+                                                settings::get().initialAccount,
+                                                settings::get()
+                                                    .initialActivityDefaults))) {
             stage = "state";
         } else if (!initialize_content_manifest(module)) {
             stage = "content_manifest";
