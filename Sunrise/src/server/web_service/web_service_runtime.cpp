@@ -180,8 +180,27 @@ bool consume(std::span<const std::byte> request,
             middleware::web_service::messages::opcode503::parse_request(message, bootstrap);
         // The request's own key is echoed and adopted. An authored id here costs the ship and the
         // banner.
+        const bool client_proposed = parsed && bootstrap.hasPrimarySoid;
         if (!bootstrap.hasPrimarySoid) {
             bootstrap.primarySoid = state::account_snapshot(accountKey).primarySoid;
+        }
+        // WHO said which account: an explicit client proposal overrides provisioning, so every
+        // 503 names its origin - proposed / slot-filled - and the value the slot ends up with
+        // (FINDINGS 20.67: this adoption is how slot 1 became account 0).
+        {
+            std::array<char, 128> line{};
+            const int logged =
+                std::snprintf(line.data(),
+                              line.size(),
+                              "ev=ws503 stage=adopt slot=%u origin=%s soid=0x%016llX",
+                              static_cast<unsigned>(accountKey),
+                              client_proposed ? "client" : "slot_fill",
+                              static_cast<unsigned long long>(bootstrap.primarySoid));
+            if (logged > 0) {
+                core::log::write(core::log::Channel::server,
+                                 core::log::Level::info,
+                                 {line.data(), static_cast<std::size_t>(logged)});
+            }
         }
         const auto investment = state::investment_snapshot(accountKey);
         if (!parsed
