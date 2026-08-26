@@ -155,7 +155,14 @@ make_wire_snapshot(std::uint64_t sessionId,
     TrailingVariant variant = TrailingVariant::maskMask;
     SweepDecision decision{};
     SweepSlot* slot = nullptr;
-    if (havePeer && serverSettings.membershipSweep) {
+    // A PINNED reading never advances: it is how a candidate the sweep implicated gets
+    // confirmed on its own, one variable at a time, with no rebuild between rounds.
+    const bool pinned = serverSettings.membershipSweepPin >= 0
+                        && serverSettings.membershipSweepPin
+                               < static_cast<std::int32_t>(kTrailingVariantCount);
+    if (pinned) {
+        variant = static_cast<TrailingVariant>(serverSettings.membershipSweepPin);
+    } else if (havePeer && serverSettings.membershipSweep) {
         slot = sweep_slot(sessionId);
     }
     if (slot != nullptr) {

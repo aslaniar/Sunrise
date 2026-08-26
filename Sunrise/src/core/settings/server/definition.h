@@ -99,6 +99,13 @@ struct Settings {
      * row, every time.
      */
     bool membershipSweep{false};
+    /**
+     * Pins the sweep to ONE reading instead of walking, so a candidate can be confirmed
+     * without a rebuild between rounds. Negative sweeps as usual; 0..5 selects the reading
+     * in TrailingVariant order (mask_mask, count_mask, packed_mask, count_count,
+     * packed_packed, solo).
+     */
+    std::int32_t membershipSweepPin{-1};
     /** Peer-bearing bodies one shape carries before advancing. Zero takes the default. */
     std::uint64_t membershipSweepBodies{4};
     /** Milliseconds one shape must also hold, so a burst cannot skip shapes. Zero = default. */
