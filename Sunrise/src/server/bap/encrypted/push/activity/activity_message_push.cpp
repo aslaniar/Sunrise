@@ -66,6 +66,22 @@ bool append_join_notifications(Scratch& scratch,
                                                 nonce,
                                                 response,
                                                 written);
+    // What this host answered to the join, per boot: the client's PRIVATE/PUBLIC classification
+    // hangs on the session id in this body (FINDINGS 20.69), so name it on every push.
+    if (encoded) {
+        std::array<char, 128> line{};
+        const int logged = std::snprintf(
+            line.data(),
+            line.size(),
+            "ev=activity stage=join_result push correlation=%u ah_sid=0x%llX status=accepted",
+            activity.correlation,
+            static_cast<unsigned long long>(activity.sessionId));
+        if (logged > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::info,
+                             {line.data(), static_cast<std::size_t>(logged)});
+        }
+    }
     clear_prefix(scratch.responseBody, messageSize);
     if (encoded) {
         middleware::secure_channel::advance_nonce(nonce);
