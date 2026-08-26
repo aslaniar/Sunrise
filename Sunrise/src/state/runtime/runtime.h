@@ -179,6 +179,20 @@ struct PendingSubclassSelection {
     const activity::defaults::ActivityDefaults& activityDefaults) noexcept;
 
 /**
+ * Provisions exactly ONE account into slot 0: the one `state.local_account_key` names
+ * (slot 0 itself for legacy files). Retail identity and sign-on-token paths read the
+ * active slot without knowing our selector, so the selection has to happen at
+ * provision time - a second slot nothing retail reads cannot change what the client
+ * publishes (FINDINGS 20.66).
+ * @param module Loaded Sunrise module, or null to disable disk persistence.
+ * @param activityDefaults Complete local fallback policy from immutable Core settings.
+ * @return True when the selected account built and published.
+ */
+[[nodiscard]] bool initialize_selected(
+    void* module,
+    const activity::defaults::ActivityDefaults& activityDefaults) noexcept;
+
+/**
  * Replaces one provisioned slot's State with a persisted account (the boot's database pass).
  * Slot 0 keeps build-data ownership exactly like the historical two-pass flow; other slots
  * rebuild without touching the shared cache identity.

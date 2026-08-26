@@ -372,6 +372,32 @@ bool initialize_provisioned(
 }
 
 /**
+ * Provisions exactly one account: the entry `state.local_account_key` names. The selected
+ * slot's OWN bootstrap token travels with it, so sign-on, the served identity and every
+ * retail reader of the active slot agree on who this install is.
+ * @param module Loaded Sunrise module, or null to disable disk persistence.
+ * @param activityDefaults Complete local fallback policy from immutable Core settings.
+ * @return True when the selected account built and published.
+ */
+bool initialize_selected(
+    void* module,
+    const activity::defaults::ActivityDefaults& activityDefaults) noexcept {
+    const core::settings::Settings& settings = core::settings::get();
+    const std::size_t key = static_cast<std::size_t>(core::settings::local_account());
+    // local_account() already clamps beyond the provisioned set; index defensively anyway.
+    const std::size_t index =
+        key < settings.provisionedAccountCount ? key : static_cast<std::size_t>(0);
+    const std::array<ProvisionedAccountInput, 1> inputs{
+        ProvisionedAccountInput{&settings.accounts[index].account,
+                                std::string_view(settings.accounts[index]
+                                                     .bootstrapToken.data())}};
+    return initialize_accounts(
+        module,
+        std::span<const ProvisionedAccountInput>(inputs.begin(), inputs.size()),
+        activityDefaults);
+}
+
+/**
  * Loads build data and generates secrets with Sunrise's authored activity defaults.
  * @param module Loaded Sunrise module, or null to disable disk persistence.
  * @param initialAccount Empty State, or a complete checked account from Core settings.
