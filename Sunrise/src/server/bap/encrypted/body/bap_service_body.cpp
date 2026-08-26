@@ -45,6 +45,20 @@ bool process(const ServiceRoute& route,
         return true;
     case BodyCodec::accountTranslationResponse: {
         const state::AccountState account = state::account_snapshot(accountKey);
+        // The Client adopts whatever SOID this answer pairs with its token, so the answered
+        // value IS the client's published identity - log the pair every time (20.67).
+        std::array<char, 128> line{};
+        const int logged =
+            std::snprintf(line.data(),
+                          line.size(),
+                          "ev=translation stage=answer slot=%u answered=0x%016llX",
+                          static_cast<unsigned>(accountKey),
+                          static_cast<unsigned long long>(account.primarySoid));
+        if (logged > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::info,
+                             {line.data(), static_cast<std::size_t>(logged)});
+        }
         return middleware::bap::account_translation::encode_response(
             requestBody, account.primarySoid, output, written);
     }
