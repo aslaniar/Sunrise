@@ -55,8 +55,10 @@ enum class PeerVariant : std::uint8_t {
 
 /** Shapes in the sweep. Kept beside the enum because both must move together. */
 constexpr std::uint64_t kPeerVariantCount = 6;
-/** Used when the configured dwell is zero. */
-constexpr std::uint32_t kDefaultSweepDwellMs = 30'000;
+/** Peer-bearing bodies one shape must carry before the sweep may advance. */
+constexpr std::uint64_t kDefaultSweepBodies = 4;
+/** Milliseconds one shape must also hold, so a burst cannot skip shapes. */
+constexpr std::uint32_t kDefaultSweepFloorMs = 10'000;
 
 /** @return Human-readable name of one swept shape, for the boot record. */
 [[nodiscard]] const char* variant_name(PeerVariant variant) noexcept {
@@ -79,6 +81,15 @@ constexpr std::uint32_t kDefaultSweepDwellMs = 30'000;
 
 /**
  * Picks the shape this body publishes.
+ *
+ * Anchored to the first PEER-BEARING body, not the first body of the boot. The first attempt
+ * anchored to boot and was already at index 4 by the time the second client joined, so four of
+ * six shapes never shipped at all (the sweep's own first run, 2026-08-25).
+ *
+ * Advancement needs BOTH a body count and a time floor. Bodies arrive in bursts - three inside
+ * one second was observed - so a pure count blows through shapes without the client ever seeing
+ * them settle; a pure clock ignores how many transmissions actually carried the shape.
+ *
  * @param cycle Receives how many complete passes the sweep has made.
  * @return fullMirror whenever the sweep is off, which is p2(35) byte for byte.
  */
@@ -88,16 +99,27 @@ constexpr std::uint32_t kDefaultSweepDwellMs = 30'000;
     if (!server.membershipSweep) {
         return PeerVariant::fullMirror;
     }
-    // One process-wide phase rather than one per session: both machines' bodies then carry the
-    // same shape at the same moment, which is what makes two logs comparable line for line.
-    static std::uint64_t startTick = 0;
+    // Process-wide, not per session: both machines' bodies then carry the same shape at the
+    // same moment, which is what makes two logs comparable line for line.
+    static std::uint64_t step = 0;
+    static std::uint64_t bodiesThisStep = 0;
+    static std::uint64_t lastAdvanceTick = 0;
+
     const std::uint64_t now = GetTickCount64();
-    if (startTick == 0) {
-        startTick = now;
+    if (lastAdvanceTick == 0) {
+        lastAdvanceTick = now;
     }
-    const std::uint32_t dwell = server.membershipSweepDwellMs == 0 ? kDefaultSweepDwellMs
-                                                                  : server.membershipSweepDwellMs;
-    const std::uint64_t step = (now - startTick) / dwell;
+    ++bodiesThisStep;
+
+    const std::uint64_t bodiesNeeded =
+        server.membershipSweepBodies == 0 ? kDefaultSweepBodies : server.membershipSweepBodies;
+    const std::uint32_t floorMs = server.membershipSweepDwellMs == 0 ? kDefaultSweepFloorMs
+                                                                    : server.membershipSweepDwellMs;
+    if (bodiesThisStep >= bodiesNeeded && (now - lastAdvanceTick) >= floorMs) {
+        ++step;
+        bodiesThisStep = 0;
+        lastAdvanceTick = now;
+    }
     cycle = step / kPeerVariantCount;
     return static_cast<PeerVariant>(step % kPeerVariantCount);
 }
@@ -202,9 +224,12 @@ make_wire_snapshot(std::uint64_t sessionId,
     state::activity::ForeignPeerReason peerReason{};
     const bool havePeer =
         state::activity::foreign_member_identity(sessionId, peerIdentity, peerReason);
+    // Only a body that HAS a peer to publish advances the sweep - a solo body carries no shape
+    // under test, and counting it would spend shapes on nothing.
     std::uint64_t sweepCycle = 0;
-    const PeerVariant variant = sweep_variant(sweepCycle);
+    PeerVariant variant = PeerVariant::fullMirror;
     if (havePeer) {
+        variant = sweep_variant(sweepCycle);
         apply_peer_variant(variant, peerIdentity, wire);
     }
     {

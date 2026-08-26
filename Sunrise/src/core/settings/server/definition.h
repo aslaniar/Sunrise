@@ -99,8 +99,10 @@ struct Settings {
      * row, every time.
      */
     bool membershipSweep{false};
-    /** Milliseconds one swept shape is held before advancing. Zero takes the default. */
-    std::uint32_t membershipSweepDwellMs{30'000};
+    /** Peer-bearing bodies one shape carries before advancing. Zero takes the default. */
+    std::uint64_t membershipSweepBodies{4};
+    /** Milliseconds one shape must also hold, so a burst cannot skip shapes. Zero = default. */
+    std::uint32_t membershipSweepDwellMs{10'000};
 };
 
 } // namespace sunrise::core::settings::server
