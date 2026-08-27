@@ -15,11 +15,14 @@ namespace sunrise::client::hooks::join_roster {
  *   add_candidates  +0x1792080  the sustained writer of session candidates +0xC8
  *
  * Every body calls the original and passes its return through unchanged; the only
- * side effect is a rate-limited log line. Callers of all five are censused
- * (20.109): E8/jmp reachability is fully enumerated, no function-pointer refs.
+ * side effect is a rate-limited log line. Reachability: add_candidates and admit
+ * have their direct E8 callers fully enumerated (20.108/20.109); join_request and
+ * join_process are entered from the connection-layer jump table, whose full byte
+ * map was enumerated (20.109); reserve has five direct callers, all in the same
+ * join/leave family (20.109 census addendum). No static function-pointer refs.
  * Installs only while client.join_roster_observer is true (settings.json, restart
- * to re-arm). Prologue bytes are verified before each attach; a mismatch fails
- * loud and attaches nothing.
+ * to re-arm). Each site's prologue bytes are verified before that attach; a
+ * mismatch fails loud for THAT SITE and the per-site result= line names it.
  */
 
 /** Attaches all five observers when the settings switch allows it. */

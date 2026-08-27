@@ -58,8 +58,8 @@ constexpr std::array<SiteSpec, 5> kSites{{
 
 /** Per-call log budget before suppression: hot paths must not flood the log. */
 constexpr std::uint32_t kCallsLoggedPerSite = 16;
-/** Image RVA of the join-candidate table count dword (20.109). */
-constexpr std::uintptr_t kCandidateCountRva = 0x431E1118;
+/** Image RVA of the join-candidate table count dword (VA 0x1431E1118, 20.109). */
+constexpr std::uintptr_t kCandidateCountRva = 0x31E1118;
 /** Site indices, matching kSites order. */
 constexpr std::size_t kJoinRequest = 0;
 constexpr std::size_t kJoinProcess = 1;
@@ -119,6 +119,8 @@ void write_line(const char* text) noexcept {
  * @param a1..a4 Raw register arguments captured at the detour boundary.
  * @param a5 Raw fifth (stack) argument.
  * @param detail Site-specific formatted fields, already bounded.
+ * @param bypassCap When true, log beyond the per-site budget (for low-volume
+ *                  high-value calls, e.g. add-candidates with count > 1).
  */
 void log_call(std::size_t site,
               std::uint64_t a1,
@@ -126,7 +128,8 @@ void log_call(std::size_t site,
               std::uint64_t a3,
               std::uint64_t a4,
               std::uint32_t a5,
-              const char* detail) noexcept {
+              const char* detail,
+              bool bypassCap) noexcept {
     if (!core::log::accepts(core::log::Channel::client, core::log::Level::info)) {
         return;
     }
@@ -141,7 +144,7 @@ void log_call(std::size_t site,
             write_line(first.data());
         }
     }
-    if (calls >= kCallsLoggedPerSite) {
+    if (calls >= kCallsLoggedPerSite && !bypassCap) {
         return;
     }
     std::array<char, 320> line{};
@@ -202,7 +205,7 @@ std::uint64_t __fastcall site_join_request(std::uint64_t a1,
                                       static_cast<unsigned>(safe_read32(pkt + 8)),
                                       static_cast<unsigned long long>(safe_read(pkt + 0x10)),
                                       static_cast<unsigned long long>(safe_read(pkt + 0x18)));
-    log_call(kJoinRequest, a1, a2, a3, a4, a5, written > 0 ? detail.data() : "");
+    log_call(kJoinRequest, a1, a2, a3, a4, a5, written > 0 ? detail.data() : "", false);
     return run_original(kJoinRequest, a1, a2, a3, a4, a5);
 }
 
@@ -224,7 +227,7 @@ std::uint64_t __fastcall site_join_process(std::uint64_t a1,
                                       static_cast<unsigned>(safe_read32(a3 + 4)),
                                       static_cast<unsigned>(safe_read32(a3 + 8)),
                                       static_cast<unsigned long long>(safe_read(a3 + 0x18)));
-    log_call(kJoinProcess, a1, a2, a3, a4, a5, written > 0 ? detail.data() : "");
+    log_call(kJoinProcess, a1, a2, a3, a4, a5, written > 0 ? detail.data() : "", false);
     return run_original(kJoinProcess, a1, a2, a3, a4, a5);
 }
 
@@ -244,7 +247,7 @@ std::uint64_t __fastcall site_reserve(std::uint64_t a1,
                                       static_cast<unsigned>(a2 & 0xFFFFFFFFU),
                                       static_cast<unsigned>(a3 & 0xFFFFFFFFU),
                                       static_cast<unsigned long long>(safe_read(a4)));
-    log_call(kReserve, a1, a2, a3, a4, a5, written > 0 ? detail.data() : "");
+    log_call(kReserve, a1, a2, a3, a4, a5, written > 0 ? detail.data() : "", false);
     return run_original(kReserve, a1, a2, a3, a4, a5);
 }
 
@@ -264,7 +267,7 @@ std::uint64_t __fastcall site_admit(std::uint64_t a1,
                                       static_cast<unsigned>(a2 & 0xFFFFFFFFU),
                                       static_cast<unsigned>(a3 & 0xFFFFFFFFU),
                                       static_cast<unsigned long long>(safe_read(a4)));
-    log_call(kAdmit, a1, a2, a3, a4, a5, written > 0 ? detail.data() : "");
+    log_call(kAdmit, a1, a2, a3, a4, a5, written > 0 ? detail.data() : "", false);
     return run_original(kAdmit, a1, a2, a3, a4, a5);
 }
 
@@ -286,7 +289,7 @@ std::uint64_t __fastcall site_add_candidates(std::uint64_t a1,
                                 static_cast<unsigned long long>(count > 1 ? safe_read(a2 + 8) : 0),
                                 static_cast<unsigned long long>(count > 2 ? safe_read(a2 + 16) : 0),
                                 static_cast<unsigned long long>(count > 3 ? safe_read(a2 + 24) : 0));
-    log_call(kAddCandidates, a1, a2, a3, a4, a5, written > 0 ? detail.data() : "");
+    log_call(kAddCandidates, a1, a2, a3, a4, a5, written > 0 ? detail.data() : "", a5 > 1);
     return run_original(kAddCandidates, a1, a2, a3, a4, a5);
 }
 
@@ -335,6 +338,15 @@ bool install() noexcept {
     }
     const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(game);
     g_gameBase.store(base, std::memory_order_release);
+    {
+        // One execution-verifiable line: the address the poll will actually read.
+        std::array<char, 96> line{};
+        std::snprintf(line.data(),
+                      line.size(),
+                      "ev=jr stage=install poll_addr=0x%llX",
+                      static_cast<unsigned long long>(base + kCandidateCountRva));
+        write_line(line.data());
+    }
 
     bool allAttached = true;
     for (std::size_t i = 0; i < kSites.size(); ++i) {
