@@ -189,11 +189,24 @@ make_wire_snapshot(std::uint64_t sessionId,
     // gap 5); it is not answerable here and must not be guessed at.
     message::CitizenAdvertisement peerCitizen{};
     constexpr std::uint8_t kPeerMemberSlot = 1;
+    // THE DECISION, not the activity (lesson 5). THREE different causes leave a peer row with no
+    // endpoint and TWO of them emit nothing at all: an unresolved binding is silent, and the
+    // same-region skip does not even call `build_advertisement`, so its `result=skip` line never
+    // appears either. A body carrying a peer but no peer endpoint would then be unattributable
+    // among three causes. This line fires on EVERY peer-bearing body, including the boring one.
+    const char* peerAdvertReason = "no_peer";
+    std::int32_t peerRegionIndex = -1;
     if (havePeer) {
+        peerAdvertReason = "no_binding";
         state::activity::SessionBinding peerBinding{};
         if (state::activity::session_binding_for_member(peerIdentity.memberKey, peerBinding)) {
             const EffectiveRegion peerRegion = effective_region(peerBinding.sessionId);
-            if (peerRegion.index >= 0 && peerRegion.index != region.index) {
+            peerRegionIndex = peerRegion.index;
+            if (peerRegion.index < 0) {
+                peerAdvertReason = "peer_region_unset";
+            } else if (peerRegion.index == region.index) {
+                peerAdvertReason = "same_region";
+            } else {
                 std::uint64_t peerGeneration = 0;
                 server::gameplay::build_advertisement(
                     peerBinding,
@@ -206,7 +219,26 @@ make_wire_snapshot(std::uint64_t sessionId,
                 if (peerGeneration != 0) {
                     server::gameplay::group::release_host_session(peerGeneration);
                 }
+                peerAdvertReason = peerCitizen.present ? "built" : "build_failed";
             }
+        }
+    }
+    if (havePeer) {
+        std::array<char, 192> advertLine{};
+        const int advertWritten =
+            std::snprintf(advertLine.data(),
+                          advertLine.size(),
+                          "ev=activity stage=peer_advert result=%s own_region=%d peer_region=%d "
+                          "own_citizen=%d peer_citizen=%d",
+                          peerAdvertReason,
+                          static_cast<int>(region.index),
+                          static_cast<int>(peerRegionIndex),
+                          wire.citizen.present ? 1 : 0,
+                          peerCitizen.present ? 1 : 0);
+        if (advertWritten > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::info,
+                             {advertLine.data(), static_cast<std::size_t>(advertWritten)});
         }
     }
     // Only a body that HAS a peer to publish advances the sweep - a solo body carries no shape
