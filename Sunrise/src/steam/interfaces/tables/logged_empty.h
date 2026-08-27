@@ -35,21 +35,46 @@ inline constexpr std::uint32_t kLoggedEmptyReports = 3;
 template <std::size_t TableId> inline std::array<std::uint32_t, 256> g_loggedEmptyCalls{};
 
 /**
- * The logged stand-in for one unimplemented slot. Mirrors methods::empty exactly - same
- * shape, returns zero - plus one line naming the table and slot on the first calls.
+ * The logged stand-in for one unimplemented slot. Returns zero like methods::empty, and
+ * names the table, the slot, AND ITS FIRST FOUR ARGUMENTS on the first calls.
+ *
+ * WHY THE ARGUMENTS (FINDINGS 20.101 -> 20.102): the friends census told us destiny2 calls
+ * slots 3, 5 and 43 - and then we could go no further, because knowing a slot is called
+ * says nothing about what it wants. Identifying those three would have cost a whole extra
+ * boot purely to add argument logging. Capturing them here means EVERY boot returns call
+ * shapes, not just call names, for every unimplemented slot of every instrumented table.
+ * That is the difference between a boot that answers one question and a boot that returns
+ * a map.
+ *
+ * READING THE ARGUMENTS: this is the x64 convention, so rcx/rdx/r8/r9 carry `self` plus
+ * the first three arguments. Declaring four parameters is safe for slots that take fewer:
+ * the registers exist either way, so a short call logs whatever was already in them - junk
+ * values, never a fault. Judge an argument by whether it is STABLE across calls and
+ * PLAUSIBLE as its supposed type; a value that differs per machine is data, one that does
+ * not is probably an index or a flag. Values also repeat: a CSteamID appears as a big
+ * 0x0110.. or 0x0109.. constant, a small integer is an index or enum, and a pointer is a
+ * large aligned address that VirtualQuery would confirm.
  */
 template <std::size_t TableId, std::size_t Slot>
-ULONG_PTR empty_logged([[maybe_unused]] void* self) noexcept {
+ULONG_PTR empty_logged([[maybe_unused]] void* self,
+                       std::uint64_t argument1,
+                       std::uint64_t argument2,
+                       std::uint64_t argument3) noexcept {
     std::uint32_t& seen = g_loggedEmptyCalls<TableId>[Slot];
     if (seen < kLoggedEmptyReports) {
         ++seen;
-        std::array<char, 96> line{};
-        const int written = std::snprintf(line.data(),
-                                          line.size(),
-                                          "ev=steamnet stage=stub table=%zu slot=%zu seen=%u",
-                                          TableId,
-                                          Slot,
-                                          seen);
+        std::array<char, 192> line{};
+        const int written = std::snprintf(
+            line.data(),
+            line.size(),
+            "ev=steamnet stage=stub table=%zu slot=%zu seen=%u "
+            "a1=0x%016llX a2=0x%016llX a3=0x%016llX",
+            TableId,
+            Slot,
+            seen,
+            static_cast<unsigned long long>(argument1),
+            static_cast<unsigned long long>(argument2),
+            static_cast<unsigned long long>(argument3));
         if (written > 0) {
             core::log::write(core::log::Channel::client,
                              core::log::Level::info,
