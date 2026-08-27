@@ -67,8 +67,22 @@ constexpr std::size_t kReserve = 2;
 constexpr std::size_t kAdmit = 3;
 constexpr std::size_t kAddCandidates = 4;
 
-using Orig = std::uint64_t(__fastcall*)(
-    std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint32_t) noexcept;
+/**
+ * Full-width pass-through ABI: 4 register slots + 12 stack slots, forwarded
+ * bit-exact. The real functions take MORE stack args than a 5-arg body would
+ * forward (reserve's wrapper writes 3 outgoing slots -> >=7 args; admit's
+ * caller writes 6 -> ~10): under-declaring made the original read our frame
+ * garbage for slots 6+ and froze the client (p2(71) incident, 2026-08-27).
+ * Over-declaring is safe: a callee ignores slots beyond its own ABI. Only the
+ * first five slots are logged.
+ */
+constexpr std::size_t kArgSlots = 16;
+using Orig = std::uint64_t(__fastcall*)(std::uint64_t, std::uint64_t, std::uint64_t,
+                                        std::uint64_t, std::uint64_t, std::uint64_t,
+                                        std::uint64_t, std::uint64_t, std::uint64_t,
+                                        std::uint64_t, std::uint64_t, std::uint64_t,
+                                        std::uint64_t, std::uint64_t, std::uint64_t,
+                                        std::uint64_t) noexcept;
 
 std::atomic<std::uint64_t> g_original[kSites.size()]{};
 std::atomic<std::uint32_t> g_calls[kSites.size()]{};
@@ -176,13 +190,25 @@ std::uint64_t run_original(std::size_t site,
                            std::uint64_t a2,
                            std::uint64_t a3,
                            std::uint64_t a4,
-                           std::uint32_t a5) noexcept {
+                           std::uint64_t a5,
+                           std::uint64_t a6,
+                           std::uint64_t a7,
+                           std::uint64_t a8,
+                           std::uint64_t a9,
+                           std::uint64_t a10,
+                           std::uint64_t a11,
+                           std::uint64_t a12,
+                           std::uint64_t a13,
+                           std::uint64_t a14,
+                           std::uint64_t a15,
+                           std::uint64_t a16) noexcept {
     const Orig original = reinterpret_cast<Orig>(
         g_original[site].load(std::memory_order_acquire));
     if (original == nullptr) {
         return 0;
     }
-    return original(a1, a2, a3, a4, a5);
+    return original(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14,
+                    a15, a16);
 }
 
 /**
@@ -190,11 +216,7 @@ std::uint64_t run_original(std::size_t site,
  * context, rdx = connection, r8 = packet record (word[+0] nonce, dword[+4]
  * flags/version, dword[+8] member count, qword[+0x10]/[+0x18] ids).
  */
-std::uint64_t __fastcall site_join_request(std::uint64_t a1,
-                                           std::uint64_t a2,
-                                           std::uint64_t a3,
-                                           std::uint64_t a4,
-                                           std::uint32_t a5) noexcept {
+std::uint64_t __fastcall site_join_request(std::uint64_t a1,std::uint64_t a2,std::uint64_t a3,std::uint64_t a4,std::uint64_t a5,std::uint64_t a6,std::uint64_t a7,std::uint64_t a8,std::uint64_t a9,std::uint64_t a10,std::uint64_t a11,std::uint64_t a12,std::uint64_t a13,std::uint64_t a14,std::uint64_t a15,std::uint64_t a16) noexcept {
     std::array<char, 160> detail{};
     const std::uint64_t pkt = a3;
     const int written = std::snprintf(detail.data(),
@@ -206,7 +228,8 @@ std::uint64_t __fastcall site_join_request(std::uint64_t a1,
                                       static_cast<unsigned long long>(safe_read(pkt + 0x10)),
                                       static_cast<unsigned long long>(safe_read(pkt + 0x18)));
     log_call(kJoinRequest, a1, a2, a3, a4, a5, written > 0 ? detail.data() : "", false);
-    return run_original(kJoinRequest, a1, a2, a3, a4, a5);
+    return run_original(kJoinRequest, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10,
+                        a11, a12, a13, a14, a15, a16);
 }
 
 /**
@@ -214,11 +237,7 @@ std::uint64_t __fastcall site_join_request(std::uint64_t a1,
  * +0x1AEF8), rdx = connection, r8 = packet record (dword[+4], dword[+8]
  * member count, qword[+0x18]).
  */
-std::uint64_t __fastcall site_join_process(std::uint64_t a1,
-                                           std::uint64_t a2,
-                                           std::uint64_t a3,
-                                           std::uint64_t a4,
-                                           std::uint32_t a5) noexcept {
+std::uint64_t __fastcall site_join_process(std::uint64_t a1,std::uint64_t a2,std::uint64_t a3,std::uint64_t a4,std::uint64_t a5,std::uint64_t a6,std::uint64_t a7,std::uint64_t a8,std::uint64_t a9,std::uint64_t a10,std::uint64_t a11,std::uint64_t a12,std::uint64_t a13,std::uint64_t a14,std::uint64_t a15,std::uint64_t a16) noexcept {
     std::array<char, 160> detail{};
     const int written = std::snprintf(detail.data(),
                                       detail.size(),
@@ -228,18 +247,15 @@ std::uint64_t __fastcall site_join_process(std::uint64_t a1,
                                       static_cast<unsigned>(safe_read32(a3 + 8)),
                                       static_cast<unsigned long long>(safe_read(a3 + 0x18)));
     log_call(kJoinProcess, a1, a2, a3, a4, a5, written > 0 ? detail.data() : "", false);
-    return run_original(kJoinProcess, a1, a2, a3, a4, a5);
+    return run_original(kJoinProcess, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10,
+                        a11, a12, a13, a14, a15, a16);
 }
 
 /**
  * Body for the reserve (machine registration) gate. rcx = context, edx/r8d =
  * machine and member indices, r9 = record whose first qword names the joiner.
  */
-std::uint64_t __fastcall site_reserve(std::uint64_t a1,
-                                      std::uint64_t a2,
-                                      std::uint64_t a3,
-                                      std::uint64_t a4,
-                                      std::uint32_t a5) noexcept {
+std::uint64_t __fastcall site_reserve(std::uint64_t a1,std::uint64_t a2,std::uint64_t a3,std::uint64_t a4,std::uint64_t a5,std::uint64_t a6,std::uint64_t a7,std::uint64_t a8,std::uint64_t a9,std::uint64_t a10,std::uint64_t a11,std::uint64_t a12,std::uint64_t a13,std::uint64_t a14,std::uint64_t a15,std::uint64_t a16) noexcept {
     std::array<char, 128> detail{};
     const int written = std::snprintf(detail.data(),
                                       detail.size(),
@@ -248,18 +264,15 @@ std::uint64_t __fastcall site_reserve(std::uint64_t a1,
                                       static_cast<unsigned>(a3 & 0xFFFFFFFFU),
                                       static_cast<unsigned long long>(safe_read(a4)));
     log_call(kReserve, a1, a2, a3, a4, a5, written > 0 ? detail.data() : "", false);
-    return run_original(kReserve, a1, a2, a3, a4, a5);
+    return run_original(kReserve, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10,
+                        a11, a12, a13, a14, a15, a16);
 }
 
 /**
  * Body for the admit (member record fill). rcx = context, edx = machine
  * index, r8d = member index, r9 = record whose first qword is the xuid.
  */
-std::uint64_t __fastcall site_admit(std::uint64_t a1,
-                                    std::uint64_t a2,
-                                    std::uint64_t a3,
-                                    std::uint64_t a4,
-                                    std::uint32_t a5) noexcept {
+std::uint64_t __fastcall site_admit(std::uint64_t a1,std::uint64_t a2,std::uint64_t a3,std::uint64_t a4,std::uint64_t a5,std::uint64_t a6,std::uint64_t a7,std::uint64_t a8,std::uint64_t a9,std::uint64_t a10,std::uint64_t a11,std::uint64_t a12,std::uint64_t a13,std::uint64_t a14,std::uint64_t a15,std::uint64_t a16) noexcept {
     std::array<char, 128> detail{};
     const int written = std::snprintf(detail.data(),
                                       detail.size(),
@@ -268,18 +281,15 @@ std::uint64_t __fastcall site_admit(std::uint64_t a1,
                                       static_cast<unsigned>(a3 & 0xFFFFFFFFU),
                                       static_cast<unsigned long long>(safe_read(a4)));
     log_call(kAdmit, a1, a2, a3, a4, a5, written > 0 ? detail.data() : "", false);
-    return run_original(kAdmit, a1, a2, a3, a4, a5);
+    return run_original(kAdmit, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10,
+                        a11, a12, a13, a14, a15, a16);
 }
 
 /**
  * Body for add-candidates, the sustained writer of session candidates +0xC8.
  * ecx = session id, rdx = xuid array, r8/r9 = flag arrays, a5 = count.
  */
-std::uint64_t __fastcall site_add_candidates(std::uint64_t a1,
-                                             std::uint64_t a2,
-                                             std::uint64_t a3,
-                                             std::uint64_t a4,
-                                             std::uint32_t a5) noexcept {
+std::uint64_t __fastcall site_add_candidates(std::uint64_t a1,std::uint64_t a2,std::uint64_t a3,std::uint64_t a4,std::uint64_t a5,std::uint64_t a6,std::uint64_t a7,std::uint64_t a8,std::uint64_t a9,std::uint64_t a10,std::uint64_t a11,std::uint64_t a12,std::uint64_t a13,std::uint64_t a14,std::uint64_t a15,std::uint64_t a16) noexcept {
     std::array<char, 224> detail{};
     const unsigned count = a5 > 4 ? 4 : a5;
     int written = std::snprintf(detail.data(),
@@ -290,7 +300,8 @@ std::uint64_t __fastcall site_add_candidates(std::uint64_t a1,
                                 static_cast<unsigned long long>(count > 2 ? safe_read(a2 + 16) : 0),
                                 static_cast<unsigned long long>(count > 3 ? safe_read(a2 + 24) : 0));
     log_call(kAddCandidates, a1, a2, a3, a4, a5, written > 0 ? detail.data() : "", a5 > 1);
-    return run_original(kAddCandidates, a1, a2, a3, a4, a5);
+    return run_original(kAddCandidates, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10,
+                        a11, a12, a13, a14, a15, a16);
 }
 
 /** @return True when the prologue at @p address matches the expected bytes. */
