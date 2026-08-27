@@ -4,6 +4,7 @@
 #include <cstdio>
 
 #include "../../../core/logging/log.h"
+#include "../../../core/settings/settings.h"
 #include "../internal.h"
 
 namespace sunrise::steam::interfaces::methods {
@@ -38,6 +39,24 @@ constexpr int kResultOk = 1;
 constexpr DWORD kLobbyEnterSuccess = 1;
 /** Made-up lobby ids use Steam's chat-lobby account-type prefix. */
 constexpr std::uint64_t kLobbySteamIdPrefix = 0x0109000000000000ULL;
+/**
+ * Odd 32-bit multiplier that spreads the call number across the account-id field.
+ *
+ * FINDINGS 20.83: the lobby id WAS `prefix | call`, and `call` is a per-process counter that
+ * starts identically on every machine - so both clients invented the SAME two lobby ids
+ * (0x0109000000000002 fireteam, ...0003 posse), and a managed session's platform id IS its
+ * lobby id. The client's join-gate table (.data 0x141FECDE0) carries
+ * `target_fireteam_is_not_ours`, and a peer whose fireteam id equals your own fails it: the
+ * rig released the mac with peer-link reason 1, `tried-to-join-self`, on exactly this.
+ *
+ * This is 20.40's bug one layer up. That entry made the USER identity per-instance and left
+ * every id DERIVED from a process counter alone.
+ *
+ * ADD would be wrong here and it is worth saying why: the two authored accounts differ by 1
+ * and consecutive calls differ by 1, so `account + call` collides across machines on the very
+ * first pair it sees. XOR against a multiplied stride cannot line up that way.
+ */
+constexpr std::uint32_t kLobbyCallStride = 0x9E3779B9U;
 /** Padding aligns the response field after the one-byte lock flag. */
 constexpr std::size_t kLobbyLockPadding = 3;
 /** Steam's lobby-entry callback is 24 bytes. */
@@ -74,7 +93,13 @@ ApiCall create_lobby([[maybe_unused]] void* self,
                      int lobbyType,
                      int maxMembers) noexcept {
     const ApiCall call = next_api_call();
-    const std::uint64_t lobby = kLobbySteamIdPrefix | call;
+    // The account-id field must be unique ACROSS MACHINES, not merely within this process:
+    // it is what the client compares when it asks whether a target fireteam is its own.
+    const auto account =
+        static_cast<std::uint32_t>(core::settings::get().steam.user.steamId & 0xFFFFFFFFULL);
+    const auto identity =
+        static_cast<std::uint64_t>(account ^ (static_cast<std::uint32_t>(call) * kLobbyCallStride));
+    const std::uint64_t lobby = kLobbySteamIdPrefix | identity;
     // INSTRUMENT: the published descriptor's lobby id is this call's number, so the trace
     // ties each advertisement to the create_lobby that invented it.
     {
@@ -82,12 +107,13 @@ ApiCall create_lobby([[maybe_unused]] void* self,
         const int written = std::snprintf(line.data(),
                                           line.size(),
                                           "ev=steamnet seq=%llu stage=lobby_create type=%d max=%d "
-                                          "result=%u lobby=0x%016llX",
+                                          "result=%u lobby=0x%016llX account=0x%08X",
                                           static_cast<unsigned long long>(next_sequence()),
                                           lobbyType,
                                           maxMembers,
                                           static_cast<unsigned>(call),
-                                          static_cast<unsigned long long>(lobby));
+                                          static_cast<unsigned long long>(lobby),
+                                          static_cast<unsigned>(account));
         if (written > 0) {
             emit(line.data(), static_cast<std::size_t>(written));
         }
