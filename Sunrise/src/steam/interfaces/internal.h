@@ -117,6 +117,8 @@ InputMotionData input_motion_data(void*, std::uint64_t) noexcept;
 int filter_text(void*, char*, DWORD, const char*, bool) noexcept;
 ApiCall create_lobby(void*, int, int) noexcept;
 ApiCall join_lobby(void*, std::uint64_t) noexcept;
+int get_num_lobby_members(void*, std::uint64_t) noexcept;
+std::uint64_t get_lobby_member_by_index(void*, std::uint64_t, int) noexcept;
 bool send_lobby_chat(void*, std::uint64_t, const void*, int) noexcept;
 int get_lobby_chat_entry(void*, std::uint64_t, int, std::uint64_t*, void*, int, int*) noexcept;
 void* get_generic_interface(void*, UserHandle, PipeHandle, const char*) noexcept;

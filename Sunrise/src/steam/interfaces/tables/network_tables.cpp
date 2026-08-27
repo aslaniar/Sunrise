@@ -14,9 +14,19 @@ constexpr std::size_t kSerializedNetworkingMethodCount = 8;
 constexpr std::size_t kHttpMethodCount = 1;
 
 /** Slots used from SteamMatchMaking009. */
+/**
+ * ISteamMatchmaking009 positions. UNLIKE the friends table (20.100), this layout is
+ * corroborated: createLobby/joinLobby/sendLobbyChat/lobbyChatEntry were already bound here
+ * and demonstrably work - create_lobby ran twice at 13 in the p2(67) boot - and all four
+ * match the documented ordinals exactly. numLobbyMembers/lobbyMemberByIndex are the
+ * inference from those four confirmed points (20.102), and both signatures take only
+ * integers, so a wrong inference returns a wrong number rather than faulting.
+ */
 enum class MatchmakingSlot : std::size_t {
     createLobby = 13,
     joinLobby = 14,
+    numLobbyMembers = 17,
+    lobbyMemberByIndex = 18,
     sendLobbyChat = 26,
     lobbyChatEntry = 27,
 };
@@ -107,6 +117,10 @@ void initialize_networking() noexcept {
 
     set_method(g_matchmakingMethods[index(MatchmakingSlot::createLobby)], &methods::create_lobby);
     set_method(g_matchmakingMethods[index(MatchmakingSlot::joinLobby)], &methods::join_lobby);
+    set_method(g_matchmakingMethods[index(MatchmakingSlot::numLobbyMembers)],
+               &methods::get_num_lobby_members);
+    set_method(g_matchmakingMethods[index(MatchmakingSlot::lobbyMemberByIndex)],
+               &methods::get_lobby_member_by_index);
     set_method(g_matchmakingMethods[index(MatchmakingSlot::sendLobbyChat)],
                &methods::send_lobby_chat);
     set_method(g_matchmakingMethods[index(MatchmakingSlot::lobbyChatEntry)],

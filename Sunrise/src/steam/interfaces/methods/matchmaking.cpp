@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 
 #include "../../../core/logging/log.h"
 #include "../../../core/settings/settings.h"
@@ -123,7 +124,39 @@ struct PendingClaim {
     ApiCall call{};
     unsigned attempts{};
     bool active{};
+    /** Cleared once the callbacks are queued; the row keeps polling for the peer after. */
+    bool settled{};
 };
+
+/** Steam callback id for a lobby membership change. */
+constexpr int kLobbyChatUpdateCallback = 506;
+/** EChatMemberStateChange: the member entered. */
+constexpr DWORD kChatMemberEntered = 0x0001;
+/** Steam's lobby chat-update callback is 32 bytes. */
+constexpr std::size_t kLobbyChatUpdateSize = 32;
+
+/** Steam lobby chat-update callback payload layout. */
+struct LobbyChatUpdate {
+    std::uint64_t lobby{};
+    std::uint64_t userChanged{};
+    std::uint64_t makingChange{};
+    DWORD stateChange{};
+    DWORD padding{};
+};
+static_assert(sizeof(LobbyChatUpdate) == kLobbyChatUpdateSize);
+
+/**
+ * MEMBERSHIP, learned from the server (FINDINGS 20.102).
+ *
+ * p2(67) put both clients in one lobby and the roster still named only self, because
+ * neither client was ever told a second member existed and so never asked. These are the
+ * answers to the asking, plus the event that provokes it.
+ */
+constexpr std::size_t kMaxMembers = 4;
+SRWLOCK g_memberLock{SRWLOCK_INIT};
+std::uint64_t g_lobbyId{};
+std::array<std::uint64_t, kMaxMembers> g_members{};
+std::size_t g_memberCount{};
 
 SRWLOCK g_claimLock{SRWLOCK_INIT};
 std::array<PendingClaim, kMaxPendingClaims> g_claims{};
@@ -138,6 +171,32 @@ void log_claim(core::log::Level level, const char* format, ...) noexcept {
     if (written > 0) {
         core::log::write(core::log::Channel::client, level,
                          {line.data(), static_cast<std::size_t>(written)});
+    }
+}
+
+/** Names one membership answer. These sit on a polled path, so log per distinct answer. */
+void log_member_query(const char* stage, std::uint64_t lobby, int index,
+                      std::uint64_t answer) noexcept {
+    static SRWLOCK lock = SRWLOCK_INIT;
+    static char last[160]{};
+    char line[160]{};
+    const int written = std::snprintf(line, sizeof line,
+                                      "ev=steamnet stage=%s lobby=0x%016llX index=%d "
+                                      "answer=0x%llX",
+                                      stage, static_cast<unsigned long long>(lobby), index,
+                                      static_cast<unsigned long long>(answer));
+    if (written <= 0) {
+        return;
+    }
+    AcquireSRWLockExclusive(&lock);
+    const bool changed = std::strcmp(line, last) != 0;
+    if (changed) {
+        std::snprintf(last, sizeof last, "%s", line);
+    }
+    ReleaseSRWLockExclusive(&lock);
+    if (changed) {
+        core::log::write(core::log::Channel::client, core::log::Level::info,
+                         {line, static_cast<std::size_t>(written)});
     }
 }
 
@@ -156,25 +215,85 @@ void settle(std::uint64_t sequence, ApiCall call, std::uint64_t lobby, const cha
     (void)queue_callback(kLobbyEnterCallback, 0, &entered, sizeof(entered));
 }
 
-/** Runs one claim over HTTP. @return True when the claim settled. */
-bool resolve_claim(PendingClaim& claim) noexcept {
-    char target[96]{};
+/** What one claim attempt achieved. */
+struct ClaimOutcome {
+    /** The server answered, so the created/entered callbacks are queued by now. */
+    bool answered{};
+    /** A member other than us is known, so there is nothing left to poll for. */
+    bool paired{};
+};
+
+/** Runs one claim over HTTP. */
+ClaimOutcome resolve_claim(PendingClaim& claim) noexcept {
+    char target[144]{};
     const int written = std::snprintf(target, sizeof target,
-                                      "/lobby/claim?seq=%llx&lobby=%llx",
+                                      "/lobby/claim?seq=%llx&lobby=%llx&xuid=%llx",
                                       static_cast<unsigned long long>(claim.sequence),
-                                      static_cast<unsigned long long>(claim.candidate));
+                                      static_cast<unsigned long long>(claim.candidate),
+                                      static_cast<unsigned long long>(
+                                          core::settings::get().steam.user.steamId));
     if (written <= 0 || written >= static_cast<int>(sizeof target)) {
-        return false;
+        return {};
     }
-    char body[32]{};
+    char body[192]{};
     const unsigned status = interfaces::http_exchange("POST", target, body, sizeof body);
     unsigned long long winner = 0;
     if (status != 200 || std::sscanf(body, "%llx", &winner) != 1 || winner == 0) {
-        return false;
+        return {};
     }
-    settle(claim.sequence, claim.call, winner,
-           winner == claim.candidate ? "host" : "join");
-    return true;
+
+    // "<winner> <member> <member>..." - walk past the winner and take the members.
+    std::array<std::uint64_t, kMaxMembers> seen{};
+    std::size_t seenCount = 0;
+    const char* cursor = std::strchr(body, ' ');
+    while (cursor != nullptr && seenCount < kMaxMembers) {
+        unsigned long long member = 0;
+        if (std::sscanf(cursor, " %llx", &member) != 1 || member == 0) {
+            break;
+        }
+        seen[seenCount++] = member;
+        cursor = std::strchr(cursor + 1, ' ');
+    }
+
+    // Fire an entry event for every member we had not seen before, INCLUDING on re-polls:
+    // the machine that claimed first is not told about the peer until the peer claims, so
+    // discovery necessarily happens after that machine's own callbacks were queued.
+    std::array<std::uint64_t, kMaxMembers> arrivals{};
+    std::size_t arrivalCount = 0;
+    const std::uint64_t own = core::settings::get().steam.user.steamId;
+    AcquireSRWLockExclusive(&g_memberLock);
+    g_lobbyId = winner;
+    for (std::size_t i = 0; i < seenCount; ++i) {
+        bool known = false;
+        for (std::size_t k = 0; k < g_memberCount; ++k) {
+            known = known || g_members[k] == seen[i];
+        }
+        if (!known && g_memberCount < kMaxMembers) {
+            g_members[g_memberCount++] = seen[i];
+            if (seen[i] != own) {
+                arrivals[arrivalCount++] = seen[i];
+            }
+        }
+    }
+    const std::size_t total = g_memberCount;
+    ReleaseSRWLockExclusive(&g_memberLock);
+
+    if (!claim.settled) {
+        settle(claim.sequence, claim.call, winner,
+               winner == claim.candidate ? "host" : "join");
+    }
+    for (std::size_t i = 0; i < arrivalCount; ++i) {
+        const LobbyChatUpdate update{winner, arrivals[i], arrivals[i], kChatMemberEntered, 0};
+        const bool queued =
+            queue_callback(kLobbyChatUpdateCallback, 0, &update, sizeof(update));
+        log_claim(core::log::Level::info,
+                  "ev=steamnet stage=lobby_member_entered lobby=0x%016llX xuid=0x%llX "
+                  "members=%zu queued=%d",
+                  static_cast<unsigned long long>(winner),
+                  static_cast<unsigned long long>(arrivals[i]), total, queued ? 1 : 0);
+    }
+    // Answered, but keep the row alive until the peer is known - see the comment above.
+    return ClaimOutcome{true, total > 1};
 }
 
 DWORD WINAPI claim_worker(void*) noexcept {
@@ -191,16 +310,22 @@ DWORD WINAPI claim_worker(void*) noexcept {
             if (!taken) {
                 continue;
             }
-            bool done = resolve_claim(work);
-            if (!done && work.attempts + 1 >= kClaimAttempts) {
-                // Server never answered. Degrade to p2(66): host our own invented lobby.
-                settle(work.sequence, work.call, work.candidate, "fallback_unclaimed");
-                done = true;
-            }
-            if (done) {
-                AcquireSRWLockExclusive(&g_claimLock);
+            const ClaimOutcome outcome = resolve_claim(work);
+            // ANSWERED, not paired, drives `settled`: resolve_claim queues the callbacks
+            // the first time the server answers, and the peer usually has not claimed yet
+            // at that point. Keying this on `paired` would re-queue LobbyCreated on every
+            // poll until the peer showed up.
+            bool exhausted = false;
+            AcquireSRWLockExclusive(&g_claimLock);
+            g_claims[i].settled = g_claims[i].settled || outcome.answered;
+            exhausted = !g_claims[i].settled && work.attempts + 1 >= kClaimAttempts;
+            if (outcome.paired || exhausted) {
                 g_claims[i].active = false;
-                ReleaseSRWLockExclusive(&g_claimLock);
+            }
+            ReleaseSRWLockExclusive(&g_claimLock);
+            if (exhausted) {
+                // Server never answered at all. Degrade to p2(66): host our own lobby.
+                settle(work.sequence, work.call, work.candidate, "fallback_unclaimed");
             }
         }
         Sleep(kClaimRetryMilliseconds);
@@ -312,6 +437,43 @@ ApiCall join_lobby([[maybe_unused]] void* self, std::uint64_t lobby) noexcept {
     const ApiCall call = next_api_call();
     const LobbyEnter entered{lobby, 0, false, {}, kLobbyEnterSuccess};
     return queue_callback(kLobbyEnterCallback, call, &entered, sizeof(entered)) ? call : 0;
+}
+
+/**
+ * @return How many members the shim knows in @p lobby.
+ *
+ * ISteamMatchmaking009 slot 17. That ordinal is an INFERENCE FROM FOUR CONFIRMED POINTS in
+ * this same table, not the blind header-guess that sank the friends lane (20.100): slots
+ * 13 CreateLobby, 14 JoinLobby, 26 SendLobbyChatMsg and 27 GetLobbyChatEntry are already
+ * bound here and demonstrably working - create_lobby ran twice at slot 13 in the p2(67)
+ * boot - and all four match the documented layout exactly.
+ *
+ * It is also crash-proof if that inference is wrong: the signature takes only integers and
+ * dereferences nothing, so a mismatched caller gets a wrong number rather than a fault.
+ */
+int get_num_lobby_members([[maybe_unused]] void* self, std::uint64_t lobby) noexcept {
+    AcquireSRWLockShared(&g_memberLock);
+    const int count = (lobby == g_lobbyId || lobby == 0)
+                          ? static_cast<int>(g_memberCount)
+                          : 0;
+    ReleaseSRWLockShared(&g_memberLock);
+    log_member_query("num_lobby_members", lobby, 0, static_cast<std::uint64_t>(count));
+    return count;
+}
+
+/** @return The member at @p index, or zero. ISteamMatchmaking009 slot 18; see slot 17. */
+std::uint64_t get_lobby_member_by_index([[maybe_unused]] void* self,
+                                        std::uint64_t lobby,
+                                        int index) noexcept {
+    std::uint64_t member = 0;
+    AcquireSRWLockShared(&g_memberLock);
+    if ((lobby == g_lobbyId || lobby == 0) && index >= 0
+        && static_cast<std::size_t>(index) < g_memberCount) {
+        member = g_members[static_cast<std::size_t>(index)];
+    }
+    ReleaseSRWLockShared(&g_memberLock);
+    log_member_query("lobby_member_by_index", lobby, index, member);
+    return member;
 }
 
 /** Drops a lobby chat payload. Nothing is kept. @return True for a size of zero or more. */

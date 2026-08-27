@@ -1088,23 +1088,43 @@ bool parse_hex(std::string_view text, std::uint64_t& value) noexcept {
 void handle_lobby_claim(SOCKET client, std::string_view query) noexcept {
     std::uint64_t sequence = 0;
     std::uint64_t candidate = 0;
+    std::uint64_t xuid = 0;
     if (!parse_hex(query_value(query, "seq"), sequence)
         || !parse_hex(query_value(query, "lobby"), candidate)) {
         respond(client, "400 Bad Request", "application/json", "{\"ok\":false}");
         return;
     }
-    const std::uint64_t winner =
-        sunrise::server::http::presence::claim_lobby(sequence, candidate);
-    char body[24]{};
-    const int written = std::snprintf(body, sizeof body, "%016llX",
-                                      static_cast<unsigned long long>(winner));
+    // xuid is optional so a p2(67) client still gets a valid answer from a p2(68) server.
+    (void)parse_hex(query_value(query, "xuid"), xuid);
+    std::array<std::uint64_t, sunrise::server::http::presence::kMaxLobbyMembers> members{};
+    std::size_t memberCount = 0;
+    const std::uint64_t winner = sunrise::server::http::presence::claim_lobby(
+        sequence, candidate, xuid, members.data(), members.size(), memberCount);
+    // "<winner> <member> <member>..." - all bare hex, so the shim parses it without a
+    // JSON reader on the game's side.
+    char body[160]{};
+    int written = std::snprintf(body, sizeof body, "%016llX",
+                                static_cast<unsigned long long>(winner));
+    for (std::size_t i = 0; i < memberCount && written > 0; ++i) {
+        const int more = std::snprintf(body + written,
+                                       sizeof body - static_cast<std::size_t>(written),
+                                       " %016llX",
+                                       static_cast<unsigned long long>(members[i]));
+        if (more <= 0) {
+            break;
+        }
+        written += more;
+    }
     std::array<char, core::log::kLineCapacity> line{};
     const int logged = std::snprintf(
         line.data(), line.size(),
-        "ev=lobby stage=claim seq=%llu candidate=0x%016llX winner=0x%016llX result=%s",
+        "ev=lobby stage=claim seq=%llu candidate=0x%016llX winner=0x%016llX xuid=0x%llX "
+        "members=%zu result=%s",
         static_cast<unsigned long long>(sequence),
         static_cast<unsigned long long>(candidate),
         static_cast<unsigned long long>(winner),
+        static_cast<unsigned long long>(xuid),
+        memberCount,
         winner == candidate ? "host" : "join");
     if (logged > 0) {
         core::log::write(core::log::Channel::server, core::log::Level::info,
