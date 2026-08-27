@@ -63,4 +63,57 @@ std::size_t snapshot(char* output, std::size_t capacity) noexcept {
     return used;
 }
 
+
+namespace {
+
+/** One claimed lobby ordinal. */
+struct LobbyClaim {
+    std::uint64_t sequence{};
+    std::uint64_t lobby{};
+};
+SRWLOCK g_lobbyLock{SRWLOCK_INIT};
+std::array<LobbyClaim, kMaxLobbySlots> g_lobbies{};
+std::size_t g_lobbyCount{};
+
+} // namespace
+
+std::uint64_t claim_lobby(std::uint64_t sequence, std::uint64_t candidate) noexcept {
+    if (sequence == 0 || candidate == 0) {
+        return candidate;
+    }
+    AcquireSRWLockExclusive(&g_lobbyLock);
+    std::uint64_t winner = candidate;
+    bool found = false;
+    for (std::size_t i = 0; i < g_lobbyCount; ++i) {
+        if (g_lobbies[i].sequence == sequence) {
+            winner = g_lobbies[i].lobby;
+            found = true;
+            break;
+        }
+    }
+    if (!found && g_lobbyCount < g_lobbies.size()) {
+        g_lobbies[g_lobbyCount].sequence = sequence;
+        g_lobbies[g_lobbyCount].lobby = candidate;
+        ++g_lobbyCount;
+    }
+    ReleaseSRWLockExclusive(&g_lobbyLock);
+    return winner;
+}
+
+std::size_t lobby_snapshot(char* output, std::size_t capacity) noexcept {
+    AcquireSRWLockShared(&g_lobbyLock);
+    std::size_t used = 0;
+    for (std::size_t i = 0; i < g_lobbyCount && used < capacity; ++i) {
+        const int written = std::snprintf(output + used, capacity - used, "%llu %llu\n",
+                                          static_cast<unsigned long long>(g_lobbies[i].sequence),
+                                          static_cast<unsigned long long>(g_lobbies[i].lobby));
+        if (written <= 0 || static_cast<std::size_t>(written) >= capacity - used) {
+            break;
+        }
+        used += static_cast<std::size_t>(written);
+    }
+    ReleaseSRWLockShared(&g_lobbyLock);
+    return used;
+}
+
 }

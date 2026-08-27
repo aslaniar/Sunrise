@@ -14,6 +14,7 @@
 #include "../../../core/settings/settings.h"
 #include "../../../client/network/consumer.h"
 #include "../internal.h"
+#include "../server_link.h"
 
 namespace sunrise::steam::interfaces::methods {
 namespace {
@@ -35,6 +36,11 @@ namespace {
  * p2(62)/p2(63) froze because slots 64/65 carried these bodies while the real ABI has
  * GetFriendMessage(64) and GetFollowerCount(65) there - both run during early sign-in
  * stats flow on every machine. This build binds ONLY verified indices.
+ *
+ * PARKED as of FINDINGS 20.101: the census boot proved destiny2 calls only friends
+ * slots 3, 5 and 43 (a few times each) and that slot 64 is NOT SetRichPresence - no
+ * string-pair setter is called on this interface at all. Nothing here is bound any more.
+ * The code stays because the transport underneath it is reused by the lobby lane.
  *
  * TRANSPORT, p2(65) (FINDINGS 20.99). p2(64) relayed through
  * client::network::consume_http, which does NOT leave this process: the one in-process
@@ -173,12 +179,8 @@ bool readable_string(const char* candidate, std::size_t limit) noexcept {
     return false;
 }
 
-/** Admin listener port on the standalone server. Plaintext; see the header note. */
-constexpr std::uint16_t kPresencePort = 8099;
 /** Worker cadence. Fast enough that a peer appears within a Tower load, cheap enough to ignore. */
 constexpr DWORD kWorkerIntervalMilliseconds = 1000;
-/** A LAN round trip is sub-millisecond; this only bounds the case where nothing answers. */
-constexpr DWORD kSocketTimeoutMilliseconds = 1500;
 
 std::atomic<bool> g_workerStarted{false};
 /** Set by set_rich_presence, cleared by the worker once every own row has been relayed. */
@@ -233,78 +235,6 @@ void log_on_change(std::size_t slot, core::log::Level level, const char* format,
     }
 }
 
-/**
- * One plaintext HTTP/1.1 exchange with the server's admin listener.
- * @param body Response body, null terminated. May be null when the answer is not read.
- * @return HTTP status code, or 0 when the exchange did not complete.
- */
-unsigned http_exchange(const char* verb,
-                       const char* target,
-                       char* body,
-                       std::size_t capacity) noexcept {
-    if (body != nullptr && capacity > 0) {
-        body[0] = '\0';
-    }
-    const char* host = core::settings::get().client.externalServer.host.data();
-    if (host == nullptr || host[0] == '\0') {
-        return 0;
-    }
-    WSADATA winsock{};
-    // Refcounted: the Client is long past its own WSAStartup, so this only adds a reference.
-    if (WSAStartup(MAKEWORD(2, 2), &winsock) != 0) {
-        return 0;
-    }
-    unsigned status = 0;
-    const SOCKET handle = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (handle != INVALID_SOCKET) {
-        DWORD timeout = kSocketTimeoutMilliseconds;
-        (void)::setsockopt(handle, SOL_SOCKET, SO_RCVTIMEO,
-                           reinterpret_cast<const char*>(&timeout), sizeof timeout);
-        (void)::setsockopt(handle, SOL_SOCKET, SO_SNDTIMEO,
-                           reinterpret_cast<const char*>(&timeout), sizeof timeout);
-        sockaddr_in address{};
-        address.sin_family = AF_INET;
-        address.sin_port = htons(kPresencePort);
-        // The host is always a dotted quad here (settings store it as one), so no resolver
-        // is involved - and no resolver hook can rewrite what was never looked up.
-        if (::inet_pton(AF_INET, host, &address.sin_addr) == 1
-            && ::connect(handle, reinterpret_cast<const sockaddr*>(&address), sizeof address) == 0) {
-            char request[512]{};
-            const int requestSize = std::snprintf(
-                request, sizeof request,
-                "%s %s HTTP/1.1\r\nHost: %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                verb, target, host);
-            if (requestSize > 0 && ::send(handle, request, requestSize, 0) == requestSize) {
-                char response[2048]{};
-                std::size_t used = 0;
-                for (;;) {
-                    const int received = ::recv(handle, response + used,
-                                                static_cast<int>(sizeof response - 1 - used), 0);
-                    if (received <= 0) {
-                        break;
-                    }
-                    used += static_cast<std::size_t>(received);
-                    if (used >= sizeof response - 1) {
-                        break;
-                    }
-                }
-                response[used] = '\0';
-                unsigned code = 0;
-                if (std::sscanf(response, "HTTP/1.%*u %u", &code) == 1) {
-                    status = code;
-                }
-                const char* separator = std::strstr(response, "\r\n\r\n");
-                if (body != nullptr && capacity > 0 && separator != nullptr) {
-                    std::snprintf(body, capacity, "%s", separator + 4);
-                }
-            }
-        }
-        (void)::closesocket(handle);
-    }
-    (void)WSACleanup();
-    return status;
-}
-
 /** Relays every own row to the server. Worker thread only. */
 void publish_own_rows() noexcept {
     PresenceRow pending[kMaxRows]{};
@@ -328,7 +258,7 @@ void publish_own_rows() noexcept {
         if (written <= 0 || written >= static_cast<int>(sizeof target)) {
             continue;
         }
-        const unsigned status = http_exchange("POST", target, nullptr, 0);
+        const unsigned status = interfaces::http_exchange("POST", target, nullptr, 0);
         // ABSENCE NEGATIVE (L13): a dropped relay must be LOUD. p2(64) discarded this.
         log_on_change(5, status == 200 ? core::log::Level::info : core::log::Level::warn,
                  "ev=steamnet stage=rich_presence_relay key=%s value=%s http=%u result=%s",
@@ -339,7 +269,7 @@ void publish_own_rows() noexcept {
 /** Fetches every stored peer row from the server. Worker thread only. */
 void fetch_peer_values() noexcept {
     char buffer[2048]{};
-    const unsigned status = http_exchange("GET", "/presence", buffer, sizeof buffer);
+    const unsigned status = interfaces::http_exchange("GET", "/presence", buffer, sizeof buffer);
     if (status != 200) {
         log_on_change(4, core::log::Level::warn,
                       "ev=steamnet stage=presence_fetch http=%u result=fail", status);
@@ -399,8 +329,7 @@ void ensure_worker() noexcept {
         return;
     }
     (void)CloseHandle(thread);
-    log_line(core::log::Level::info,
-             "ev=steamnet stage=presence_worker port=%u result=ok", kPresencePort);
+    log_line(core::log::Level::info, "ev=steamnet stage=presence_worker result=ok");
 }
 
 } // namespace

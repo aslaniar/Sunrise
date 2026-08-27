@@ -1,3 +1,5 @@
+#include <Windows.h>
+
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -6,12 +8,22 @@
 #include "../../../core/logging/log.h"
 #include "../../../core/settings/settings.h"
 #include "../internal.h"
+#include "../server_link.h"
 
 namespace sunrise::steam::interfaces::methods {
 namespace {
 
 /** Monotonic call counter shared by the lobby trace; ORDER across tables is the finding. */
 std::atomic<std::uint64_t> g_lobbySequence{0};
+
+/**
+ * Counts ONLY create_lobby calls, and is the key both machines pair on.
+ *
+ * g_lobbySequence cannot serve: join and chat calls bump it too, so a single extra chat on
+ * one machine would shift that machine's ordinals and pair its first lobby against the
+ * peer's second - silently wiring two unrelated sessions together.
+ */
+std::atomic<std::uint64_t> g_createSequence{0};
 
 /**
  * INSTRUMENT (FINDINGS 20.42): emits one client-channel line for a lobby call. The
@@ -83,6 +95,146 @@ struct LobbyCreated {
 static_assert(sizeof(LobbyEnter) == kLobbyEnterSize);
 static_assert(sizeof(LobbyCreated) == kLobbyCreatedSize);
 
+/**
+ * SHARED-LOBBY CLAIM (p2(67), FINDINGS 20.101 steps 1-2).
+ *
+ * The managed session's membership IS a Steam lobby, and each client was inventing its own
+ * id - so the two sessions were disjoint by construction and "Adding player" could only
+ * ever name the caller's own xuid. Here the Nth create_lobby of each boot is claimed on the
+ * server: the first machine to claim ordinal N keeps its id, the second is handed that same
+ * id, and both managed sessions then name ONE lobby.
+ *
+ * THE WORK IS ASYNCHRONOUS, and that is not a nicety - Steam's CreateLobby contract is
+ * already async (it returns a call handle and delivers LobbyCreated_t later), so doing the
+ * HTTP on a worker matches the interface instead of fighting it, and no socket ever touches
+ * the game's thread.
+ *
+ * FALLBACK IS TODAY'S BEHAVIOUR: if the server does not answer within kClaimAttempts, the
+ * callbacks are queued with the locally invented id, which is byte-for-byte what p2(66)
+ * did. A dead server degrades to the old split-lobby boot rather than to a hang.
+ */
+constexpr std::size_t kMaxPendingClaims = 8;
+constexpr unsigned kClaimAttempts = 10;
+constexpr DWORD kClaimRetryMilliseconds = 300;
+
+struct PendingClaim {
+    std::uint64_t sequence{};
+    std::uint64_t candidate{};
+    ApiCall call{};
+    unsigned attempts{};
+    bool active{};
+};
+
+SRWLOCK g_claimLock{SRWLOCK_INIT};
+std::array<PendingClaim, kMaxPendingClaims> g_claims{};
+std::atomic<bool> g_claimWorkerStarted{false};
+
+void log_claim(core::log::Level level, const char* format, ...) noexcept {
+    std::array<char, core::log::kLineCapacity> line{};
+    va_list arguments;
+    va_start(arguments, format);
+    const int written = std::vsnprintf(line.data(), line.size(), format, arguments);
+    va_end(arguments);
+    if (written > 0) {
+        core::log::write(core::log::Channel::client, level,
+                         {line.data(), static_cast<std::size_t>(written)});
+    }
+}
+
+/** Queues the created+entered pair for one settled claim. */
+void settle(std::uint64_t sequence, ApiCall call, std::uint64_t lobby, const char* how) noexcept {
+    log_claim(core::log::Level::info,
+              "ev=steamnet stage=lobby_claim seq=%llu lobby=0x%016llX result=%s",
+              static_cast<unsigned long long>(sequence),
+              static_cast<unsigned long long>(lobby), how);
+    const LobbyCreated created{kResultOk, 0, lobby};
+    const LobbyEnter entered{lobby, 0, false, {}, kLobbyEnterSuccess};
+    if (!queue_callback(kLobbyCreatedCallback, call, &created, sizeof(created))) {
+        return;
+    }
+    // Entry follows creation, so a reader sees a valid lobby first.
+    (void)queue_callback(kLobbyEnterCallback, 0, &entered, sizeof(entered));
+}
+
+/** Runs one claim over HTTP. @return True when the claim settled. */
+bool resolve_claim(PendingClaim& claim) noexcept {
+    char target[96]{};
+    const int written = std::snprintf(target, sizeof target,
+                                      "/lobby/claim?seq=%llx&lobby=%llx",
+                                      static_cast<unsigned long long>(claim.sequence),
+                                      static_cast<unsigned long long>(claim.candidate));
+    if (written <= 0 || written >= static_cast<int>(sizeof target)) {
+        return false;
+    }
+    char body[32]{};
+    const unsigned status = interfaces::http_exchange("POST", target, body, sizeof body);
+    unsigned long long winner = 0;
+    if (status != 200 || std::sscanf(body, "%llx", &winner) != 1 || winner == 0) {
+        return false;
+    }
+    settle(claim.sequence, claim.call, winner,
+           winner == claim.candidate ? "host" : "join");
+    return true;
+}
+
+DWORD WINAPI claim_worker(void*) noexcept {
+    for (;;) {
+        for (std::size_t i = 0; i < kMaxPendingClaims; ++i) {
+            PendingClaim work{};
+            AcquireSRWLockExclusive(&g_claimLock);
+            const bool taken = g_claims[i].active;
+            if (taken) {
+                work = g_claims[i];
+                ++g_claims[i].attempts;
+            }
+            ReleaseSRWLockExclusive(&g_claimLock);
+            if (!taken) {
+                continue;
+            }
+            bool done = resolve_claim(work);
+            if (!done && work.attempts + 1 >= kClaimAttempts) {
+                // Server never answered. Degrade to p2(66): host our own invented lobby.
+                settle(work.sequence, work.call, work.candidate, "fallback_unclaimed");
+                done = true;
+            }
+            if (done) {
+                AcquireSRWLockExclusive(&g_claimLock);
+                g_claims[i].active = false;
+                ReleaseSRWLockExclusive(&g_claimLock);
+            }
+        }
+        Sleep(kClaimRetryMilliseconds);
+    }
+}
+
+/** Records a claim for the worker. @return True when a slot was free. */
+bool enqueue_claim(std::uint64_t sequence, std::uint64_t candidate, ApiCall call) noexcept {
+    bool queued = false;
+    AcquireSRWLockExclusive(&g_claimLock);
+    for (std::size_t i = 0; i < kMaxPendingClaims && !queued; ++i) {
+        if (!g_claims[i].active) {
+            g_claims[i] = PendingClaim{sequence, candidate, call, 0, true};
+            queued = true;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_claimLock);
+    if (!queued) {
+        return false;
+    }
+    bool expected = false;
+    if (g_claimWorkerStarted.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        const HANDLE thread = CreateThread(nullptr, 0, claim_worker, nullptr, 0, nullptr);
+        if (thread == nullptr) {
+            g_claimWorkerStarted.store(false, std::memory_order_release);
+            log_claim(core::log::Level::warn, "ev=steamnet stage=lobby_claim_worker result=fail");
+            return false;
+        }
+        (void)CloseHandle(thread);
+        log_claim(core::log::Level::info, "ev=steamnet stage=lobby_claim_worker result=ok");
+    }
+    return true;
+}
+
 } // namespace
 
 /**
@@ -100,15 +252,19 @@ ApiCall create_lobby([[maybe_unused]] void* self,
     const auto identity =
         static_cast<std::uint64_t>(account ^ (static_cast<std::uint32_t>(call) * kLobbyCallStride));
     const std::uint64_t lobby = kLobbySteamIdPrefix | identity;
+    const std::uint64_t ordinal = g_createSequence.fetch_add(1, std::memory_order_relaxed) + 1;
     // INSTRUMENT: the published descriptor's lobby id is this call's number, so the trace
-    // ties each advertisement to the create_lobby that invented it.
+    // ties each advertisement to the create_lobby that invented it. `create` is the pairing
+    // key the peer claims against; `seq` stays the cross-table ordering trace.
     {
-        std::array<char, 128> line{};
+        std::array<char, 160> line{};
         const int written = std::snprintf(line.data(),
                                           line.size(),
-                                          "ev=steamnet seq=%llu stage=lobby_create type=%d max=%d "
+                                          "ev=steamnet seq=%llu create=%llu stage=lobby_create "
+                                          "type=%d max=%d "
                                           "result=%u lobby=0x%016llX account=0x%08X",
                                           static_cast<unsigned long long>(next_sequence()),
+                                          static_cast<unsigned long long>(ordinal),
                                           lobbyType,
                                           maxMembers,
                                           static_cast<unsigned>(call),
@@ -118,6 +274,12 @@ ApiCall create_lobby([[maybe_unused]] void* self,
             emit(line.data(), static_cast<std::size_t>(written));
         }
     }
+    // The callbacks are queued by the claim worker once the server names the winner, so
+    // both machines' Nth lobby settles on ONE id. Steam's CreateLobby is async anyway.
+    if (enqueue_claim(ordinal, lobby, call)) {
+        return call;
+    }
+    // No claim slot and no worker: queue the local id immediately, exactly as p2(66) did.
     const LobbyCreated created{kResultOk, 0, lobby};
     const LobbyEnter entered{lobby, 0, false, {}, kLobbyEnterSuccess};
     if (!queue_callback(kLobbyCreatedCallback, call, &created, sizeof(created))) {

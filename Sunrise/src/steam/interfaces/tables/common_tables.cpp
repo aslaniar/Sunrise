@@ -159,12 +159,13 @@ void initialize_common() noexcept {
      * count/by_index/persona_state and froze pre-title, and that freeze was never isolated
      * from its other two bindings (44, 65). Guessing again is the DO-NOT.
      *
-     * So this build binds exactly ONE new slot - 64, the publish - and leaves 3/5/43 as
-     * logged_empty. The boot then proves the publish->relay->peer-visible path end to end
-     * AND returns a complete slot census (now spanning 256 entries) to bind the read side
-     * on facts next pass.
+     * p2(66) bound slot 64 to set_rich_presence to test that reading. THE BOOT REFUTED IT
+     * (20.101): the argument guard fired on BOTH machines with non-string arguments that
+     * differ per machine (mac 1/0x114, rig 1/0x7FFFFFFFFFFFFFFC), so slot 64 takes numbers,
+     * not a key/value pair. NOTHING on this interface is bound now, and the friends
+     * rich-presence lane is closed. The join target is a STEAM LOBBY ID - see
+     * methods/matchmaking.cpp.
      */
-    set_method(g_friendsMethods[64], &methods::set_rich_presence);
 
     set_method(g_userMethods[index(UserSlot::handle)], &methods::get_user_handle);
     set_method(g_userMethods[index(UserSlot::loggedOn)], &methods::return_true);

@@ -1057,6 +1057,71 @@ void handle_presence_store(SOCKET client, std::string_view query) noexcept {
             stored ? "{\"ok\":true}" : "{\"ok\":false}");
 }
 
+/** Parses a hex query value. @return True when every character was a hex digit. */
+bool parse_hex(std::string_view text, std::uint64_t& value) noexcept {
+    if (text.empty() || text.size() > 16) {
+        return false;
+    }
+    value = 0;
+    for (const char character : text) {
+        value <<= 4U;
+        if (character >= '0' && character <= '9') {
+            value |= static_cast<std::uint64_t>(character - '0');
+        } else if (character >= 'a' && character <= 'f') {
+            value |= static_cast<std::uint64_t>(character - 'a' + 10);
+        } else if (character >= 'A' && character <= 'F') {
+            value |= static_cast<std::uint64_t>(character - 'A' + 10);
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * POST /lobby/claim?seq=<hex>&lobby=<hex> -> the WINNING lobby id as 16 hex digits.
+ *
+ * The pairing point for the lobby lane (FINDINGS 20.101). First claimant for an ordinal
+ * keeps its own id; every later one is told that id instead. The answer is deliberately
+ * bare hex so the shim can parse it without a JSON reader on the game's side.
+ */
+void handle_lobby_claim(SOCKET client, std::string_view query) noexcept {
+    std::uint64_t sequence = 0;
+    std::uint64_t candidate = 0;
+    if (!parse_hex(query_value(query, "seq"), sequence)
+        || !parse_hex(query_value(query, "lobby"), candidate)) {
+        respond(client, "400 Bad Request", "application/json", "{\"ok\":false}");
+        return;
+    }
+    const std::uint64_t winner =
+        sunrise::server::http::presence::claim_lobby(sequence, candidate);
+    char body[24]{};
+    const int written = std::snprintf(body, sizeof body, "%016llX",
+                                      static_cast<unsigned long long>(winner));
+    std::array<char, core::log::kLineCapacity> line{};
+    const int logged = std::snprintf(
+        line.data(), line.size(),
+        "ev=lobby stage=claim seq=%llu candidate=0x%016llX winner=0x%016llX result=%s",
+        static_cast<unsigned long long>(sequence),
+        static_cast<unsigned long long>(candidate),
+        static_cast<unsigned long long>(winner),
+        winner == candidate ? "host" : "join");
+    if (logged > 0) {
+        core::log::write(core::log::Channel::server, core::log::Level::info,
+                         {line.data(), static_cast<std::size_t>(logged)});
+    }
+    respond(client, "200 OK", "text/plain",
+            {body, written > 0 ? static_cast<std::size_t>(written) : 0});
+}
+
+/** GET /lobby -> the claim table as "sequence lobby" lines. */
+void handle_lobby_get(SOCKET client) noexcept {
+    char body[1024]{};
+    const std::size_t written =
+        sunrise::server::http::presence::lobby_snapshot(body, sizeof body);
+    respond(client, "200 OK", "text/plain", {body, written});
+}
+
 /** Serves one accepted connection end to end. */
 void serve_connection(SOCKET client) noexcept {
     char buffer[kRequestCapacity]{};
@@ -1106,6 +1171,10 @@ void serve_connection(SOCKET client) noexcept {
         handle_presence_get(client);
     } else if (request.verb == "POST" && request.path == "/presence/store") {
         handle_presence_store(client, request.query);
+    } else if (request.verb == "GET" && request.path == "/lobby") {
+        handle_lobby_get(client);
+    } else if (request.verb == "POST" && request.path == "/lobby/claim") {
+        handle_lobby_claim(client, request.query);
         // LANE D INSERTION POINT: the GET /health route (and its handler)
         // lands next to /events, before the write verbs below.
     } else if (request.verb == "POST" && request.path == "/suppress") {

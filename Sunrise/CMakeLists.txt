@@ -232,6 +232,7 @@ add_library(steam_api64 SHARED
     src/steam/runtime/callbacks/callback_registry.cpp
     src/steam/runtime/steam_lifecycle.cpp
     src/steam/runtime/context/steam_context_state.cpp
+    src/steam/interfaces/server_link.cpp
     src/steam/interfaces/methods/common.cpp
     src/steam/interfaces/methods/apps_dlc.cpp
     src/steam/interfaces/methods/apps_metadata.cpp
