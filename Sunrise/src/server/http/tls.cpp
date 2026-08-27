@@ -278,6 +278,18 @@ bool accept_connection(Context& context, Connection& connection, SOCKET socket) 
         if (status == SEC_I_CONTINUE_NEEDED) {
             continue;
         }
+        {
+            std::array<char, 96> line{};
+            const int written = std::snprintf(line.data(),
+                                              line.size(),
+                                              "ev=https stage=tls status=%#010lx",
+                                              static_cast<unsigned long>(status));
+            if (written > 0) {
+                core::log::write(core::log::Channel::server,
+                                 core::log::Level::warn,
+                                 {line.data(), static_cast<std::size_t>(written)});
+            }
+        }
         return false;
     }
 }
