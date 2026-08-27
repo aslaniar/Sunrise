@@ -29,7 +29,11 @@ bool install() noexcept {
     const bool spawn = install_spawn_hold();
     const bool fade = install_fade_release();
     const bool peerReason = install_peer_reason();
-    const bool seekerRx = install_seeker_rx();
+    // INCIDENT_2026-08-26_p2-59-freeze bisect step: seeker_rx DISABLED under BOTH
+    // mechanisms so far (p2(59) code detours, p2(60) vtable swaps - each froze at
+    // bootflow bap_signin/package_registration with zero rows completed). This
+    // build isolates the OTHER variable (sv-43 relabel / everything else).
+    const bool seekerRx = false;
     const bool anyFix = hold || sliceSet || skip || composition || handoff || joinReady || ownerSlot
                         || regionPrivate || worldStep || spawn || fade || peerReason || seekerRx;
     g_installed.store(anyFix, std::memory_order_release);
