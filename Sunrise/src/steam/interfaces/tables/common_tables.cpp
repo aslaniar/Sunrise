@@ -159,13 +159,31 @@ void initialize_common() noexcept {
      * count/by_index/persona_state and froze pre-title, and that freeze was never isolated
      * from its other two bindings (44, 65). Guessing again is the DO-NOT.
      *
-     * p2(66) bound slot 64 to set_rich_presence to test that reading. THE BOOT REFUTED IT
-     * (20.101): the argument guard fired on BOTH machines with non-string arguments that
-     * differ per machine (mac 1/0x114, rig 1/0x7FFFFFFFFFFFFFFC), so slot 64 takes numbers,
-     * not a key/value pair. NOTHING on this interface is bound now, and the friends
-     * rich-presence lane is closed. The join target is a STEAM LOBBY ID - see
-     * methods/matchmaking.cpp.
+     * p2(66) bound slot 64 to set_rich_presence; the boot refuted THAT SLOT (20.101) - it
+     * takes numbers, not a key/value pair. 20.101 then over-generalised to "the friends
+     * lane is closed", and the p2(68) boot REFUTED THAT (20.103), because argument capture
+     * finally showed what the other slots receive:
+     *
+     *   slot 3   a1=0x404 identical on both machines          -> one int, a flags constant
+     *   slot 5   a1=OWN xuid                                  -> one CSteamID, self
+     *   slot 7   a1=PEER xuid, 17ms after our LobbyChatUpdate -> one CSteamID, the peer
+     *   slot 43  a1,a2 = pointers at the SAME MODULE OFFSETS  -> TWO STATIC STRINGS
+     *   slot 64  a1=1                                         -> one int
+     *
+     * Slot 43 taking a pair of static strings IS the key/value setter 20.101 said was never
+     * called. And slot 7 is the live wire: the game asks it about the peer's account 17 ms
+     * after we report a member entering, gets zero, and stops.
+     *
+     * BOUND HERE, on measurement and on RETURN-TYPE SAFETY:
+     *  - 7  answers with a valid string. Safe under either reading: if the caller wants a
+     *       name it gets one, and if it wants an integer it gets a large one. Returning a
+     *       small int where a pointer is expected is the case that faults, so we never do.
+     *  - 43 stores and relays the pair, returning bool.
+     * Slots 3 and 5 stay UNBOUND: their return types are unverified, and returning a small
+     * integer to a caller expecting a pointer is exactly the crash p2(62) may have been.
      */
+    set_method(g_friendsMethods[7], &methods::get_friend_persona_name);
+    set_method(g_friendsMethods[43], &methods::set_rich_presence);
 
     set_method(g_userMethods[index(UserSlot::handle)], &methods::get_user_handle);
     set_method(g_userMethods[index(UserSlot::loggedOn)], &methods::return_true);
