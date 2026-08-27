@@ -202,6 +202,31 @@ bool foreign_member_identity(const std::uint64_t ownSessionId,
     return found;
 }
 
+/**
+ * Resolves one member key to the committed session that joined with it.
+ * The 20.74.4 peer-advertisement delivery needs the foreign host's own record: its
+ * advertisement travels in THIS body's region block, and its join endpoint comes from
+ * ITS binding, not ours.
+ * @param memberKey Member key the target session bound at join.
+ * @param output Cleared, then receives the immutable binding identity.
+ * @return True when a committed+joined session carries this exact key.
+ */
+[[nodiscard]] bool session_binding_for_member(
+    const std::uint64_t memberKey,
+    state::activity::SessionBinding& output) noexcept {
+    output = {};
+    AcquireSRWLockShared(&runtime::storage::g_stateLock);
+    const ActivityState& state = runtime::storage::g_activity;
+    for (const SessionRecord& record : state.sessions) {
+        if (record.occupied && record.joined && record.memberKey == memberKey) {
+            ReleaseSRWLockShared(&runtime::storage::g_stateLock);
+            return snapshot_binding(record.sessionId, output);
+        }
+    }
+    ReleaseSRWLockShared(&runtime::storage::g_stateLock);
+    return false;
+}
+
 /** Retains an exact record generation against release and allocator eviction. */
 bool retain_binding(const SessionBinding& binding) noexcept {
     AcquireSRWLockExclusive(&runtime::storage::g_stateLock);

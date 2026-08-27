@@ -43,11 +43,29 @@ constexpr std::uint64_t kDescriptorCount = 128;
                                 std::size_t bubble,
                                 const MembershipSnapshot& snapshot) noexcept {
     const std::uint32_t region = static_cast<std::uint32_t>(bubble) * kRegionIndexStride;
+    // 20.74.4: the region block can advertise two endpoints - this body's own host and the
+    // foreign peer's host, each in its own region slot. A client that sees both can converge
+    // on either; without the peer's endpoint its row is unjoinable and gets fixup-released.
     const bool advertise = snapshot.citizen.present
                            && static_cast<std::int32_t>(region) == snapshot.citizen.regionIndex;
+    const bool peerAdvertise = snapshot.peerCitizen.present
+                               && static_cast<std::int32_t>(region)
+                                      == snapshot.peerCitizen.regionIndex;
+    const CitizenAdvertisement* advertisement =
+        advertise ? &snapshot.citizen : (peerAdvertise ? &snapshot.peerCitizen : nullptr);
+    if (!advertise && !peerAdvertise) {
+        bool idle = writer.write(kRegionIndexBias + region, 32) && writer.write(1, 2)
+                    && writer.write(0, 8) && writer.write(kAmbassadorAssigned, 2)
+                    && writer.write(kUnadvertisedAmbassadorSlot, kSlotBitWidth)
+                    && writer.write(0, 1) && writer.write(0, 32) && writer.write(0, 8)
+                    && writer.write(0, 32);
+        for (std::size_t member = 0; idle && member < kRegionTokenCount; ++member) {
+            idle = idle && writer.write(snapshot.transitionToken, 8);
+        }
+        return idle && writer.write(0, 8) && writer.write(0, 64);
+    }
     const std::uint64_t ambassadorSlot =
-        advertise ? static_cast<std::uint64_t>(snapshot.citizen.ambassadorSlot) + kSignedFieldBias
-                  : kUnadvertisedAmbassadorSlot;
+        static_cast<std::uint64_t>(advertisement->ambassadorSlot) + kSignedFieldBias;
     bool encoded = writer.write(kRegionIndexBias + region, 32) && writer.write(1, 2)
                    && writer.write(0, 8) && writer.write(kAmbassadorAssigned, 2)
                    && writer.write(ambassadorSlot, kSlotBitWidth) && writer.write(0, 1)
@@ -55,14 +73,11 @@ constexpr std::uint64_t kDescriptorCount = 128;
     for (std::size_t member = 0; encoded && member < kRegionTokenCount; ++member) {
         encoded = writer.write(snapshot.transitionToken, 8);
     }
-    if (!advertise) {
-        return encoded && writer.write(0, 8) && writer.write(0, 64);
-    }
     encoded = encoded && writer.write(kDescriptorCount, 8);
-    for (const std::byte value : snapshot.citizen.descriptor) {
+    for (const std::byte value : advertisement->descriptor) {
         encoded = encoded && writer.write(std::to_integer<std::uint64_t>(value), 8);
     }
-    return encoded && writer.write(snapshot.citizen.onlineSessionId, 64);
+    return encoded && writer.write(advertisement->onlineSessionId, 64);
 }
 
 /**

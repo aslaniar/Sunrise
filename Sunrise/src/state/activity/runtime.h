@@ -121,6 +121,17 @@ enum class ForeignPeerReason : std::uint8_t {
                                            ForeignPeerReason& reason) noexcept;
 
 /**
+ * Resolves one member key to the committed session that joined with it.
+ * Used by the peer-advertisement delivery (20.74.4): the foreign host's join endpoint
+ * comes from ITS binding, so a push carrying its row must also carry its endpoint.
+ * @param memberKey Member key the target session bound at join.
+ * @param output Cleared, then receives the immutable binding identity.
+ * @return True when a committed+joined session carries this exact key.
+ */
+[[nodiscard]] bool session_binding_for_member(std::uint64_t memberKey,
+                                              SessionBinding& output) noexcept;
+
+/**
  * Retains an exact record generation against release and allocator eviction.
  * @param binding Immutable identity a consumer intends to hold.
  * @return True when the binding still matches and its retain count can advance.

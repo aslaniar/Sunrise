@@ -168,6 +168,32 @@ make_wire_snapshot(std::uint64_t sessionId,
     state::activity::ForeignPeerReason peerReason{};
     const bool havePeer =
         state::activity::foreign_member_identity(sessionId, peerIdentity, peerReason);
+    // 20.74.4 DELIVERY FIX: the foreign member row arrives at the other host only when THIS
+    // body also carries THAT host's citizen advertisement - its join endpoint. Without it
+    // every host fixup-releases the row (reason=1) because a peer with no address is not
+    // joinable. The advertisements live in per-session region slots (bubble = region/8), so
+    // each body can carry both without collision: 48 -> bubble 6, 56 -> bubble 7.
+    message::CitizenAdvertisement peerCitizen{};
+    std::uint64_t peerSessionId = 0;
+    constexpr std::uint8_t kPeerMemberSlot = 1;
+    if (havePeer) {
+        state::activity::SessionBinding peerBinding{};
+        if (state::activity::session_binding_for_member(peerIdentity.memberKey, peerBinding)) {
+            peerSessionId = peerBinding.sessionId;
+            std::uint64_t ignoredGeneration = 0;
+            server::gameplay::build_advertisement(
+                peerBinding,
+                region.index,
+                region.reported ? server::gameplay::RegionSource::reported
+                                : server::gameplay::RegionSource::arrival,
+                kPeerMemberSlot,
+                peerCitizen,
+                ignoredGeneration);
+            if (ignoredGeneration != 0) {
+                server::gameplay::group::release_host_session(ignoredGeneration);
+            }
+        }
+    }
     // Only a body that HAS a peer to publish advances the sweep - a solo body carries no shape
     // under test, and counting it would spend shapes on nothing.
     const core::settings::server::Settings& serverSettings = core::settings::get().server;
@@ -227,6 +253,10 @@ make_wire_snapshot(std::uint64_t sessionId,
     if (publishPeer) {
         apply_peer_row(peerIdentity, wire);
         wire.peerPresent = true;
+        // 20.74.4: the peer's own join endpoint rides in its region slot, so the receiving
+        // host sees a peer WITH an address instead of an unjoinable fixup row.
+        wire.peerCitizen = peerCitizen;
+        wire.peerCitizen.present = peerSessionId != 0;
         // Zero leaves the encoder on its historical value, which is what `solo` wants.
         wire.trailingFirst = values.first;
         wire.trailingSecond = values.second;

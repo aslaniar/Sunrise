@@ -66,6 +66,11 @@ struct MembershipSnapshot final {
     client_authoritative_data::TeleportState teleport{};
     /** Empty unless the gameplay channel is advertising an endpoint this run. */
     CitizenAdvertisement citizen{};
+    /**
+     * 20.74.4: the foreign host's own advertisement, placed in ITS region slot. Without it
+     * the peer row arrives with no joinable endpoint and every host fixup-releases it.
+     */
+    CitizenAdvertisement peerCitizen{};
     std::uint32_t revision{};
     /** Stable session epoch; changing it clears the client's peer table. */
     std::uint32_t epoch{};
