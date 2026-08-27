@@ -29,6 +29,7 @@
 #include "../../state/runtime/runtime.h"
 #include "../../state/unlocks/unlocks_runtime.h"
 #include "../bap/internal.h"
+#include "../http/presence_state.h"
 #include "../persistence/persistence.h"
 
 namespace sunrise::server::admin {
@@ -990,6 +991,72 @@ void handle_client_log(SOCKET client, std::string_view query) noexcept {
 }
 
 
+/**
+ * FRIENDS RICH-PRESENCE CROSS-INTRODUCTION over the PLAINTEXT admin listener (p2(65)).
+ *
+ * p2(64) put these two routes on the TLS listener (8443) and had the shim reach them
+ * through client::network::consume_http. That call never left the client: the only
+ * in-process consumer registered in the Client DLL is server::http::consume, which
+ * answers "/SignOn" and returns false for everything else - so every store was a no-op
+ * and every fetch returned nothing (FINDINGS 20.99). 8443's handshake fails besides
+ * (SEC_E_UNSUPPORTED_FUNCTION, 0x80090302). This listener is plaintext, already bound,
+ * and verified reachable from BOTH machines, so the relay rides here instead.
+ *
+ * The value travels as a query parameter, not a body: serve_connection reads exactly one
+ * recv(), so a request that fits one segment needs no body reassembly.
+ */
+void handle_presence_get(SOCKET client) noexcept {
+    char body[kResponseCapacity]{};
+    const std::size_t written = sunrise::server::http::presence::snapshot(body, sizeof body);
+    std::array<char, core::log::kLineCapacity> line{};
+    const int logged = std::snprintf(line.data(), line.size(),
+                                     "ev=presence stage=snapshot bytes=%zu result=ok", written);
+    if (logged > 0) {
+        core::log::write(core::log::Channel::server, core::log::Level::info,
+                         {line.data(), static_cast<std::size_t>(logged)});
+    }
+    respond(client, "200 OK", "text/plain", {body, written});
+}
+
+/** POST /presence/store?xuid=<hex>&key=<key>&value=<value> */
+void handle_presence_store(SOCKET client, std::string_view query) noexcept {
+    const std::string_view xuidText = query_value(query, "xuid");
+    const std::string_view key = query_value(query, "key");
+    const std::string_view value = query_value(query, "value");
+    std::uint64_t xuid = 0;
+    bool parsed = !xuidText.empty() && xuidText.size() <= 16;
+    for (const char character : xuidText) {
+        xuid <<= 4U;
+        if (character >= '0' && character <= '9') {
+            xuid |= static_cast<std::uint64_t>(character - '0');
+        } else if (character >= 'a' && character <= 'f') {
+            xuid |= static_cast<std::uint64_t>(character - 'a' + 10);
+        } else if (character >= 'A' && character <= 'F') {
+            xuid |= static_cast<std::uint64_t>(character - 'A' + 10);
+        } else {
+            parsed = false;
+        }
+    }
+    const bool stored =
+        parsed && sunrise::server::http::presence::store(xuid, key, value);
+    std::array<char, core::log::kLineCapacity> line{};
+    const int logged = std::snprintf(line.data(), line.size(),
+                                     "ev=presence stage=store xuid=%llx key=%.*s value=%.*s result=%s",
+                                     static_cast<unsigned long long>(xuid),
+                                     static_cast<int>(key.size()), key.data(),
+                                     static_cast<int>(value.size()), value.data(),
+                                     stored ? "ok" : "fail");
+    if (logged > 0) {
+        core::log::write(core::log::Channel::server,
+                         stored ? core::log::Level::info : core::log::Level::warn,
+                         {line.data(), static_cast<std::size_t>(logged)});
+    }
+    respond(client,
+            stored ? "200 OK" : "400 Bad Request",
+            "application/json",
+            stored ? "{\"ok\":true}" : "{\"ok\":false}");
+}
+
 /** Serves one accepted connection end to end. */
 void serve_connection(SOCKET client) noexcept {
     char buffer[kRequestCapacity]{};
@@ -1035,6 +1102,10 @@ void serve_connection(SOCKET client) noexcept {
         handle_client_log(client, request.query);
     } else if (request.verb == "GET" && request.path == "/events") {
         handle_events(client, request.query);
+    } else if (request.verb == "GET" && request.path == "/presence") {
+        handle_presence_get(client);
+    } else if (request.verb == "POST" && request.path == "/presence/store") {
+        handle_presence_store(client, request.query);
         // LANE D INSERTION POINT: the GET /health route (and its handler)
         // lands next to /events, before the write verbs below.
     } else if (request.verb == "POST" && request.path == "/suppress") {

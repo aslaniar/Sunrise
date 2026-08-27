@@ -1,7 +1,10 @@
+#include <WS2tcpip.h>
+#include <WinSock2.h>
 #include <Windows.h>
 
 #include <array>
 #include <atomic>
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -33,9 +36,19 @@ namespace {
  * GetFriendMessage(64) and GetFollowerCount(65) there - both run during early sign-in
  * stats flow on every machine. This build binds ONLY verified indices.
  *
- * Presence values: own publishes stored locally AND relayed through the Server
- * (/presence/store); the single paired peer's values fetched lazily from /presence on
- * friend queries (GET /presence returns "xuid key value" lines).
+ * TRANSPORT, p2(65) (FINDINGS 20.99). p2(64) relayed through
+ * client::network::consume_http, which does NOT leave this process: the one in-process
+ * consumer the Client DLL registers is server::http::consume, and that answers "/SignOn"
+ * and returns false for every other URL. So every store was silently dropped and every
+ * fetch returned nothing - the cross-introduction could not have worked at any slot
+ * mapping. The routes now ride the standalone server's PLAINTEXT admin listener (8099),
+ * verified reachable from both machines; 8443 is not usable (its handshake fails with
+ * SEC_E_UNSUPPORTED_FUNCTION).
+ *
+ * The socket work happens on a DEDICATED WORKER THREAD and the interface methods only
+ * ever read the local table. Friends methods sit on the Client's hot path (the vtable
+ * audit measured 33 calls at one offset alone); a blocking connect there would hitch or
+ * hang the title, which is the failure class that already cost two boots.
  */
 
 /** Presence rows: one per (owner,key). */
@@ -120,49 +133,146 @@ std::uint64_t foreign_owner(std::size_t index) noexcept {
     return 0;
 }
 
-/**
- * Relays one stored own-key to the Server so the peer's shim can read it.
- * POST /presence/store?xuid=<hex>&key=<name> with the value as body.
- */
-void relay_to_server(std::string_view key, std::string_view value) noexcept {
-    char url[128]{};
-    const int written = std::snprintf(url,
-                                      sizeof url,
-                                      "/presence/store?xuid=%llx&key=%s",
-                                      static_cast<unsigned long long>(own_xuid()),
-                                      std::string_view{key}.substr(0, 40).data());
-    if (written <= 0 || written >= static_cast<int>(sizeof url)) {
-        return;
+/** Admin listener port on the standalone server. Plaintext; see the header note. */
+constexpr std::uint16_t kPresencePort = 8099;
+/** Worker cadence. Fast enough that a peer appears within a Tower load, cheap enough to ignore. */
+constexpr DWORD kWorkerIntervalMilliseconds = 1000;
+/** A LAN round trip is sub-millisecond; this only bounds the case where nothing answers. */
+constexpr DWORD kSocketTimeoutMilliseconds = 1500;
+
+std::atomic<bool> g_workerStarted{false};
+/** Set by set_rich_presence, cleared by the worker once every own row has been relayed. */
+std::atomic<bool> g_publishPending{false};
+/** Peer rows merged by the last fetch. Read by the log line only. */
+std::atomic<std::size_t> g_peerRows{0};
+
+void log_line(core::log::Level level, const char* format, ...) noexcept {
+    std::array<char, core::log::kLineCapacity> line{};
+    va_list arguments;
+    va_start(arguments, format);
+    const int written = std::vsnprintf(line.data(), line.size(), format, arguments);
+    va_end(arguments);
+    if (written > 0) {
+        core::log::write(core::log::Channel::client, level,
+                         {line.data(), static_cast<std::size_t>(written)});
     }
-    client::network::HttpRequest request{
-        .url = url,
-        .contentType = "text/plain",
-        .body = {},
-        .response = {},
-    };
-    // Copy the value into request-owned bytes: consumer borrows .body directly.
-    static thread_local char payload[160];
-    std::snprintf(payload, sizeof payload, "%.*s",
-                  static_cast<int>(value.size()), value.data());
-    request.body = {reinterpret_cast<std::byte*>(payload), std::strlen(payload)};
-    client::network::HttpResponse response{};
-    static_cast<void>(client::network::consume_http(request, response));
 }
 
+/**
+ * One plaintext HTTP/1.1 exchange with the server's admin listener.
+ * @param body Response body, null terminated. May be null when the answer is not read.
+ * @return HTTP status code, or 0 when the exchange did not complete.
+ */
+unsigned http_exchange(const char* verb,
+                       const char* target,
+                       char* body,
+                       std::size_t capacity) noexcept {
+    if (body != nullptr && capacity > 0) {
+        body[0] = '\0';
+    }
+    const char* host = core::settings::get().client.externalServer.host.data();
+    if (host == nullptr || host[0] == '\0') {
+        return 0;
+    }
+    WSADATA winsock{};
+    // Refcounted: the Client is long past its own WSAStartup, so this only adds a reference.
+    if (WSAStartup(MAKEWORD(2, 2), &winsock) != 0) {
+        return 0;
+    }
+    unsigned status = 0;
+    const SOCKET handle = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (handle != INVALID_SOCKET) {
+        DWORD timeout = kSocketTimeoutMilliseconds;
+        (void)::setsockopt(handle, SOL_SOCKET, SO_RCVTIMEO,
+                           reinterpret_cast<const char*>(&timeout), sizeof timeout);
+        (void)::setsockopt(handle, SOL_SOCKET, SO_SNDTIMEO,
+                           reinterpret_cast<const char*>(&timeout), sizeof timeout);
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_port = htons(kPresencePort);
+        // The host is always a dotted quad here (settings store it as one), so no resolver
+        // is involved - and no resolver hook can rewrite what was never looked up.
+        if (::inet_pton(AF_INET, host, &address.sin_addr) == 1
+            && ::connect(handle, reinterpret_cast<const sockaddr*>(&address), sizeof address) == 0) {
+            char request[512]{};
+            const int requestSize = std::snprintf(
+                request, sizeof request,
+                "%s %s HTTP/1.1\r\nHost: %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                verb, target, host);
+            if (requestSize > 0 && ::send(handle, request, requestSize, 0) == requestSize) {
+                char response[2048]{};
+                std::size_t used = 0;
+                for (;;) {
+                    const int received = ::recv(handle, response + used,
+                                                static_cast<int>(sizeof response - 1 - used), 0);
+                    if (received <= 0) {
+                        break;
+                    }
+                    used += static_cast<std::size_t>(received);
+                    if (used >= sizeof response - 1) {
+                        break;
+                    }
+                }
+                response[used] = '\0';
+                unsigned code = 0;
+                if (std::sscanf(response, "HTTP/1.%*u %u", &code) == 1) {
+                    status = code;
+                }
+                const char* separator = std::strstr(response, "\r\n\r\n");
+                if (body != nullptr && capacity > 0 && separator != nullptr) {
+                    std::snprintf(body, capacity, "%s", separator + 4);
+                }
+            }
+        }
+        (void)::closesocket(handle);
+    }
+    (void)WSACleanup();
+    return status;
+}
+
+/** Relays every own row to the server. Worker thread only. */
+void publish_own_rows() noexcept {
+    PresenceRow pending[kMaxRows]{};
+    std::size_t count = 0;
+    const std::uint64_t own = own_xuid();
+    AcquireSRWLockShared(&g_lock);
+    for (std::size_t i = 0; i < g_rowCount && i < kMaxRows; ++i) {
+        if (g_rows[i].owner == own) {
+            pending[count++] = g_rows[i];
+        }
+    }
+    ReleaseSRWLockShared(&g_lock);
+
+    for (std::size_t i = 0; i < count; ++i) {
+        char target[320]{};
+        const int written = std::snprintf(target, sizeof target,
+                                          "/presence/store?xuid=%llx&key=%s&value=%s",
+                                          static_cast<unsigned long long>(own),
+                                          pending[i].key,
+                                          pending[i].value);
+        if (written <= 0 || written >= static_cast<int>(sizeof target)) {
+            continue;
+        }
+        const unsigned status = http_exchange("POST", target, nullptr, 0);
+        // ABSENCE NEGATIVE (L13): a dropped relay must be LOUD. p2(64) discarded this.
+        log_line(status == 200 ? core::log::Level::info : core::log::Level::warn,
+                 "ev=steamnet stage=rich_presence_relay key=%s value=%s http=%u result=%s",
+                 pending[i].key, pending[i].value, status, status == 200 ? "ok" : "fail");
+    }
+}
+
+/** Fetches every stored peer row from the server. Worker thread only. */
 void fetch_peer_values() noexcept {
-    char buffer[1024]{};
-    client::network::HttpRequest request{
-        .url = "/presence",
-        .contentType = "text/plain",
-        .body = {},
-        .response = {reinterpret_cast<std::byte*>(buffer), sizeof buffer - 1},
-    };
-    client::network::HttpResponse response{};
-    if (!client::network::consume_http(request, response)) {
+    char buffer[2048]{};
+    const unsigned status = http_exchange("GET", "/presence", buffer, sizeof buffer);
+    if (status != 200) {
+        log_line(core::log::Level::warn,
+                 "ev=steamnet stage=presence_fetch http=%u result=fail", status);
         return;
     }
-    buffer[response.size < sizeof buffer ? response.size : sizeof buffer - 1] = '\0';
 
+    std::size_t merged = 0;
+    const std::uint64_t own = own_xuid();
     AcquireSRWLockExclusive(&g_lock);
     char* contextLine = nullptr;
     for (char* line = strtok_r(buffer, "\n", &contextLine); line != nullptr;
@@ -171,15 +281,51 @@ void fetch_peer_values() noexcept {
         char key[48]{};
         char value[160]{};
         if (std::sscanf(line, "%llu %47s %159s", &xuid, key, value) != 3 || xuid == 0
-            || xuid == own_xuid()) {
+            || xuid == own) {
             continue;
         }
         const std::size_t index = insert_row(xuid, key);
         if (index != static_cast<std::size_t>(-1)) {
             std::snprintf(g_rows[index].value, sizeof g_rows[index].value, "%s", value);
+            ++merged;
         }
     }
+    const std::size_t owners = foreign_owner_count();
     ReleaseSRWLockExclusive(&g_lock);
+
+    g_peerRows.store(merged, std::memory_order_release);
+    // The distinguishing instrument for boot-brief branch 2: rows=0 means the peer never
+    // published (or the server lost them), NOT that our friend slots are wrong.
+    log_line(core::log::Level::info,
+             "ev=steamnet stage=presence_fetch http=200 rows=%zu peers=%zu result=ok",
+             merged, owners);
+}
+
+DWORD WINAPI presence_worker(void*) noexcept {
+    for (;;) {
+        if (g_publishPending.exchange(false, std::memory_order_acq_rel)) {
+            publish_own_rows();
+        }
+        fetch_peer_values();
+        Sleep(kWorkerIntervalMilliseconds);
+    }
+}
+
+/** Starts the worker on the first friends call. Never blocks the caller. */
+void ensure_worker() noexcept {
+    bool expected = false;
+    if (!g_workerStarted.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        return;
+    }
+    const HANDLE thread = CreateThread(nullptr, 0, presence_worker, nullptr, 0, nullptr);
+    if (thread == nullptr) {
+        g_workerStarted.store(false, std::memory_order_release);
+        log_line(core::log::Level::warn, "ev=steamnet stage=presence_worker result=fail");
+        return;
+    }
+    (void)CloseHandle(thread);
+    log_line(core::log::Level::info,
+             "ev=steamnet stage=presence_worker port=%u result=ok", kPresencePort);
 }
 
 } // namespace
@@ -196,10 +342,10 @@ bool set_rich_presence(void* /*self*/, const char* key, const char* value) noexc
     }
     ReleaseSRWLockExclusive(&g_lock);
     if (ok) {
-        relay_to_server(key, value);
-        core::log::write(core::log::Channel::client,
-                         core::log::Level::info,
-                         "ev=steamnet stage=rich_presence_store result=ok");
+        g_publishPending.store(true, std::memory_order_release);
+        ensure_worker();
+        log_line(core::log::Level::info,
+                 "ev=steamnet stage=rich_presence_store key=%s value=%s result=ok", key, value);
     }
     return ok;
 }
@@ -208,9 +354,7 @@ const char* get_rich_presence(void* /*self*/, std::uint64_t friendId, const char
     if (key == nullptr) {
         return "";
     }
-    if (friendId != own_xuid()) {
-        fetch_peer_values();
-    }
+    ensure_worker();
     AcquireSRWLockShared(&g_lock);
     static thread_local char returnValue[160];
     const std::size_t index = find_row(friendId, key);
@@ -220,17 +364,24 @@ const char* get_rich_presence(void* /*self*/, std::uint64_t friendId, const char
         std::snprintf(returnValue, sizeof returnValue, "%s", g_rows[index].value);
     }
     ReleaseSRWLockShared(&g_lock);
+    if (friendId != own_xuid()) {
+        // The boot contract's step 2 is "the peer's 'connect' key was READ". Without this
+        // line an empty answer and a never-asked question look identical in the log.
+        log_line(core::log::Level::info,
+                 "ev=steamnet stage=peer_rich_presence friend=%llx key=%s value=%s result=%s",
+                 static_cast<unsigned long long>(friendId), key, returnValue,
+                 returnValue[0] == '\0' ? "empty" : "ok");
+    }
     return returnValue;
 }
 
 int get_friend_count(void* /*self*/, int /*iFriendFlags*/) noexcept {
-    fetch_peer_values();
+    ensure_worker();
     AcquireSRWLockShared(&g_lock);
     const int result = static_cast<int>(foreign_owner_count());
     ReleaseSRWLockShared(&g_lock);
-    core::log::write(core::log::Channel::client,
-                     core::log::Level::info,
-                     "ev=steamnet stage=friend_count result=ok");
+    log_line(core::log::Level::info,
+             "ev=steamnet stage=friend_count count=%d result=ok", result);
     return result;
 }
 
@@ -240,6 +391,9 @@ std::uint64_t get_friend_by_index(void* /*self*/,
     AcquireSRWLockShared(&g_lock);
     const std::uint64_t owner = foreign_owner(static_cast<std::size_t>(index));
     ReleaseSRWLockShared(&g_lock);
+    log_line(core::log::Level::info,
+             "ev=steamnet stage=friend_by_index index=%d friend=%llx result=%s",
+             index, static_cast<unsigned long long>(owner), owner == 0 ? "absent" : "ok");
     return owner;
 }
 
