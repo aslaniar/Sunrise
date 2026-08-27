@@ -171,26 +171,41 @@ make_wire_snapshot(std::uint64_t sessionId,
     // 20.74.4 DELIVERY FIX: the foreign member row arrives at the other host only when THIS
     // body also carries THAT host's citizen advertisement - its join endpoint. Without it
     // every host fixup-releases the row (reason=1) because a peer with no address is not
-    // joinable. The advertisements live in per-session region slots (bubble = region/8), so
-    // each body can carry both without collision: 48 -> bubble 6, 56 -> bubble 7.
+    // joinable.
+    //
+    // THE PEER'S OWN REGION, not this session's. p2(54) passed `region.index` here, which is
+    // the LOCAL session's region, and the consequences were both silent and destructive
+    // (FINDINGS 20.78 defect 3): the two advertisements landed on one region record, and
+    // because `region_machine_id` keys the host-session row by region index alone, the peer's
+    // `request_host_session` call collided with the local one and RETIRED the row the local
+    // call had just built. Every peer push cost the local host session and returned
+    // `no_host_session`.
+    //
+    // The same-region case is skipped outright rather than resolved. A region record holds ONE
+    // descriptor and the local advertisement owns the record for the local region, so a peer
+    // standing in the same bubble has no record to occupy - and skipping makes the key
+    // collision unreachable by construction instead of merely unlikely. Whose endpoint belongs
+    // in a shared bubble is the host/guest question (protocol types 8 -> 9/10, FINDINGS 20.79
+    // gap 5); it is not answerable here and must not be guessed at.
     message::CitizenAdvertisement peerCitizen{};
-    std::uint64_t peerSessionId = 0;
     constexpr std::uint8_t kPeerMemberSlot = 1;
     if (havePeer) {
         state::activity::SessionBinding peerBinding{};
         if (state::activity::session_binding_for_member(peerIdentity.memberKey, peerBinding)) {
-            peerSessionId = peerBinding.sessionId;
-            std::uint64_t ignoredGeneration = 0;
-            server::gameplay::build_advertisement(
-                peerBinding,
-                region.index,
-                region.reported ? server::gameplay::RegionSource::reported
-                                : server::gameplay::RegionSource::arrival,
-                kPeerMemberSlot,
-                peerCitizen,
-                ignoredGeneration);
-            if (ignoredGeneration != 0) {
-                server::gameplay::group::release_host_session(ignoredGeneration);
+            const EffectiveRegion peerRegion = effective_region(peerBinding.sessionId);
+            if (peerRegion.index >= 0 && peerRegion.index != region.index) {
+                std::uint64_t peerGeneration = 0;
+                server::gameplay::build_advertisement(
+                    peerBinding,
+                    peerRegion.index,
+                    peerRegion.reported ? server::gameplay::RegionSource::reported
+                                        : server::gameplay::RegionSource::arrival,
+                    kPeerMemberSlot,
+                    peerCitizen,
+                    peerGeneration);
+                if (peerGeneration != 0) {
+                    server::gameplay::group::release_host_session(peerGeneration);
+                }
             }
         }
     }
@@ -255,8 +270,14 @@ make_wire_snapshot(std::uint64_t sessionId,
         wire.peerPresent = true;
         // 20.74.4: the peer's own join endpoint rides in its region slot, so the receiving
         // host sees a peer WITH an address instead of an unjoinable fixup row.
+        //
+        // The builder's OWN verdict stands. p2(54) overwrote it with `peerSessionId != 0`,
+        // which marked a zeroed advertisement present whenever the peer's binding resolved -
+        // even though `build_candidate` had skipped and cleared the whole struct. A cleared
+        // advertisement carries `regionIndex = 0`, so the region writer matched it at bubble 0
+        // and emitted 128 zero bytes there, and the body then failed to encode (FINDINGS 20.78
+        // defect 2). Never second-guess a builder that clears its output on failure.
         wire.peerCitizen = peerCitizen;
-        wire.peerCitizen.present = peerSessionId != 0;
         // Zero leaves the encoder on its historical value, which is what `solo` wants.
         wire.trailingFirst = values.first;
         wire.trailingSecond = values.second;

@@ -107,6 +107,25 @@ struct MembershipSnapshot final {
     std::uint32_t trailingFourth{};
 };
 
+/**
+ * @return Advertisements this snapshot writes into the region block.
+ *
+ * The region writer picks a record by region index and writes ONE descriptor into it, so two
+ * advertisements naming the SAME index produce one descriptor, not two. Every size question
+ * about this body reduces to this count, and it is the only place that rule is written down -
+ * p2(54) added the second advertisement to the writer and left the two size functions below
+ * counting one, which made every peer-bearing body fail to encode (FINDINGS 20.78).
+ */
+[[nodiscard]] constexpr std::size_t
+advertisement_count(const MembershipSnapshot& snapshot) noexcept {
+    const bool own = snapshot.citizen.present;
+    const bool peer = snapshot.peerCitizen.present;
+    if (own && peer) {
+        return snapshot.citizen.regionIndex == snapshot.peerCitizen.regionIndex ? 1U : 2U;
+    }
+    return own || peer ? 1U : 0U;
+}
+
 /** @return Bits the whole body carries before byte padding. */
 [[nodiscard]] constexpr std::size_t
 meaningful_bit_count(const MembershipSnapshot& snapshot) noexcept {
@@ -114,9 +133,7 @@ meaningful_bit_count(const MembershipSnapshot& snapshot) noexcept {
     if (snapshot.peerPresent) {
         bits += kPeerRowExtraBits;
     }
-    if (snapshot.citizen.present) {
-        bits += kDescriptorBitCount;
-    }
+    bits += advertisement_count(snapshot) * kDescriptorBitCount;
     return bits;
 }
 
@@ -158,9 +175,7 @@ region_block_end_bit(const MembershipSnapshot& snapshot) noexcept {
     if (snapshot.peerPresent) {
         bits += kPeerRowExtraBits;
     }
-    if (snapshot.citizen.present) {
-        bits += kDescriptorBitCount;
-    }
+    bits += advertisement_count(snapshot) * kDescriptorBitCount;
     return bits;
 }
 

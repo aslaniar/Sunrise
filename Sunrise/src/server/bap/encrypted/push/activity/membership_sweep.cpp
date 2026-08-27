@@ -211,16 +211,67 @@ namespace {
 
 namespace message = middleware::bap::activity_message::replicate_membership;
 
-/** Storage for one encoded body, with room for the peer row and a citizen descriptor. */
-std::array<std::byte, message::kCitizenEncodedSize + 256> gWireBuffer{};
+/**
+ * Storage for one encoded body, with room for the peer row and BOTH citizen descriptors.
+ * Sized for the largest case this gate builds, not for the largest case that used to exist -
+ * a buffer that only fits the old shape turns a size regression into a buffer overrun report.
+ */
+std::array<std::byte, message::kCitizenEncodedSize + message::kDescriptorBitCount / 8U + 256>
+    gWireBuffer{};
+
+/** Region indices two advertisements occupy when the gate wants them in separate records. */
+constexpr std::int32_t kOwnRegionIndex = 56;
+constexpr std::int32_t kPeerRegionIndex = 48;
+
+/** How a case populates the two citizen advertisements. */
+enum class Advertisements {
+    /** Neither advertisement present. */
+    none,
+    /** The local host's advertisement only - the shape every solo body has carried. */
+    own,
+    /** Both, in SEPARATE region records: two descriptors on the wire. */
+    ownAndPeerSplit,
+    /** Both, naming the SAME region record: the writer emits ONE descriptor. */
+    ownAndPeerShared,
+};
+
+/**
+ * Fills one advertisement with recognisable, non-zero content.
+ * Zero bytes would let a descriptor that is silently skipped look identical to one that is
+ * written, which is the whole failure this gate exists to catch.
+ * @param advertisement Advertisement to populate.
+ * @param regionIndex Region record it claims.
+ * @param seed First descriptor byte, so the two descriptors differ from each other.
+ * @param ambassadorSlot Member slot the record names as ambassador.
+ */
+void fill_advertisement(message::CitizenAdvertisement& advertisement,
+                        std::int32_t regionIndex,
+                        std::uint8_t seed,
+                        std::uint8_t ambassadorSlot) noexcept {
+    for (std::size_t index = 0; index < advertisement.descriptor.size(); ++index) {
+        advertisement.descriptor[index] =
+            static_cast<std::byte>(static_cast<std::uint8_t>(seed + index));
+    }
+    advertisement.onlineSessionId = 0xC0DE'0000'0000'0000ULL | static_cast<std::uint64_t>(seed);
+    advertisement.regionIndex = regionIndex;
+    advertisement.ambassadorSlot = ambassadorSlot;
+    advertisement.present = true;
+}
 
 /**
  * Encodes one body and checks its size and its four trailing fields.
  * @param label Reported name of the case.
  * @param peerPresent Whether the body carries a peer row.
+ * @param advertisements How the two citizen advertisements are populated.
+ * @param wantDescriptors Descriptors the wire must carry, counted BY THIS FUNCTION rather than
+ *        read from the header. A size rule that checks itself passes while it is wrong, which
+ *        is exactly how p2(54) shipped an encoder that refused every peer body (FINDINGS 20.78).
  * @return Number of failures found.
  */
-std::uint64_t check_wire_case(const char* label, const bool peerPresent) noexcept {
+std::uint64_t check_wire_case(const char* label,
+                              const bool peerPresent,
+                              const Advertisements advertisements,
+                              const std::size_t wantDescriptors) noexcept {
     namespace bits = middleware::encoding::bits;
 
     // Distinct values, so a dropped, duplicated or swapped field is visible as a WRONG value
@@ -238,8 +289,39 @@ std::uint64_t check_wire_case(const char* label, const bool peerPresent) noexcep
     snapshot.trailingSecond = kValues[1];
     snapshot.trailingThird = kValues[2];
     snapshot.trailingFourth = kValues[3];
+    switch (advertisements) {
+    case Advertisements::own:
+        fill_advertisement(snapshot.citizen, kOwnRegionIndex, 0x10, 1);
+        break;
+    case Advertisements::ownAndPeerSplit:
+        fill_advertisement(snapshot.citizen, kOwnRegionIndex, 0x10, 1);
+        fill_advertisement(snapshot.peerCitizen, kPeerRegionIndex, 0x90, 0);
+        break;
+    case Advertisements::ownAndPeerShared:
+        fill_advertisement(snapshot.citizen, kOwnRegionIndex, 0x10, 1);
+        fill_advertisement(snapshot.peerCitizen, kOwnRegionIndex, 0x90, 0);
+        break;
+    case Advertisements::none:
+    default:
+        break;
+    }
 
     std::uint64_t failures = 0;
+    // The independent count. `encoded_size` derives from `advertisement_count`, so comparing the
+    // two would only prove the header agrees with itself.
+    const std::size_t wantBits =
+        message::kMeaningfulBitCount
+        + (peerPresent ? message::kPeerRowExtraBits : std::size_t{0})
+        + wantDescriptors * message::kDescriptorBitCount;
+    if (message::meaningful_bit_count(snapshot) != wantBits) {
+        std::printf("ev=wire_test stage=check result=fail case=%s what=bit_count got=%llu "
+                    "want=%llu descriptors=%llu\n",
+                    label,
+                    static_cast<unsigned long long>(message::meaningful_bit_count(snapshot)),
+                    static_cast<unsigned long long>(wantBits),
+                    static_cast<unsigned long long>(wantDescriptors));
+        ++failures;
+    }
     const std::size_t expected = message::encoded_size(snapshot);
     std::size_t written = 0;
     if (!message::encode_replicate_membership(snapshot, gWireBuffer, written)) {
@@ -306,8 +388,19 @@ std::uint64_t check_wire_case(const char* label, const bool peerPresent) noexcep
 
 /** Encodes real bodies and reads their top-level trailer back out of the bits. */
 int run_membership_wire_test() noexcept {
-    std::uint64_t failures = check_wire_case("solo", false);
-    failures += check_wire_case("peer", true);
+    // The five production shapes. Before FINDINGS 20.78 this gate ran the first and third only,
+    // neither of which populates a single descriptor - so it went rc=0 on a build that could not
+    // encode ANY peer-bearing body. A gate is scoped to the fields its cases populate; when a
+    // change adds a field to the wire struct, a case that POPULATES it lands in the same commit.
+    std::uint64_t failures = check_wire_case("solo", false, Advertisements::none, 0);
+    failures += check_wire_case("solo_citizen", false, Advertisements::own, 1);
+    failures += check_wire_case("peer", true, Advertisements::none, 0);
+    failures += check_wire_case("peer_citizen", true, Advertisements::own, 1);
+    // THE CASE THAT WOULD HAVE CAUGHT p2(54): two advertisements in separate region records.
+    failures += check_wire_case("peer_two_adverts", true, Advertisements::ownAndPeerSplit, 2);
+    // Two advertisements naming ONE record: the writer emits one descriptor, and the size rule
+    // must agree with the writer rather than with the number of advertisements it was handed.
+    failures += check_wire_case("peer_shared_region", true, Advertisements::ownAndPeerShared, 1);
     std::printf("ev=wire_test stage=done result=%s failures=%llu declared_bits=%llu "
                 "declared_bytes=%llu\n",
                 failures == 0 ? "ok" : "fail",
