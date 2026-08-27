@@ -1,6 +1,9 @@
 #include "retail_log_enqueue_observer.h"
 
+#include <intrin.h>
+
 #include <array>
+#include <cstring>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -57,6 +60,82 @@ volatile LONG64 g_nextAssertTick{};
 }
 
 /**
+ * CALLER CAPTURE (FINDINGS 20.105, lane B).
+ *
+ * "Adding player [xuid=..]" is the roster write we have watched from outside on every boot
+ * and it has never once named a peer. Its format string is NOT in the exe or in any dump -
+ * the log strings are encrypted or built at runtime - so there is no string xref to walk
+ * back from. This funnel is the way in: every retail log line passes through it already, so
+ * the return address here IS the game function that emitted the line.
+ *
+ * Reported as a module-relative RVA, because the image base differs per machine (the p2(69)
+ * argument capture showed mac 0x140000000 against a rig base near 0x7FF756D00000) and only
+ * the RVA is comparable across the two logs or against a static disassembly.
+ *
+ * Rate-limited to one report per distinct (target, RVA): these lines are on the game's own
+ * logging path and a Tower session emits thousands.
+ */
+constexpr std::size_t kTargetCount = 4;
+constexpr const char* kCallerTargets[kTargetCount] = {
+    "Adding player",
+    "Could not find tracking data",
+    "Submitting player add",
+    "creating Steam lobby",
+};
+std::uintptr_t g_reportedRva[kTargetCount]{};
+
+/** @return The image base of the module containing @p address, or zero. */
+std::uintptr_t module_base_of(const void* address) noexcept {
+    HMODULE module{};
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                               | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           static_cast<LPCSTR>(address),
+                           &module)
+        == 0) {
+        return 0;
+    }
+    return reinterpret_cast<std::uintptr_t>(module);
+}
+
+/**
+ * Names the code address that emitted one line of interest.
+ * @param text Borrowed native buffer, already formatted by the game.
+ * @param caller Return address captured in the funnel.
+ */
+void report_caller(const char* text, const void* caller) noexcept {
+    if (text == nullptr || caller == nullptr) {
+        return;
+    }
+    for (std::size_t i = 0; i < kTargetCount; ++i) {
+        if (std::strstr(text, kCallerTargets[i]) == nullptr) {
+            continue;
+        }
+        const auto absolute = reinterpret_cast<std::uintptr_t>(caller);
+        const std::uintptr_t base = module_base_of(caller);
+        const std::uintptr_t rva = base != 0 ? absolute - base : 0;
+        if (rva == 0 || g_reportedRva[i] == rva) {
+            return;
+        }
+        g_reportedRva[i] = rva;
+        std::array<char, 224> line{};
+        const int written = std::snprintf(line.data(),
+                                          line.size(),
+                                          "ev=retail stage=caller target=%s rva=0x%llX "
+                                          "abs=0x%llX base=0x%llX",
+                                          kCallerTargets[i],
+                                          static_cast<unsigned long long>(rva),
+                                          static_cast<unsigned long long>(absolute),
+                                          static_cast<unsigned long long>(base));
+        if (written > 0) {
+            core::log::write(core::log::Channel::client,
+                             core::log::Level::info,
+                             {line.data(), static_cast<std::size_t>(written)});
+        }
+        return;
+    }
+}
+
+/**
  * Writes one captured line.
  * @param siteId Registered site id.
  * @param text Borrowed native buffer.
@@ -89,6 +168,8 @@ void capture_line(std::int32_t siteId, const char* text) noexcept {
  * @param text Native buffer holding the already-formatted line.
  */
 __declspec(noinline) void __fastcall enqueue_body(std::int32_t siteId, const char* text) noexcept {
+    // Taken FIRST: _ReturnAddress must be read before any call in this frame.
+    const void* const caller = _ReturnAddress();
     // The verbosity setter logs through this same funnel; without this it would recurse.
     const bool outer = !g_inObserver;
     g_inObserver = true;
@@ -99,6 +180,7 @@ __declspec(noinline) void __fastcall enqueue_body(std::int32_t siteId, const cha
     if (outer) {
         if (siteId != kUnregisteredSite && text != nullptr) {
             capture_line(siteId, text);
+            report_caller(text, caller);
         }
         assert_verbosity();
         g_inObserver = false;
