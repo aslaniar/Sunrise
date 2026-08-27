@@ -948,6 +948,7 @@ add_executable(sunrise-server
     src/server/gameplay/group/group_host.cpp
     src/server/gameplay/peer/peer_transport.cpp
     src/server/http/https_listener.cpp
+    src/server/http/presence_state.cpp
     src/server/http/server_http.cpp
     src/server/http/tls.cpp
     src/server/persistence/account_memcmp_test.cpp
