@@ -133,6 +133,46 @@ std::uint64_t foreign_owner(std::size_t index) noexcept {
     return 0;
 }
 
+/**
+ * @return True when @p candidate points at a readable NUL-terminated string no longer
+ *         than @p limit.
+ *
+ * Slot 64 is bound on RUNTIME EVIDENCE (it is where the '/connect:' publish arrives,
+ * t=2662 every boot) but its identity is not proven: the competing reading is that 64 is
+ * GetFriendMessage, whose second argument is a CSteamID. Handed an integer like
+ * 0x0110000130AA9EC5 as a char*, an unguarded snprintf would fault and take the title with
+ * it - the exact failure class that cost p2(62) and p2(63). VirtualQuery turns that into a
+ * logged no-op, so this binding can be TESTED rather than gambled on.
+ */
+bool readable_string(const char* candidate, std::size_t limit) noexcept {
+    if (candidate == nullptr) {
+        return false;
+    }
+    MEMORY_BASIC_INFORMATION region{};
+    if (VirtualQuery(candidate, &region, sizeof region) != sizeof region) {
+        return false;
+    }
+    if (region.State != MEM_COMMIT) {
+        return false;
+    }
+    constexpr DWORD kReadable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY
+                                | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE
+                                | PAGE_EXECUTE_WRITECOPY;
+    if ((region.Protect & kReadable) == 0 || (region.Protect & PAGE_GUARD) != 0) {
+        return false;
+    }
+    // Stay inside the queried region: the NUL must land before the mapping ends.
+    const auto* base = static_cast<const char*>(region.BaseAddress);
+    const std::size_t remaining = region.RegionSize - static_cast<std::size_t>(candidate - base);
+    const std::size_t bound = remaining < limit ? remaining : limit;
+    for (std::size_t i = 0; i < bound; ++i) {
+        if (candidate[i] == '\0') {
+            return true;
+        }
+    }
+    return false;
+}
+
 /** Admin listener port on the standalone server. Plaintext; see the header note. */
 constexpr std::uint16_t kPresencePort = 8099;
 /** Worker cadence. Fast enough that a peer appears within a Tower load, cheap enough to ignore. */
@@ -159,7 +199,7 @@ void log_line(core::log::Level level, const char* format, ...) noexcept {
 }
 
 /** Distinct answers a hot-path instrument may hold before it starts overwriting. */
-constexpr std::size_t kHotSlots = 6;
+constexpr std::size_t kHotSlots = 8;
 constexpr std::size_t kHotLineBytes = 256;
 SRWLOCK g_hotLock{SRWLOCK_INIT};
 char g_hotLast[kHotSlots][kHotLineBytes]{};
@@ -366,7 +406,13 @@ void ensure_worker() noexcept {
 } // namespace
 
 bool set_rich_presence(void* /*self*/, const char* key, const char* value) noexcept {
-    if (key == nullptr || value == nullptr) {
+    if (!readable_string(key, 48) || !readable_string(value, 160)) {
+        // Not a (key, value) pair - so slot 64 is not SetRichPresence after all. Say so
+        // once and return harmlessly; the census in the same log names the real callers.
+        log_on_change(6, core::log::Level::warn,
+                      "ev=steamnet stage=rich_presence_store result=not_a_string_pair "
+                      "arg1=%p arg2=%p",
+                      static_cast<const void*>(key), static_cast<const void*>(value));
         return false;
     }
     AcquireSRWLockExclusive(&g_lock);

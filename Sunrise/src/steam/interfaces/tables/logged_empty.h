@@ -27,7 +27,12 @@ namespace sunrise::steam::interfaces::tables {
 inline constexpr std::uint32_t kLoggedEmptyReports = 3;
 
 /** Per-slot call counters, one array per instrumented table. */
-template <std::size_t TableId> inline std::array<std::uint32_t, 128> g_loggedEmptyCalls{};
+/**
+ * Per-slot call counters. Sized for the WIDEST shimmed table, not the widest interface we
+ * think exists: the friends table spans 256 slots because destiny2 calls friends offsets up
+ * to 0x690 (slot 210) - see steamfriends-vtable-audit.md.
+ */
+template <std::size_t TableId> inline std::array<std::uint32_t, 256> g_loggedEmptyCalls{};
 
 /**
  * The logged stand-in for one unimplemented slot. Mirrors methods::empty exactly - same

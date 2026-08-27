@@ -10,8 +10,15 @@ constexpr std::size_t kAppsMethodCount = 30;
 constexpr std::size_t kInputMethodCount = 35;
 /** SteamUtils009 has 34 vtable slots. */
 constexpr std::size_t kUtilsMethodCount = 34;
-/** SteamFriends017 has 80 vtable slots. */
-constexpr std::size_t kFriendsMethodCount = 80;
+/**
+ * The friends table must span what the CLIENT CALLS, not what SteamFriends017 declares.
+ * The vtable audit (steamfriends-vtable-audit.md, 20.97) measured destiny2 issuing
+ * friends-interface calls at offsets up to 0x690 = slot 210; an 80-slot table ends at
+ * offset 0x278, so every call past it read whatever global followed the array. 256 slots
+ * cover the audit with margin, and every unimplemented one is logged_empty - so a call we
+ * did not expect NAMES ITSELF in the log instead of jumping into a neighbour (20.99).
+ */
+constexpr std::size_t kFriendsMethodCount = 256;
 /** SteamUser020 has 31 vtable slots. */
 constexpr std::size_t kUserMethodCount = 31;
 /** STEAMUSERSTATS_INTERFACE_VERSION011 has 48 vtable slots. */
@@ -135,18 +142,29 @@ void initialize_common() noexcept {
 
     set_method(g_friendsMethods[index(FriendsSlot::personaName)], &methods::persona_name);
     set_method(g_friendsMethods[index(FriendsSlot::overlayNeedsPresent)], &methods::return_true);
-    // ISteamFriends017 bindings - VERIFIED ORDINALS from sdk isteamfriends.h (20.97):
-    //   2 GetFriendCount | 3 GetFriendByIndex | 5 GetFriendPersonaState
-    //   6 GetFriendPersonaName | 36 RequestUserInformation
-    //  41 SetRichPresence | 43 GetFriendRichPresence | 46 RequestFriendRichPresence
-    set_method(g_friendsMethods[2], &methods::get_friend_count);
-    set_method(g_friendsMethods[3], &methods::get_friend_by_index);
-    set_method(g_friendsMethods[5], &methods::get_friend_persona_state);
-    set_method(g_friendsMethods[6], &methods::get_friend_persona_name);
-    set_method(g_friendsMethods[36], &methods::request_user_information);
-    set_method(g_friendsMethods[41], &methods::set_rich_presence);
-    set_method(g_friendsMethods[43], &methods::get_rich_presence);
-    set_method(g_friendsMethods[46], &methods::request_friend_rich_presence);
+    /*
+     * FRIENDS BINDINGS ARE NOW MEASURED, NOT DERIVED (20.99 / p2(66)).
+     *
+     * p2(64) bound eight slots from sdk isteamfriends.h. Five of them (2, 6, 36, 41, 46)
+     * have NEVER been observed being called, and the binding moved SetRichPresence off
+     * slot 64 - the one slot with direct runtime evidence, seen at t=2662 on every boot -
+     * onto 41, where the publish would simply have been dropped.
+     *
+     * The complete runtime record, from logged_empty across every capture we hold:
+     *     slot 3   seen 25x  (Tower era)
+     *     slot 5   seen 51x  (Tower era)
+     *     slot 43  seen 51x  (Tower era)
+     *     slot 64  seen  1x  (t=2662, early boot - the '/connect:' publish)
+     * Nothing else, ever. What 3/5/43 actually ARE is still unknown: p2(62) assigned them
+     * count/by_index/persona_state and froze pre-title, and that freeze was never isolated
+     * from its other two bindings (44, 65). Guessing again is the DO-NOT.
+     *
+     * So this build binds exactly ONE new slot - 64, the publish - and leaves 3/5/43 as
+     * logged_empty. The boot then proves the publish->relay->peer-visible path end to end
+     * AND returns a complete slot census (now spanning 256 entries) to bind the read side
+     * on facts next pass.
+     */
+    set_method(g_friendsMethods[64], &methods::set_rich_presence);
 
     set_method(g_userMethods[index(UserSlot::handle)], &methods::get_user_handle);
     set_method(g_userMethods[index(UserSlot::loggedOn)], &methods::return_true);
