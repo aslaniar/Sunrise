@@ -25,6 +25,13 @@ struct Settings {
      */
     bool fadeRelease{true};
     /**
+     * Installs the join-roster observation detours (FINDINGS 20.109 option C):
+     * five log-only pass-through hooks on the host-side join gate. Logging
+     * changes no behavior; this switch exists so the detours themselves can be
+     * removed by a settings edit plus restart, without a rebuild.
+     */
+    bool joinRosterObserver{true};
+    /**
      * Forces the activity session's status 5-to-6 ready check.
      * Two of its five terms are client flags no host message reaches, so the host cannot open it.
      */

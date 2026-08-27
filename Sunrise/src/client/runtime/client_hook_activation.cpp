@@ -20,6 +20,7 @@
 #include "../hooks/cursor/runtime.h"
 #include "../hooks/package_validator/package_validator_iv.h"
 #include "../hooks/graphics/graphics_hook_lifecycle.h"
+#include "../hooks/join_roster/join_roster_observer.h"
 #include "../hooks/ability_gate/ability_gate_observer.h"
 #include "../hooks/gate_trace/gate_trace_observer.h"
 #include "../hooks/item_gate/item_gate_observer.h"
@@ -222,6 +223,13 @@ void clear_game_targets() noexcept {
     // world_population_schema_hash knob value). Internal no-op while externalServer is
     // disabled.
     (void)hooks::schema_capture::install();
+    // The join-roster observers (FINDINGS 20.109 option C): five log-only pass-through
+    // detours on the host-side join gate (join request, processor, reserve, admit,
+    // add-candidates) plus a read-only poll of the join-candidate table count. The
+    // candidate-table poll rides this activation's funnel period from retail_log.
+    // Prologue bytes are verified before each attach; the group installs only while
+    // client.join_roster_observer is true (settings.json, restart to re-arm).
+    (void)hooks::join_roster::install();
     // Boot-step fixes scan for their own single-site targets; each reports its own outcome.
     (void)hooks::bootflow::install();
     // The teleport hooks attach whether or not the feature is on, so the interface can enable it

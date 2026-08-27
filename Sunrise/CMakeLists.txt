@@ -93,6 +93,7 @@ add_library(steam_api64 SHARED
     src/client/hooks/item_gate/item_gate_observer.cpp
     src/client/hooks/handle_message/handle_message_observer.cpp
     src/client/hooks/schema_capture/schema_capture_observer.cpp
+    src/client/hooks/join_roster/join_roster_observer.cpp
     src/client/hooks/graphics/graphics_hook_replacements.cpp
     src/client/hooks/graphics/input/graphics_window_input.cpp
     src/client/hooks/graphics/input/graphics_raw_input_window.cpp

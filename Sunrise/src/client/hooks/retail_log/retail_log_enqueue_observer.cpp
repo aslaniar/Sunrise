@@ -11,6 +11,7 @@
 
 #include "../../../core/logging/log.h"
 #include "../../targets/game.h"
+#include "../join_roster/join_roster_observer.h"
 
 namespace sunrise::client::hooks::retail_log {
 namespace {
@@ -222,6 +223,9 @@ void assert_verbosity() noexcept {
     for (std::uint32_t category = 0; category < kCategoryCount; ++category) {
         setter(static_cast<std::int32_t>(category), kMostVerbose);
     }
+    // The join-roster candidate-table poll rides this 2 s period: it needs a game
+    // thread and nothing else (FINDINGS 20.109). Emits only on change.
+    join_roster::poll_candidate_table();
 }
 
 } // namespace sunrise::client::hooks::retail_log
