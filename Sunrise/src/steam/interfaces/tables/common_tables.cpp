@@ -135,8 +135,15 @@ void initialize_common() noexcept {
 
     set_method(g_friendsMethods[index(FriendsSlot::personaName)], &methods::persona_name);
     set_method(g_friendsMethods[index(FriendsSlot::overlayNeedsPresent)], &methods::return_true);
-    set_method(g_friendsMethods[index(FriendsSlot::richPresence)], &methods::return_true);
+    set_method(g_friendsMethods[index(FriendsSlot::richPresence)], &methods::set_rich_presence);
     set_method(g_friendsMethods[index(FriendsSlot::inviteRichPresence)], &methods::return_true);
+    // Friends rich-presence cross-introduction (FINDINGS 20.96): friend enumeration and
+    // presence reads answered for the one configured peer instead of logged_empty zeros.
+    set_method(g_friendsMethods[3], &methods::get_friend_count);
+    set_method(g_friendsMethods[5], &methods::get_friend_by_index);
+    set_method(g_friendsMethods[43], &methods::get_friend_persona_state);
+    set_method(g_friendsMethods[44], &methods::request_user_information);
+    set_method(g_friendsMethods[65], &methods::get_rich_presence);
 
     set_method(g_userMethods[index(UserSlot::handle)], &methods::get_user_handle);
     set_method(g_userMethods[index(UserSlot::loggedOn)], &methods::return_true);

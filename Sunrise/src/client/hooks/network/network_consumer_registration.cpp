@@ -26,6 +26,20 @@ void unregister_http_consumer(HttpConsumer consumer) noexcept {
         expected, nullptr, std::memory_order_release, std::memory_order_relaxed);
 }
 
+/**
+ * Drives one HTTP request through the registered in-process consumer, so feature code
+ * reaches the Server without touching sockets (the egress policy redirects it there).
+ * @return True when a consumer was registered and answered.
+ */
+bool consume_http(const HttpRequest& request, HttpResponse& response) noexcept {
+    const HttpConsumer consumer = hooks::network::g_httpConsumer.load(std::memory_order_acquire);
+    if (consumer == nullptr) {
+        return false;
+    }
+    return consumer(request, response);
+}
+
+
 /** Registers the single in-process BAP consumer. */
 bool register_bap_consumer(BapConsumer consumer) noexcept {
     if (consumer == nullptr) {

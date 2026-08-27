@@ -1,4 +1,5 @@
 #include "https_listener.h"
+#include "presence_state.h"
 
 #include <WS2tcpip.h>
 #include <WinSock2.h>
@@ -13,6 +14,7 @@
 
 #include "../../client/network/consumer.h"
 #include "../../core/logging/log.h"
+#include "presence_state.h"
 #include "../../core/settings/settings.h"
 #include "../../middleware/content/manifest/encoder.h"
 #include "../../state/content_manifest/content_manifest_state_runtime.h"
@@ -43,6 +45,52 @@ constexpr DWORD kSocketTimeoutMilliseconds = 2000;
 constexpr unsigned kHttpOk = 200;
 constexpr unsigned kHttpUnavailable = 503;
 constexpr unsigned kHttpInternalError = 500;
+constexpr unsigned kHttpBadRequest = 400;
+
+/** Friends rich-presence cross-introduction routes (FINDINGS 20.96). */
+constexpr std::string_view kPresenceRoute = "/presence";
+constexpr std::string_view kPresenceStoreMarker = "/presence/store?";
+
+/**
+ * Parses "?xuid=<hex>&key=<name>" out of a presence-store target.
+ * @return True when both fields were present and parsed.
+ */
+bool parse_presence_query(std::string_view target, std::uint64_t& xuid, char* keyBuffer) noexcept {
+    const std::size_t xuidMarker = target.find("xuid=");
+    const std::size_t keyMarker = target.find("&key=");
+    if (xuidMarker == std::string_view::npos || keyMarker == std::string_view::npos
+        || keyMarker <= xuidMarker) {
+        return false;
+    }
+    const std::string_view xuidText = target.substr(xuidMarker + 5, keyMarker - xuidMarker - 5);
+    if (xuidText.empty() || xuidText.size() > 16) {
+        return false;
+    }
+    xuid = 0;
+    for (const char character : xuidText) {
+        xuid <<= 4U;
+        if (character >= '0' && character <= '9') {
+            xuid |= static_cast<std::uint64_t>(character - '0');
+        } else if (character >= 'a' && character <= 'f') {
+            xuid |= static_cast<std::uint64_t>(character - 'a' + 10);
+        } else if (character >= 'A' && character <= 'F') {
+            xuid |= static_cast<std::uint64_t>(character - 'A' + 10);
+        } else {
+            return false;
+        }
+    }
+    std::size_t keyIndex = 0;
+    for (const char character : target.substr(keyMarker + 5)) {
+        if (character == '&') {
+            break;
+        }
+        if (keyIndex < 95) {
+            keyBuffer[keyIndex++] = character;
+        }
+    }
+    keyBuffer[keyIndex] = '\0';
+    return keyIndex > 0;
+}
 constexpr unsigned kHttpNotFound = 404;
 constexpr unsigned kHttpLengthRequired = 411;
 constexpr unsigned kHttpPayloadTooLarge = 413;
@@ -274,6 +322,32 @@ void route_request(const Request& request,
             }
             return;
         }
+        // Friends rich-presence cross-introduction (FINDINGS 20.96): one GET returns every
+        // stored peer key as lines "xuid key value\n".
+        if (path == kPresenceRoute) {
+            route = "presence";
+            const std::size_t written =
+                sunrise::server::http::presence::snapshot(reinterpret_cast<char*>(response.data()), response.size());
+            responseSize = written;
+            status = kHttpOk;
+            return;
+        }
+    }
+    if (request.method == "POST" && request.target.find(kPresenceStoreMarker) == 0) {
+        // POST /presence/store?xuid=<hex>&key=<name> with the value as the body.
+        route = "presence_store";
+        const std::string_view target = request.target;
+        std::uint64_t xuid = 0;
+        char keyBuffer[96]{};
+        if (parse_presence_query(target, xuid, keyBuffer)) {
+            std::string_view value{reinterpret_cast<const char*>(request.body.data()),
+                                   request.body.size()};
+            status = sunrise::server::http::presence::store(xuid, keyBuffer, value) ? kHttpOk : kHttpInternalError;
+        } else {
+            status = kHttpBadRequest;
+        }
+        responseSize = 0;
+        return;
     }
     // Unmapped routes finish here with an empty success, mirroring the in-process
     // ContentConfig GET hook (content_config_get_replacement.cpp:182-188): the game's

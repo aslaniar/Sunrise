@@ -61,6 +61,9 @@ using BapConsumer = bool (*)(const BapRequest&, BapResponse&) noexcept;
 /** Registers the Server consumer used by the HTTP detour. */
 [[nodiscard]] bool register_http_consumer(HttpConsumer consumer) noexcept;
 
+/** Drives one request through the registered HTTP consumer (feature-code helper). */
+[[nodiscard]] bool consume_http(const HttpRequest& request, HttpResponse& response) noexcept;
+
 /** Removes the Server consumer when it still matches. */
 void unregister_http_consumer(HttpConsumer consumer) noexcept;
 

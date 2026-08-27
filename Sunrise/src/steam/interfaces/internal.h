@@ -87,6 +87,12 @@ namespace methods {
 ULONG_PTR empty(void*) noexcept;
 bool return_true(void*) noexcept;
 const char* persona_name(void*) noexcept;
+bool set_rich_presence(void*, const char*, const char*) noexcept;
+const char* get_rich_presence(void*, std::uint64_t, const char*) noexcept;
+int get_friend_count(void*) noexcept;
+std::uint64_t get_friend_by_index(void*, int) noexcept;
+int get_friend_persona_state(void*, std::uint64_t) noexcept;
+bool request_user_information(void*, std::uint64_t) noexcept;
 const char* language(void*) noexcept;
 const char* country(void*) noexcept;
 DWORD get_app_id(void*) noexcept;
