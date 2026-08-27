@@ -135,15 +135,18 @@ void initialize_common() noexcept {
 
     set_method(g_friendsMethods[index(FriendsSlot::personaName)], &methods::persona_name);
     set_method(g_friendsMethods[index(FriendsSlot::overlayNeedsPresent)], &methods::return_true);
-    set_method(g_friendsMethods[index(FriendsSlot::richPresence)], &methods::set_rich_presence);
-    set_method(g_friendsMethods[index(FriendsSlot::inviteRichPresence)], &methods::return_true);
-    // Friends rich-presence cross-introduction (FINDINGS 20.96): friend enumeration and
-    // presence reads answered for the one configured peer instead of logged_empty zeros.
-    set_method(g_friendsMethods[3], &methods::get_friend_count);
-    set_method(g_friendsMethods[5], &methods::get_friend_by_index);
-    set_method(g_friendsMethods[43], &methods::get_friend_persona_state);
-    set_method(g_friendsMethods[44], &methods::request_user_information);
-    set_method(g_friendsMethods[65], &methods::get_rich_presence);
+    // ISteamFriends017 bindings - VERIFIED ORDINALS from sdk isteamfriends.h (20.97):
+    //   2 GetFriendCount | 3 GetFriendByIndex | 5 GetFriendPersonaState
+    //   6 GetFriendPersonaName | 36 RequestUserInformation
+    //  41 SetRichPresence | 43 GetFriendRichPresence | 46 RequestFriendRichPresence
+    set_method(g_friendsMethods[2], &methods::get_friend_count);
+    set_method(g_friendsMethods[3], &methods::get_friend_by_index);
+    set_method(g_friendsMethods[5], &methods::get_friend_persona_state);
+    set_method(g_friendsMethods[6], &methods::get_friend_persona_name);
+    set_method(g_friendsMethods[36], &methods::request_user_information);
+    set_method(g_friendsMethods[41], &methods::set_rich_presence);
+    set_method(g_friendsMethods[43], &methods::get_rich_presence);
+    set_method(g_friendsMethods[46], &methods::request_friend_rich_presence);
 
     set_method(g_userMethods[index(UserSlot::handle)], &methods::get_user_handle);
     set_method(g_userMethods[index(UserSlot::loggedOn)], &methods::return_true);

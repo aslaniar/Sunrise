@@ -16,17 +16,29 @@ namespace sunrise::steam::interfaces::methods {
 namespace {
 
 /**
- * FRIENDS RICH-PRESENCE CROSS-INTRODUCTION (FINDINGS 20.96), p2(63) hardening.
+ * FRIENDS RICH-PRESENCE CROSS-INTRODUCTION (FINDINGS 20.96/20.97), p2(64).
  *
- * p2(62) froze both clients before the title screen: it reported two friends from the
- * first GetFriendCount, with a PHANTOM peer id (own id XOR 1 - not an existing account),
- * so the client's friend-index loop dereferenced session state for a user that had no
- * records. This build reports ONLY friends whose presence arrived through the presence
- * store, and only after that store has live data: GetFriendCount starts at 1 (self) and
- * grows by one per DISTINCT foreign xuid seen in GET /presence snapshots.
+ * Slots bound per the REAL ISteamFriends017 vtable order (sdk/steam/isteamfriends.h,
+ * Detanup01/gbe_fork 87bb497e): indices are 0-based from GetPersonaName.
+ *   2  GetFriendCount(flags) -> int
+ *   3  GetFriendByIndex(i, flags) -> CSteamID(u64)
+ *   5  GetFriendPersonaState(id) -> EPersonaState
+ *   6  GetFriendPersonaName(id) -> const char*
+ *  36  RequestUserInformation(id, bool) -> bool
+ *  41  SetRichPresence(key, value) -> bool          <- STORE
+ *  43  GetFriendRichPresence(id, key) -> const char*<- READ PEER
+ *  46  RequestFriendRichPresence(id)                <- accept silently
+ *
+ * p2(62)/p2(63) froze because slots 64/65 carried these bodies while the real ABI has
+ * GetFriendMessage(64) and GetFollowerCount(65) there - both run during early sign-in
+ * stats flow on every machine. This build binds ONLY verified indices.
+ *
+ * Presence values: own publishes stored locally AND relayed through the Server
+ * (/presence/store); the single paired peer's values fetched lazily from /presence on
+ * friend queries (GET /presence returns "xuid key value" lines).
  */
 
-/** Presence rows: one per (owner,key). Owner 0 rows are impossible (xuid nonzero). */
+/** Presence rows: one per (owner,key). */
 struct PresenceRow {
     std::uint64_t owner{};
     char key[48]{};
@@ -50,6 +62,20 @@ std::size_t find_row(std::uint64_t owner, std::string_view key) noexcept {
     return static_cast<std::size_t>(-1);
 }
 
+std::size_t insert_row(std::uint64_t owner, const char* key) noexcept {
+    std::size_t index = find_row(owner, key);
+    if (index != static_cast<std::size_t>(-1)) {
+        return index;
+    }
+    if (g_rowCount >= kMaxRows) {
+        return static_cast<std::size_t>(-1);
+    }
+    index = g_rowCount++;
+    g_rows[index].owner = owner;
+    std::snprintf(g_rows[index].key, sizeof g_rows[index].key, "%s", key);
+    return index;
+}
+
 /** Distinct non-self owners currently stored. */
 std::size_t foreign_owner_count() noexcept {
     std::uint64_t seen[8]{};
@@ -60,11 +86,8 @@ std::size_t foreign_owner_count() noexcept {
             continue;
         }
         bool known = false;
-        for (std::size_t k = 0; k < count; ++k) {
-            if (seen[k] == owner) {
-                known = true;
-                break;
-            }
+        for (std::size_t k = 0; k < count && k < 8; ++k) {
+            known = known || seen[k] == owner;
         }
         if (!known && count < 8) {
             seen[count++] = owner;
@@ -73,7 +96,6 @@ std::size_t foreign_owner_count() noexcept {
     return count;
 }
 
-/** @return The nth distinct foreign owner, or zero. */
 std::uint64_t foreign_owner(std::size_t index) noexcept {
     std::uint64_t seen[8]{};
     std::size_t count = 0;
@@ -83,11 +105,8 @@ std::uint64_t foreign_owner(std::size_t index) noexcept {
             continue;
         }
         bool known = false;
-        for (std::size_t k = 0; k < count; ++k) {
-            if (seen[k] == owner) {
-                known = true;
-                break;
-            }
+        for (std::size_t k = 0; k < count && k < 8; ++k) {
+            known = known || seen[k] == owner;
         }
         if (!known) {
             if (count == index) {
@@ -95,12 +114,72 @@ std::uint64_t foreign_owner(std::size_t index) noexcept {
             }
             if (count < 8) {
                 seen[count++] = owner;
-            } else {
-                break;
             }
         }
     }
     return 0;
+}
+
+/**
+ * Relays one stored own-key to the Server so the peer's shim can read it.
+ * POST /presence/store?xuid=<hex>&key=<name> with the value as body.
+ */
+void relay_to_server(std::string_view key, std::string_view value) noexcept {
+    char url[128]{};
+    const int written = std::snprintf(url,
+                                      sizeof url,
+                                      "/presence/store?xuid=%llx&key=%s",
+                                      static_cast<unsigned long long>(own_xuid()),
+                                      std::string_view{key}.substr(0, 40).data());
+    if (written <= 0 || written >= static_cast<int>(sizeof url)) {
+        return;
+    }
+    client::network::HttpRequest request{
+        .url = url,
+        .contentType = "text/plain",
+        .body = {},
+        .response = {},
+    };
+    // Copy the value into request-owned bytes: consumer borrows .body directly.
+    static thread_local char payload[160];
+    std::snprintf(payload, sizeof payload, "%.*s",
+                  static_cast<int>(value.size()), value.data());
+    request.body = {reinterpret_cast<std::byte*>(payload), std::strlen(payload)};
+    client::network::HttpResponse response{};
+    static_cast<void>(client::network::consume_http(request, response));
+}
+
+void fetch_peer_values() noexcept {
+    char buffer[1024]{};
+    client::network::HttpRequest request{
+        .url = "/presence",
+        .contentType = "text/plain",
+        .body = {},
+        .response = {reinterpret_cast<std::byte*>(buffer), sizeof buffer - 1},
+    };
+    client::network::HttpResponse response{};
+    if (!client::network::consume_http(request, response)) {
+        return;
+    }
+    buffer[response.size < sizeof buffer ? response.size : sizeof buffer - 1] = '\0';
+
+    AcquireSRWLockExclusive(&g_lock);
+    char* contextLine = nullptr;
+    for (char* line = strtok_r(buffer, "\n", &contextLine); line != nullptr;
+         line = strtok_r(nullptr, "\n", &contextLine)) {
+        unsigned long long xuid = 0;
+        char key[48]{};
+        char value[160]{};
+        if (std::sscanf(line, "%llu %47s %159s", &xuid, key, value) != 3 || xuid == 0
+            || xuid == own_xuid()) {
+            continue;
+        }
+        const std::size_t index = insert_row(xuid, key);
+        if (index != static_cast<std::size_t>(-1)) {
+            std::snprintf(g_rows[index].value, sizeof g_rows[index].value, "%s", value);
+        }
+    }
+    ReleaseSRWLockExclusive(&g_lock);
 }
 
 } // namespace
@@ -110,72 +189,31 @@ bool set_rich_presence(void* /*self*/, const char* key, const char* value) noexc
         return false;
     }
     AcquireSRWLockExclusive(&g_lock);
-    std::size_t index = find_row(own_xuid(), key);
-    if (index == static_cast<std::size_t>(-1)) {
-        if (g_rowCount >= kMaxRows) {
-            ReleaseSRWLockExclusive(&g_lock);
-            return true;
-        }
-        index = g_rowCount++;
-        g_rows[index].owner = own_xuid();
-        std::snprintf(g_rows[index].key, sizeof g_rows[index].key, "%s", key);
-    }
-    std::snprintf(g_rows[index].value, sizeof g_rows[index].value, "%s", value);
-    ReleaseSRWLockExclusive(&g_lock);
-    core::log::write(core::log::Channel::client,
-                     core::log::Level::info,
-                     "ev=steamnet stage=rich_presence_store result=ok");
-    return true;
-}
-
-void refresh_peer_presence() noexcept {
-    char body[1024]{};
-    client::network::HttpRequest request{
-        .url = "/presence",
-        .contentType = "text/plain",
-        .body = {},
-        .response = {reinterpret_cast<std::byte*>(body), sizeof body - 1},
-    };
-    client::network::HttpResponse response{};
-    if (!client::network::consume_http(request, response)) {
-        return;
-    }
-    body[response.size < sizeof body ? response.size : sizeof body - 1] = '\0';
-
-    AcquireSRWLockExclusive(&g_lock);
-    char* contextLine = nullptr;
-    for (char* line = strtok_r(body, "\n", &contextLine); line != nullptr;
-         line = strtok_r(nullptr, "\n", &contextLine)) {
-        unsigned long long xuid = 0;
-        char key[48]{};
-        char value[160]{};
-        if (std::sscanf(line, "%llu %47s %159s", &xuid, key, value) != 3 || xuid == 0
-            || xuid == own_xuid()) {
-            continue;
-        }
-        std::size_t index = find_row(xuid, key);
-        if (index == static_cast<std::size_t>(-1)) {
-            if (g_rowCount >= kMaxRows) {
-                break;
-            }
-            index = g_rowCount++;
-            g_rows[index].owner = xuid;
-            std::snprintf(g_rows[index].key, sizeof g_rows[index].key, "%s", key);
-        }
+    const std::size_t index = insert_row(own_xuid(), key);
+    bool ok = index != static_cast<std::size_t>(-1);
+    if (ok) {
         std::snprintf(g_rows[index].value, sizeof g_rows[index].value, "%s", value);
     }
     ReleaseSRWLockExclusive(&g_lock);
+    if (ok) {
+        relay_to_server(key, value);
+        core::log::write(core::log::Channel::client,
+                         core::log::Level::info,
+                         "ev=steamnet stage=rich_presence_store result=ok");
+    }
+    return ok;
 }
 
-const char* get_rich_presence([[maybe_unused]] void* self,
-                              std::uint64_t friendId,
-                              const char* key) noexcept {
+const char* get_rich_presence(void* /*self*/, std::uint64_t friendId, const char* key) noexcept {
     if (key == nullptr) {
         return "";
     }
+    if (friendId != own_xuid()) {
+        fetch_peer_values();
+    }
     AcquireSRWLockShared(&g_lock);
-    const std::size_t index = find_row(friendId, key);
     static thread_local char returnValue[160];
+    const std::size_t index = find_row(friendId, key);
     if (index == static_cast<std::size_t>(-1)) {
         returnValue[0] = '\0';
     } else {
@@ -185,12 +223,9 @@ const char* get_rich_presence([[maybe_unused]] void* self,
     return returnValue;
 }
 
-int get_friend_count(void* /*self*/) noexcept {
-    refresh_peer_presence();
+int get_friend_count(void* /*self*/, int /*iFriendFlags*/) noexcept {
+    fetch_peer_values();
     AcquireSRWLockShared(&g_lock);
-    // +1: SteamFriends counts exclude self? No - retail GetFriendCount is FRIENDS ONLY.
-    // It never includes self. Start at the foreign count; with no peer yet this returns
-    // zero, which is the safe pre-introduction state the client handles natively.
     const int result = static_cast<int>(foreign_owner_count());
     ReleaseSRWLockShared(&g_lock);
     core::log::write(core::log::Channel::client,
@@ -199,23 +234,46 @@ int get_friend_count(void* /*self*/) noexcept {
     return result;
 }
 
-std::uint64_t get_friend_by_index([[maybe_unused]] void* self, int index) noexcept {
+std::uint64_t get_friend_by_index(void* /*self*/,
+                                  [[maybe_unused]] int index,
+                                  [[maybe_unused]] int flags) noexcept {
     AcquireSRWLockShared(&g_lock);
     const std::uint64_t owner = foreign_owner(static_cast<std::size_t>(index));
     ReleaseSRWLockShared(&g_lock);
-    return owner; // zero when out of range: caller treats as end of list and stops.
+    return owner;
 }
 
-int get_friend_persona_state([[maybe_unused]] void* self, std::uint64_t friendId) noexcept {
-    // Only ever called for ids returned above; any known owner is online(3).
-    return friendId == 0 ? 0 : 3;
+int get_friend_persona_state(void* /*self*/, std::uint64_t friendId) noexcept {
+    // 1 = Online in EPersonaState. Only known owners are reported anyway.
+    return friendId == 0 ? 0 : 1;
 }
 
-bool request_user_information([[maybe_unused]] void* self, std::uint64_t) noexcept {
+const char* get_friend_persona_name(void* /*self*/, std::uint64_t friendId) noexcept {
+    // Persona names come from Core settings; the peer's label matches its authored slot.
+    static thread_local char nameBuffer[64];
+    const std::uint64_t own = own_xuid();
+    if (friendId == own) {
+        std::snprintf(nameBuffer, sizeof nameBuffer, "%s",
+                      core::settings::get().steam.user.personaName.data());
+    } else {
+        const bool lowerSlot = (friendId & 0xFF) < (own & 0xFF);
+        std::snprintf(nameBuffer, sizeof nameBuffer, "guardian-%s",
+                      lowerSlot ? "one" : "two");
+    }
+    return nameBuffer;
+}
+
+bool request_user_information(void* /*self*/, std::uint64_t /*friendId*/,
+                              bool /*requireNameOnly*/) noexcept {
     return false;
 }
 
-const char* persona_name([[maybe_unused]] void* self) noexcept {
+bool request_friend_rich_presence(void* /*self*/, std::uint64_t /*friendId*/) noexcept {
+    // Fetch-on-read already keeps values fresh; nothing further required.
+    return true;
+}
+
+const char* persona_name(void* /*self*/) noexcept {
     return core::settings::get().steam.user.personaName.data();
 }
 
