@@ -89,6 +89,17 @@ void uninstall_owner_activity_slot() noexcept;
 /** Detaches the peer-link reason observer. */
 void uninstall_peer_reason() noexcept;
 
+/**
+ * Attaches the BAP receive-decode observer (FINDINGS 20.90 discriminator).
+ * Reports each distinct inbound frame decode of receive-class descriptor 6 with its parse
+ * verdict and raw prefixes.
+ * @return True when the target validates in range and the detour attaches.
+ */
+[[nodiscard]] bool install_seeker_rx() noexcept;
+
+/** Detaches the BAP receive-decode observer. */
+void uninstall_seeker_rx() noexcept;
+
 [[nodiscard]] bool install_region_private() noexcept;
 
 /** Detaches the private-region force. */

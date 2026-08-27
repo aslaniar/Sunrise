@@ -29,15 +29,17 @@ bool install() noexcept {
     const bool spawn = install_spawn_hold();
     const bool fade = install_fade_release();
     const bool peerReason = install_peer_reason();
+    const bool seekerRx = install_seeker_rx();
     const bool anyFix = hold || sliceSet || skip || composition || handoff || joinReady || ownerSlot
-                        || regionPrivate || worldStep || spawn || fade || peerReason;
+                        || regionPrivate || worldStep || spawn || fade || peerReason || seekerRx;
     g_installed.store(anyFix, std::memory_order_release);
     return hold && sliceSet && skip && composition && handoff && joinReady && ownerSlot
-           && regionPrivate && worldStep && spawn && fade && peerReason;
+           && regionPrivate && worldStep && spawn && fade && peerReason && seekerRx;
 }
 
 /** Detaches every boot-step fix, in the reverse order of install. */
 void uninstall() noexcept {
+    uninstall_seeker_rx();
     uninstall_peer_reason();
     uninstall_fade_release();
     uninstall_spawn_hold();

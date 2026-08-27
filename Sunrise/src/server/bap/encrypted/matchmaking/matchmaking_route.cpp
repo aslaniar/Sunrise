@@ -36,6 +36,13 @@ static_assert(service::kJoinDescriptorSize == state::matchmaking::kDescriptorSiz
  * If the advertised endpoint is not a routable host, a searcher is correct to ignore it and
  * every field added to the search result is wasted. Strip once the peer link forms.
  *
+ * FINDINGS 20.90 RELABEL: our JoinReading fields are OUR-layout guesses applied to a FOREIGN
+ * blob. On real client advertisements the address/nat/method octets land inside ASCII regions
+ * ("steamid:..." strings), so `local=115.116.101.97 nat=51` style readings were artifacts,
+ * never client facts. All interpreted fields are therefore prefixed `asif_` ("what the value
+ * would be IF our layout held") so no future theory can cite them as observations about
+ * clients. Only machineId+offset hex and the raw dumps below carry foreign-blob truth.
+ *
  * @param stage Label naming where in the route the descriptor was seen.
  * @param descriptor Borrowed bytes, of any length: a wrong length is itself the finding.
  */
@@ -54,9 +61,10 @@ void log_descriptor(const char* stage, std::span<const std::byte> descriptor) no
     std::array<char, 256> line{};
     const int count = std::snprintf(
         line.data(), line.size(),
-        "ev=matchmaking stage=descriptor where=%s routable=%d machine=0x%016llX "
-        "local=%u.%u.%u.%u:%u public=%u.%u.%u.%u:%u nat=%u method=%u session=0x%016llX",
-        stage, routable ? 1 : 0,
+        "ev=matchmaking stage=descriptor where=%s blob=%zu routable=%d "
+        "asif_machine=0x%016llX asif_local=%u.%u.%u.%u:%u asif_public=%u.%u.%u.%u:%u "
+        "asif_nat=%u asif_method=%u asif_session=0x%016llX",
+        stage, descriptor.size(), routable ? 1 : 0,
         static_cast<unsigned long long>(reading.endpoint.machineId),
         reading.endpoint.address >> 24, (reading.endpoint.address >> 16) & 0xFF,
         (reading.endpoint.address >> 8) & 0xFF, reading.endpoint.address & 0xFF,
