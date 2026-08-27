@@ -10,7 +10,11 @@ namespace sunrise::client::hooks::join_roster {
  *
  *   join_request    +0x16E0460  inbound connection-layer type 0x0A handler
  *   join_process    +0x17806C0  join-request processor (candidate-table feeder)
- *   reserve         +0x17692E0  machine registration (the reservation gate)
+ *   reserve         +0x1769230  machine registration gate - the WRAPPER entry;
+ *                               the core (+0x17692E0) must NOT be detoured: it
+ *                               reads its caller's frame at [rbp+0x330], so a
+ *                               core detour feeds it body-frame garbage and
+ *                               stalls session creation (p2(71/72) freeze)
  *   admit           +0x1777EC0  member record fill (host-side accept)
  *   add_candidates  +0x1792080  the sustained writer of session candidates +0xC8
  *

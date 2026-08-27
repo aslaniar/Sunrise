@@ -39,10 +39,10 @@ constexpr std::array<SiteSpec, 5> kSites{{
       0x48, 0x8D, 0xAC, 0x24, 0x88, 0xFD, 0xFF, 0xFF, 0x48, 0x81,
       0xEC, 0x78, 0x03, 0x00},
      "join_process"},
-    {0x17692E0,
-     {0x48, 0x89, 0x5C, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54,
-      0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8D, 0xAC, 0x24,
-      0x40, 0xFD, 0xFF, 0xFF},
+    {0x1769230,
+     {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10,
+      0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xEC, 0x40,
+      0x80, 0x3D, 0xD5, 0xA6},
      "reserve"},
     {0x1777EC0,
      {0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41,
@@ -252,8 +252,13 @@ std::uint64_t __fastcall site_join_process(std::uint64_t a1,std::uint64_t a2,std
 }
 
 /**
- * Body for the reserve (machine registration) gate. rcx = context, edx/r8d =
- * machine and member indices, r9 = record whose first qword names the joiner.
+ * Body for the reserve gate - hooked at the WRAPPER 0x141769230, not the core
+ * 0x1417692E0. The core reads its caller's frame at [rbp+0x330] (entry-0xF8
+ * frame math, 20.109), so a core detour puts our body's frame garbage into
+ * those reads and stalls session creation (the p2(71/72) rig freeze). The
+ * wrapper is a small simple-frame function every join-path caller goes
+ * through; hooking it leaves the core's call-frame intact. rcx = context,
+ * edx = machine index, r8d = member index, r9d = record pointer.
  */
 std::uint64_t __fastcall site_reserve(std::uint64_t a1,std::uint64_t a2,std::uint64_t a3,std::uint64_t a4,std::uint64_t a5,std::uint64_t a6,std::uint64_t a7,std::uint64_t a8,std::uint64_t a9,std::uint64_t a10,std::uint64_t a11,std::uint64_t a12,std::uint64_t a13,std::uint64_t a14,std::uint64_t a15,std::uint64_t a16) noexcept {
     std::array<char, 128> detail{};
