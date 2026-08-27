@@ -158,6 +158,41 @@ void log_line(core::log::Level level, const char* format, ...) noexcept {
     }
 }
 
+/** Distinct answers a hot-path instrument may hold before it starts overwriting. */
+constexpr std::size_t kHotSlots = 6;
+constexpr std::size_t kHotLineBytes = 256;
+SRWLOCK g_hotLock{SRWLOCK_INIT};
+char g_hotLast[kHotSlots][kHotLineBytes]{};
+
+/**
+ * Logs a hot-path line ONLY when its text changed since the last call for that slot.
+ *
+ * get_friend_count and get_rich_presence sit where the vtable audit measured 33 calls at
+ * a single offset (20.97). Logging every call would put file I/O on the Client's own
+ * thread and bury the boot's answer in thousands of identical lines. One line per
+ * DISTINCT answer is exactly what the boot brief needs to read and costs nothing.
+ */
+void log_on_change(std::size_t slot, core::log::Level level, const char* format, ...) noexcept {
+    char line[kHotLineBytes]{};
+    va_list arguments;
+    va_start(arguments, format);
+    const int written = std::vsnprintf(line, sizeof line, format, arguments);
+    va_end(arguments);
+    if (written <= 0 || slot >= kHotSlots) {
+        return;
+    }
+    AcquireSRWLockExclusive(&g_hotLock);
+    const bool changed = std::strcmp(line, g_hotLast[slot]) != 0;
+    if (changed) {
+        std::snprintf(g_hotLast[slot], sizeof g_hotLast[slot], "%s", line);
+    }
+    ReleaseSRWLockExclusive(&g_hotLock);
+    if (changed) {
+        core::log::write(core::log::Channel::client, level,
+                         {line, static_cast<std::size_t>(written)});
+    }
+}
+
 /**
  * One plaintext HTTP/1.1 exchange with the server's admin listener.
  * @param body Response body, null terminated. May be null when the answer is not read.
@@ -255,7 +290,7 @@ void publish_own_rows() noexcept {
         }
         const unsigned status = http_exchange("POST", target, nullptr, 0);
         // ABSENCE NEGATIVE (L13): a dropped relay must be LOUD. p2(64) discarded this.
-        log_line(status == 200 ? core::log::Level::info : core::log::Level::warn,
+        log_on_change(5, status == 200 ? core::log::Level::info : core::log::Level::warn,
                  "ev=steamnet stage=rich_presence_relay key=%s value=%s http=%u result=%s",
                  pending[i].key, pending[i].value, status, status == 200 ? "ok" : "fail");
     }
@@ -266,8 +301,8 @@ void fetch_peer_values() noexcept {
     char buffer[2048]{};
     const unsigned status = http_exchange("GET", "/presence", buffer, sizeof buffer);
     if (status != 200) {
-        log_line(core::log::Level::warn,
-                 "ev=steamnet stage=presence_fetch http=%u result=fail", status);
+        log_on_change(4, core::log::Level::warn,
+                      "ev=steamnet stage=presence_fetch http=%u result=fail", status);
         return;
     }
 
@@ -296,9 +331,9 @@ void fetch_peer_values() noexcept {
     g_peerRows.store(merged, std::memory_order_release);
     // The distinguishing instrument for boot-brief branch 2: rows=0 means the peer never
     // published (or the server lost them), NOT that our friend slots are wrong.
-    log_line(core::log::Level::info,
-             "ev=steamnet stage=presence_fetch http=200 rows=%zu peers=%zu result=ok",
-             merged, owners);
+    log_on_change(3, core::log::Level::info,
+                  "ev=steamnet stage=presence_fetch http=200 rows=%zu peers=%zu result=ok",
+                  merged, owners);
 }
 
 DWORD WINAPI presence_worker(void*) noexcept {
@@ -367,7 +402,7 @@ const char* get_rich_presence(void* /*self*/, std::uint64_t friendId, const char
     if (friendId != own_xuid()) {
         // The boot contract's step 2 is "the peer's 'connect' key was READ". Without this
         // line an empty answer and a never-asked question look identical in the log.
-        log_line(core::log::Level::info,
+        log_on_change(0, core::log::Level::info,
                  "ev=steamnet stage=peer_rich_presence friend=%llx key=%s value=%s result=%s",
                  static_cast<unsigned long long>(friendId), key, returnValue,
                  returnValue[0] == '\0' ? "empty" : "ok");
@@ -380,8 +415,8 @@ int get_friend_count(void* /*self*/, int /*iFriendFlags*/) noexcept {
     AcquireSRWLockShared(&g_lock);
     const int result = static_cast<int>(foreign_owner_count());
     ReleaseSRWLockShared(&g_lock);
-    log_line(core::log::Level::info,
-             "ev=steamnet stage=friend_count count=%d result=ok", result);
+    log_on_change(1, core::log::Level::info,
+                  "ev=steamnet stage=friend_count count=%d result=ok", result);
     return result;
 }
 
@@ -391,9 +426,9 @@ std::uint64_t get_friend_by_index(void* /*self*/,
     AcquireSRWLockShared(&g_lock);
     const std::uint64_t owner = foreign_owner(static_cast<std::size_t>(index));
     ReleaseSRWLockShared(&g_lock);
-    log_line(core::log::Level::info,
-             "ev=steamnet stage=friend_by_index index=%d friend=%llx result=%s",
-             index, static_cast<unsigned long long>(owner), owner == 0 ? "absent" : "ok");
+    log_on_change(2, core::log::Level::info,
+                  "ev=steamnet stage=friend_by_index index=%d friend=%llx result=%s",
+                  index, static_cast<unsigned long long>(owner), owner == 0 ? "absent" : "ok");
     return owner;
 }
 
