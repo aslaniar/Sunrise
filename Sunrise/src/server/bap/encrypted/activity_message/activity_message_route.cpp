@@ -235,6 +235,28 @@ void report_message(std::uint32_t messageType,
         !namesOwnSession
         && server::gameplay::group::host_session_for_activity(parsed.sessionId, host)
         && state::activity::binding_matches(host.target);
+    // ROAD C, link L4 (FRONT_public-host-chain.md). Absence of `stage=bind result=public_target`
+    // cannot by itself tell "the client never aimed at the advertised host" apart from "it aimed
+    // and this refused it" (L13). One line per join names which of the two happened, and for a
+    // foreign target it names why: no host row for that id, or a row whose binding did not match.
+    {
+        std::array<char, 224> line{};
+        const bool hasRow =
+            !namesOwnSession && server::gameplay::group::host_session_for_activity(parsed.sessionId, host);
+        const int written = std::snprintf(
+            line.data(),
+            line.size(),
+            "ev=activity stage=join_target result=%s session=0x%llX handle=0x%llX row=%u",
+            namesOwnSession ? "own" : (namesAdvertisedHost ? "advertised" : "unknown"),
+            static_cast<unsigned long long>(parsed.sessionId),
+            static_cast<unsigned long long>(request.accountHandle),
+            hasRow ? 1U : 0U);
+        if (written > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::info,
+                             {line.data(), static_cast<std::size_t>(written)});
+        }
+    }
     if (!namesOwnSession && !namesAdvertisedHost) {
         return false;
     }

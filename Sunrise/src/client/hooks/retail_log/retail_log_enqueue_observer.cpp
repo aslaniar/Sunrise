@@ -76,12 +76,22 @@ volatile LONG64 g_nextAssertTick{};
  * Rate-limited to one report per distinct (target, RVA): these lines are on the game's own
  * logging path and a Tower session emits thousands.
  */
-constexpr std::size_t kTargetCount = 4;
+constexpr std::size_t kTargetCount = 10;
 constexpr const char* kCallerTargets[kTargetCount] = {
     "Adding player",
     "Could not find tracking data",
     "Submitting player add",
     "creating Steam lobby",
+    // ROAD C, link L4 (FRONT_public-host-chain.md). Every one of these lines is already in the
+    // current capture, so these are target strings only - the mechanism is unchanged. Their
+    // callers bracket the one decision the whole front reduces to: why the client picks its OWN
+    // activity host instead of the session this server advertised.
+    "Sending peer-reservation release",
+    "initiate_search",
+    "matchmaking gatherer advertising",
+    "activity_host_changed",
+    "waiting to connect to AH",
+    "join request to AH",
 };
 std::uintptr_t g_reportedRva[kTargetCount]{};
 
