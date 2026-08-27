@@ -79,6 +79,16 @@ void uninstall_owner_activity_slot() noexcept;
  * A public region otherwise holds its slice-set switch until a public activity host connects.
  * @return True when both targets are found, the call site is unique and the detour attaches.
  */
+/**
+ * Attaches the peer-link reason observer (FINDINGS 20.85).
+ * Reports each distinct (reason, call-site) pair once, naming the deciding site by RVA.
+ * @return True when the target is found and the detour attaches.
+ */
+[[nodiscard]] bool install_peer_reason() noexcept;
+
+/** Detaches the peer-link reason observer. */
+void uninstall_peer_reason() noexcept;
+
 [[nodiscard]] bool install_region_private() noexcept;
 
 /** Detaches the private-region force. */

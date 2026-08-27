@@ -153,6 +153,7 @@ add_library(steam_api64 SHARED
     src/client/hooks/bootflow/owner_activity_slot.cpp
     src/client/hooks/bootflow/orbit_slice_set.cpp
     src/client/hooks/bootflow/region_private.cpp
+    src/client/hooks/bootflow/peer_reason.cpp
     src/client/hooks/bootflow/profile_setup_skip.cpp
     src/client/hooks/bootflow/join_request_ready.cpp
     src/client/hooks/bootflow/world_step.cpp
