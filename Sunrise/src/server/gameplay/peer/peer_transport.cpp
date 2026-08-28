@@ -104,6 +104,21 @@ std::uint32_t g_channelId{0};
     return false;
 }
 
+/**
+ * @return The link at one endpoint that carries one group session, or null.
+ * Two peers can hold one session, so the endpoint is what disambiguates them. A link that does
+ * not carry the session is never chosen: delivering to it would hand one peer's records to
+ * another. Callers hold the lock.
+ */
+[[nodiscard]] gp::PeerLink* find_session_at_locked(const gp::Endpoint& endpoint,
+                                                   std::uint64_t sessionId) noexcept {
+    if (sessionId == 0) {
+        return nullptr;
+    }
+    gp::PeerLink* peer = find_locked(endpoint);
+    return peer != nullptr && carries_locked(*peer, sessionId) ? peer : nullptr;
+}
+
 /** @return Link carrying one group session, or null. Callers hold the lock. */
 [[nodiscard]] gp::PeerLink* find_session_locked(std::uint64_t sessionId) noexcept {
     if (sessionId == 0) {
@@ -372,7 +387,8 @@ void answer_join(const gp::Endpoint& from, const wire::JoinRequest& request) noe
             bound && group::publish_membership(from, request.joinId, request.sessionId);
         // The peer needs both before it finishes: the snapshot names it, and the parameter update
         // releases the latch its own tick waits on.
-        const bool parameters = bound && group::publish_join_parameters(request.sessionId);
+        const bool parameters =
+            bound && group::publish_join_parameters(request.sessionId, from);
         // Nothing else names what the peer thinks it is joining.
         report(core::log::Level::info,
                "ev=gameplay stage=join result=admit build=%u..%u exe=%u session=0x%016llX "
@@ -812,12 +828,13 @@ bool send_container(const gp::Endpoint& to,
 
 /** Queues one reliable message for a peer. */
 bool enqueue_reliable(std::uint64_t sessionId,
+                      const gp::Endpoint& endpoint,
                       std::uint8_t id,
                       std::uint32_t declaredSize,
                       std::span<const std::byte> body,
                       std::size_t bodyBits) noexcept {
     AcquireSRWLockExclusive(&g_lock);
-    gp::PeerLink* peer = find_session_locked(sessionId);
+    gp::PeerLink* peer = find_session_at_locked(endpoint, sessionId);
     const bool queued =
         peer != nullptr && wire::enqueue_message(peer->outbound, id, declaredSize, body, bodyBits);
     if (queued) {
@@ -832,13 +849,23 @@ bool enqueue_reliable(std::uint64_t sessionId,
 
 /** Reports the NetAddr one peer sent in its own connect request. */
 bool remote_address(std::uint64_t sessionId,
+                    const gp::Endpoint& endpoint,
                     std::array<std::byte, gp::kNetAddrBlobSize>& output) noexcept {
     AcquireSRWLockShared(&g_lock);
-    const gp::PeerLink* peer = find_session_locked(sessionId);
+    const gp::PeerLink* peer = find_session_at_locked(endpoint, sessionId);
     const bool present = peer != nullptr && peer->remoteAddressPresent;
     if (present) {
         output = peer->remoteAddress;
     }
+    ReleaseSRWLockShared(&g_lock);
+    return present;
+}
+
+/** Reports whether one endpoint holds a live link at all. */
+bool linked(const gp::Endpoint& endpoint) noexcept {
+    AcquireSRWLockShared(&g_lock);
+    const gp::PeerLink* peer = find_locked(endpoint);
+    const bool present = peer != nullptr;
     ReleaseSRWLockShared(&g_lock);
     return present;
 }
@@ -855,26 +882,14 @@ void bind_view(const gp::Endpoint& from, const gp::ViewSignature& signature) noe
     ReleaseSRWLockExclusive(&g_lock);
 }
 
-/** Reports whether the link carrying one session holds a bound view and is established. */
-bool view_bound(std::uint64_t sessionId) noexcept {
-    AcquireSRWLockShared(&g_lock);
-    const gp::PeerLink* peer = find_session_locked(sessionId);
-    // A bound body alone is not readiness. The link also has to be past its connect exchange, or
-    // the view belongs to a channel the peer has already rebuilt.
-    const bool ready =
-        peer != nullptr && peer->view.bound && peer->stage == gp::PeerStage::connected;
-    ReleaseSRWLockShared(&g_lock);
-    return ready;
-}
-
 /**
  * Reports whether the peer carrying one session has crossed the application-ready boundary.
  * Mirrors `view_bound`: the link must also be past its connect exchange, or the readiness belongs
  * to a channel the peer has already rebuilt.
  */
-bool application_ready(std::uint64_t sessionId) noexcept {
+bool application_ready(std::uint64_t sessionId, const gp::Endpoint& endpoint) noexcept {
     AcquireSRWLockShared(&g_lock);
-    const gp::PeerLink* peer = find_session_locked(sessionId);
+    const gp::PeerLink* peer = find_session_at_locked(endpoint, sessionId);
     const bool ready =
         peer != nullptr && peer->applicationReady && peer->stage == gp::PeerStage::connected;
     ReleaseSRWLockShared(&g_lock);
@@ -894,11 +909,13 @@ bool link_stage(std::uint64_t sessionId, gp::PeerStage& stage) noexcept {
     return present;
 }
 
-/** Copies the connect sequences of the link carrying one group session. */
-bool link_identity(std::uint64_t sessionId, LinkIdentity& output) noexcept {
+/** Copies the connect sequences of the link carrying one group session at one endpoint. */
+bool link_identity(std::uint64_t sessionId,
+                   const gp::Endpoint& endpoint,
+                   LinkIdentity& output) noexcept {
     output = {};
     AcquireSRWLockShared(&g_lock);
-    const gp::PeerLink* peer = find_session_locked(sessionId);
+    const gp::PeerLink* peer = find_session_at_locked(endpoint, sessionId);
     const bool present = peer != nullptr;
     if (present) {
         output.localConnectionSequence = peer->localConnectionSequence;
@@ -960,10 +977,10 @@ void service(std::uint64_t now) noexcept {
     }
 }
 
-/** Drops one group session, leaving the link and its other sessions alone. */
-void drop(std::uint64_t sessionId) noexcept {
+/** Unbinds one group session from one endpoint's link. */
+void drop(std::uint64_t sessionId, const gp::Endpoint& endpoint) noexcept {
     AcquireSRWLockExclusive(&g_lock);
-    gp::PeerLink* const peer = find_session_locked(sessionId);
+    gp::PeerLink* const peer = find_session_at_locked(endpoint, sessionId);
     if (peer != nullptr) {
         // The channel outlives the session. A leave names one region, and the client keeps playing
         // the other over the same channel.

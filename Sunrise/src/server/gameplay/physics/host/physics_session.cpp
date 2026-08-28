@@ -259,7 +259,7 @@ void close_bound(Storage& table, std::size_t slot) noexcept {
     }
     peer::LinkIdentity link{};
     if (admitted.joinId == 0 || row.generation == 0 || row.hostSessionId == 0
-        || !peer::link_identity(admitted.sessionId, link)) {
+        || !peer::link_identity(admitted.sessionId, admitted.endpoint, link)) {
         return false;
     }
     Bound entry{};

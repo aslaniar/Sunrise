@@ -28,8 +28,10 @@ namespace sunrise::server::gameplay::group {
 
 /**
  * Publishes the membership snapshot that completes one peer's join.
- * It names the host and the peer, because the peer looks itself up by address. The peer accepts
- * it only while the state replica behind its hash is byte exact.
+ * It names the host and EVERY admitted peer of the session, because the consumer clears its own
+ * table and rebuilds it from the snapshot, finding itself by address. The recipient's own entry
+ * echoes its own join id and the address blob it reached this host with, byte exact. The peer
+ * accepts it only while the state replica behind its hash is byte exact.
  * @param peer Endpoint of the admitted peer, in host order.
  * @param peerJoinId Join id the peer's join request carried. Its entry has to echo it.
  * @param sessionId Group-session id the peer named, which its parameter updates have to echo.
@@ -70,17 +72,12 @@ void service(std::uint64_t now) noexcept;
  * Publishes the parameter update a joining peer needs before it will finish its join.
  * The peer's own tick refuses to complete until it has applied one, whatever the update names.
  * @param sessionId Group-session id the peer named in its join request.
+ * @param peer Endpoint of the joining peer, which the update goes back to.
  * @return True when the update was queued on the peer's reliable channel.
  */
-[[nodiscard]] bool publish_join_parameters(std::uint64_t sessionId) noexcept;
+[[nodiscard]] bool publish_join_parameters(std::uint64_t sessionId,
+                                           const state::gameplay::Endpoint& peer) noexcept;
 
-/**
- * Reports whether replication may produce entity output for one peer.
- * View establishment is a hard gate: a mismatched signature means no entity output at all.
- * @param sessionId Group session the link carries.
- * @return True only once a compatible view is bound.
- */
-[[nodiscard]] bool view_accepted(std::uint64_t sessionId) noexcept;
 
 /**
  * Frees every admitted record at one endpoint.

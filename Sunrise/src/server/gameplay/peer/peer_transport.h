@@ -23,8 +23,10 @@ void deliver(const state::gameplay::Endpoint& from,
 
 /**
  * Queues one reliable message for a peer.
- * Nothing is sent here; the next outgoing packet carries it. Links are keyed by session.
+ * Nothing is sent here; the next outgoing packet carries it. Keyed by the session AND the
+ * endpoint, because two peers can hold one session: the endpoint's link must also carry it.
  * @param sessionId Group session the link carries.
+ * @param endpoint Peer endpoint in host order. A link not at this endpoint is never chosen.
  * @param id Registry message id.
  * @param declaredSize Decoded structure size the registry declares for that id.
  * @param body Encoded body bytes.
@@ -32,6 +34,7 @@ void deliver(const state::gameplay::Endpoint& from,
  * @return True when the whole message fit the peer's send queue.
  */
 [[nodiscard]] bool enqueue_reliable(std::uint64_t sessionId,
+                                    const state::gameplay::Endpoint& endpoint,
                                     std::uint8_t id,
                                     std::uint32_t declaredSize,
                                     std::span<const std::byte> body,
@@ -41,11 +44,13 @@ void deliver(const state::gameplay::Endpoint& from,
  * Reports the NetAddr one peer sent in its own connect request.
  * The membership update must name an address the peer recognises as its own.
  * @param sessionId Group session the link carries.
+ * @param endpoint Peer endpoint whose link's captured address is read.
  * @param output Receives the peer's own address only when it has been captured.
  * @return True when the link is known and its address was captured.
  */
 [[nodiscard]] bool
 remote_address(std::uint64_t sessionId,
+               const state::gameplay::Endpoint& endpoint,
                std::array<std::byte, state::gameplay::kNetAddrBlobSize>& output) noexcept;
 
 /** One out-of-band body is staged here before its container is built. */
@@ -98,8 +103,14 @@ template <typename Body>
 void bind_view(const state::gameplay::Endpoint& from,
                const state::gameplay::ViewSignature& signature) noexcept;
 
-/** @return True once that session's link holds a bound view and has finished connecting. */
-[[nodiscard]] bool view_bound(std::uint64_t sessionId) noexcept;
+/**
+ * Reports whether one endpoint holds a live link at all.
+ * The group host uses this to tell a client rebuilding its channel from a port this host never
+ * saw (its old link is gone) apart from a second peer joining the same session (its link is up).
+ * @param endpoint Peer endpoint in host order.
+ * @return True when a link exists at that endpoint and is not absent.
+ */
+[[nodiscard]] bool linked(const state::gameplay::Endpoint& endpoint) noexcept;
 
 /**
  * Reports how far the link carrying one group session has got.
@@ -107,15 +118,18 @@ void bind_view(const state::gameplay::Endpoint& from,
  * @return True when a link carries it.
  */
 /**
- * Reports whether the peer carrying one group session is APPLICATION-READY.
+ * Reports whether one peer's link is APPLICATION-READY for one group session.
  * The establish exchange alone does not cross this boundary: the peer must also have sent one
  * normal connected (established, not out-of-band) packet. Before it, reliable records are
  * acknowledged by the transport without the application dispatching them, so an acknowledgement
  * is not proof of delivery and nothing important may be published (FINDINGS 20.118).
+ * Keyed by the session AND the endpoint, because two peers can hold one session.
  * @param sessionId Group session the link carries.
+ * @param endpoint Peer endpoint whose link is read.
  * @return True only once that boundary has been crossed on a connected link.
  */
-[[nodiscard]] bool application_ready(std::uint64_t sessionId) noexcept;
+[[nodiscard]] bool application_ready(std::uint64_t sessionId,
+                                     const state::gameplay::Endpoint& endpoint) noexcept;
 
 [[nodiscard]] bool link_stage(std::uint64_t sessionId, state::gameplay::PeerStage& stage) noexcept;
 
@@ -128,12 +142,16 @@ struct LinkIdentity final {
 /**
  * Copies the connect sequences of the link carrying one group session.
  * The client rebuilds its channel under the same session id, so anything holding a reference
- * across that rebuild needs these to tell the two links apart.
+ * across that rebuild needs these to tell the two links apart. Keyed by the session AND the
+ * endpoint: two peers can hold one session, and each has its own link generation.
  * @param sessionId Group session the link carries.
- * @param output Receives both sequences only when a link carries the session.
- * @return True when a link carries it.
+ * @param endpoint Peer endpoint whose link is read.
+ * @param output Receives both sequences only when that link carries the session.
+ * @return True when it does.
  */
-[[nodiscard]] bool link_identity(std::uint64_t sessionId, LinkIdentity& output) noexcept;
+[[nodiscard]] bool link_identity(std::uint64_t sessionId,
+                                 const state::gameplay::Endpoint& endpoint,
+                                 LinkIdentity& output) noexcept;
 
 /**
  * Sends any owed acknowledgement.
@@ -143,10 +161,12 @@ struct LinkIdentity final {
 void service(std::uint64_t now) noexcept;
 
 /**
- * Drops the link carrying one group session.
+ * Unbinds one group session from one endpoint's link, leaving the link and its other sessions
+ * alone. Keyed by the session AND the endpoint, because two peers can hold one session.
  * @param sessionId Group session the link carries.
+ * @param endpoint Peer endpoint whose link is unbound.
  */
-void drop(std::uint64_t sessionId) noexcept;
+void drop(std::uint64_t sessionId, const state::gameplay::Endpoint& endpoint) noexcept;
 
 /**
  * Drops every link at one endpoint.

@@ -11,6 +11,7 @@
 #include "../../../middleware/gameplay/group/parameter_messages.h"
 #include "../../../middleware/gameplay/group/parameter_registry.h"
 #include "../../../middleware/gameplay/group/session_messages.h"
+#include "../../../middleware/gameplay/group/snapshot_builder.h"
 #include "../../../middleware/gameplay/group/session_state.h"
 #include "../../../middleware/gameplay/group/view_message.h"
 #include "../../../state/activity/runtime.h"
@@ -30,8 +31,12 @@ namespace descriptor = middleware::gameplay::descriptor;
 
 /** One reliable body staged before it is split into fragments. */
 constexpr std::size_t kBodyCapacity = 128;
-/** A membership snapshot is far larger, and the peer's reliable send queue bounds it. */
-constexpr std::size_t kMembershipBodyCapacity = 512;
+/** A membership snapshot is far larger. The real bound is the reliable path's staging buffer,
+ *  which enqueue_message stages every body into before fragmenting - a body past it fails there,
+ *  so the buffer here must not be the thing that runs out first. MEASURED: the worst snapshot
+ *  this host can compose (kSnapshotPeerCapacity peers, every one carrying a player) is 988 bytes
+ *  (RE_output/scratch/l8_regression/test_sizes.cpp). */
+constexpr std::size_t kMembershipBodyCapacity = state::gameplay::kReassemblyCapacity;
 /** Only the low 25 bitmap bits name a registry parameter. */
 constexpr std::uint64_t kParameterMaskBits = 0x1FFFFFF;
 /** Hex characters of the captured parameter-request body, plus its terminator. */
@@ -40,24 +45,22 @@ constexpr std::size_t kRequestCaptureCapacity = 513;
 constexpr std::size_t kParameterNameCapacity = 640;
 /** Member index this host takes, and the index it nominates to succeed it. */
 constexpr std::uint32_t kHostMemberIndex = 0;
-/** Member index the admitted peer takes. */
-constexpr std::size_t kPeerMemberIndex = 1;
-/** Members one snapshot names: this host and the admitted peer. */
-constexpr std::size_t kSnapshotMemberCount = 2;
 /** Registry index the join-latch update names. Any of the 25 would do; none is ever filled. */
 constexpr std::uint8_t kJoinLatchParameter = 0;
-/** Peers this host tracks at once. The public POC admits one. */
-constexpr std::size_t kAdmittedCapacity = 4;
+/** Admitted (session, endpoint) records this host tracks at once. Two clients hold two
+ *  public sessions each at most (four live records), and a rebuild rebinds its record rather
+ *  than allocating. Capped at the snapshot composer's peer bound, so one session can never
+ *  outgrow the membership body the transport can carry - proven by the static_assert below. */
+constexpr std::size_t kAdmittedCapacity = 6;
+
+static_assert(kAdmittedCapacity <= wire::kSnapshotPeerCapacity,
+              "one session's records must all fit in one composed membership snapshot");
 /** Loopback address the BAP listener binds, in host order. */
 constexpr std::uint32_t kLoopbackAddress = 0x7F000001;
 /** Every member index the `activity-host` parameter covers. The peer needs its own bit set. */
 constexpr std::uint32_t kAllMembers = 0xFFFFFFFF;
 /** Shortest gap between two retries of an owed publish. */
 constexpr std::uint64_t kRetryInterval = 250;
-/** Player slot the admitted peer's player takes. */
-constexpr std::uint32_t kPeerPlayerSlot = 0;
-/** Counter the first player of a session carries. The consumer's own add starts here too. */
-constexpr std::uint32_t kFirstAddSequence = 0;
 
 /** One admitted peer and the player it asked this host to add. */
 struct Admitted {
@@ -76,6 +79,15 @@ struct Admitted {
     bool activityHostPublished{};
     /** Set once a snapshot naming the peer's player is on that channel. The queue can refuse it. */
     bool playerPublished{};
+    /** Set when the session's composition changed after this record's last queued snapshot, so
+     *  it is owed a fresh complete one. Another peer joining or leaving, or another peer's
+     *  player changing, marks every record of the session. */
+    bool snapshotOwed{};
+    /** Player slot this record's player holds while `hasPlayer`. Assigned on the first add and
+     *  kept, so a remove-and-re-add reuses the row the client's table already knows. */
+    std::uint32_t playerSlot{};
+    /** Session player-add counter at the time of the add. The first player of a session gets 0. */
+    std::uint32_t addSequence{};
     /** Tick of the last retry, so a full queue is retried on a timer rather than every packet. */
     std::uint64_t lastRetry{};
     /** Set while a publish is being held for the application-ready boundary, so it logs once. */
@@ -121,6 +133,7 @@ static_assert(kJoinMemberState == wire::MemberState::ready,
  */
 template <typename Body>
 [[nodiscard]] bool send_reliable(std::uint64_t sessionId,
+                                 const state::gameplay::Endpoint& endpoint,
                                  std::uint8_t id,
                                  std::uint32_t declaredSize,
                                  Body write) noexcept {
@@ -131,7 +144,7 @@ template <typename Body>
         return false;
     }
     return peer::enqueue_reliable(
-        sessionId, id, declaredSize, {body.data(), size}, writer.bit_count());
+        sessionId, endpoint, id, declaredSize, {body.data(), size}, writer.bit_count());
 }
 
 /** @return True when two endpoints name the same address and port. */
@@ -153,11 +166,21 @@ template <typename Body>
     if (sessionId == 0) {
         return nullptr;
     }
-    // Keyed by session, not endpoint: one client holds a record per public region and both records
-    // name the same endpoint.
+    // Keyed by session AND endpoint, because two peers can join one session and each keeps its
+    // own record. A channel rebuild rebinds instead: it arrives from the SAME source port
+    // (measured, p2(81): every rebuilt connect named the client's original port), so the
+    // (session, endpoint) match finds it.
     const std::uint64_t use = g_admitClock.fetch_add(1) + 1;
     for (Admitted& entry : g_admitted) {
-        if (entry.occupied && entry.sessionId == sessionId) {
+        if (entry.occupied && entry.sessionId == sessionId && same_endpoint(entry.endpoint, peer)) {
+            entry.lastUse = use;
+            return &entry;
+        }
+    }
+    for (Admitted& entry : g_admitted) {
+        if (entry.occupied && entry.sessionId == sessionId && !peer::linked(entry.endpoint)) {
+            // A rebuild from a port this host never saw: the old link is gone, the session is the
+            // same. Rebind the record so the session does not double-count the departed endpoint.
             entry.endpoint = peer;
             entry.lastUse = use;
             return &entry;
@@ -190,38 +213,53 @@ template <typename Body>
     }
     const std::uint64_t use = g_admitClock.fetch_add(1) + 1;
     for (Admitted& entry : g_admitted) {
-        if (!entry.occupied || entry.sessionId != sessionId) {
-            continue;
+        // Scan every record: with two peers on one session the first session match can be the
+        // other endpoint's, and returning null for this one would drop its whole join.
+        if (entry.occupied && entry.sessionId == sessionId && same_endpoint(entry.endpoint, peer)) {
+            entry.lastUse = use;
+            return &entry;
         }
-        if (!same_endpoint(entry.endpoint, peer)) {
-            return nullptr;
-        }
-        entry.lastUse = use;
-        return &entry;
     }
     return nullptr;
 }
 
 /**
- * Tests whether another endpoint was admitted for one session.
- * An absent record is not a conflict: a message may name a session before this host has a record
- * for it, and refusing that would strand the peer. A record held elsewhere is a conflict.
+ * Tests whether one endpoint was admitted for one session.
+ * With two peers on one session this is the ownership test: a session-scoped message only moves
+ * the record of the endpoint that sent it, and an endpoint that holds no record for the session
+ * it names has no business moving anyone's state.
  * @param peer Peer endpoint the message arrived from.
  * @param sessionId Group session the message named.
- * @return True when a record holds that session for a different endpoint.
+ * @return True when a record holds that session for this endpoint.
  */
-[[nodiscard]] bool owned_elsewhere(const state::gameplay::Endpoint& peer,
-                                   std::uint64_t sessionId) noexcept {
+[[nodiscard]] bool holds_session(const state::gameplay::Endpoint& peer,
+                                 std::uint64_t sessionId) noexcept {
     AcquireSRWLockShared(&g_admittedLock);
-    bool conflict = false;
+    bool held = false;
     for (const Admitted& entry : g_admitted) {
-        if (entry.occupied && entry.sessionId == sessionId) {
-            conflict = !same_endpoint(entry.endpoint, peer);
+        if (entry.occupied && entry.sessionId == sessionId && same_endpoint(entry.endpoint, peer)) {
+            held = true;
             break;
         }
     }
     ReleaseSRWLockShared(&g_admittedLock);
-    return conflict;
+    return held;
+}
+
+/**
+ * Marks every record of one session as owed a fresh complete snapshot.
+ * The consumer clears its own table and rebuilds it from each snapshot, so a composition change
+ * (a peer joining, leaving, or changing its player) is only visible to the others once they
+ * receive a snapshot naming it. The acting record is marked too: its next queued snapshot is
+ * the same complete one it needs either way.
+ * @param sessionId Group session whose records are marked. Caller holds the admitted lock.
+ */
+void mark_session_dirty(std::uint64_t sessionId) noexcept {
+    for (Admitted& entry : g_admitted) {
+        if (entry.occupied && entry.sessionId == sessionId) {
+            entry.snapshotOwed = true;
+        }
+    }
 }
 
 /**
@@ -245,7 +283,7 @@ template <typename Body>
  * @return True when the peer may receive membership and parameter records.
  */
 [[nodiscard]] bool may_publish(Admitted& record) noexcept {
-    if (peer::application_ready(record.sessionId)) {
+    if (peer::application_ready(record.sessionId, record.endpoint)) {
         if (record.readyHeld) {
             record.readyHeld = false;
             report(core::log::Level::info,
@@ -269,80 +307,80 @@ template <typename Body>
     if (!may_publish(record)) {
         return false;
     }
+    // Every admitted record of this session, in array order, which is the member-index order the
+    // snapshot publishes. The recipient is one of them.
+    std::array<wire::SnapshotPeer, kAdmittedCapacity> peers{};
+    std::size_t peerCount = 0;
+    std::size_t recipient = kAdmittedCapacity;
+    for (const Admitted& entry : g_admitted) {
+        if (!entry.occupied || entry.sessionId != record.sessionId) {
+            continue;
+        }
+        wire::SnapshotPeer& peer = peers[peerCount];
+        peer.joinId = entry.joinId;
+        peer.playerId = entry.playerId;
+        peer.hasPlayer = entry.hasPlayer;
+        peer.joinComplete = entry.joinComplete;
+        peer.playerSlot = entry.playerSlot;
+        peer.addSequence = entry.addSequence;
+        // The peer's own blob is echoed byte exact. A blob rebuilt from the endpoint it arrived
+        // from is not the same bytes.
+        if (!peer::remote_address(record.sessionId, entry.endpoint, peer.address)) {
+            descriptor::write_net_addr(entry.endpoint.address, entry.endpoint.port, peer.address);
+        }
+        if (&entry == &record) {
+            recipient = peerCount;
+        }
+        ++peerCount;
+    }
+    if (recipient == kAdmittedCapacity) {
+        return false;
+    }
+
     const state::gameplay::Endpoint host = endpoint::advertised();
-    std::array<wire::MembershipMember, kSnapshotMemberCount> members{};
-    descriptor::write_net_addr(host.address, host.port, members[kHostMemberIndex].address);
-    // The session id is the machine id this region's descriptor advertised, and the client joined
-    // through it. The whole-process identity would name a host this session never saw.
-    members[kHostMemberIndex].machineId = record.sessionId;
-    // The consumer refuses a table with no entry it recognises as itself, so the peer's own blob is
-    // echoed. A blob rebuilt from the endpoint it arrived from is not the same bytes.
-    if (!peer::remote_address(record.sessionId, members[kPeerMemberIndex].address)) {
-        descriptor::write_net_addr(
-            record.endpoint.address, record.endpoint.port, members[kPeerMemberIndex].address);
-    }
-    // The peer refuses a snapshot whose entry for itself carries another join id. Its real
-    // machine id sits in the address table this host does not decode, so the join id stands in.
-    members[kPeerMemberIndex].machineId = record.joinId;
-    members[kPeerMemberIndex].joinId = record.joinId;
-    // The peer ends its join request once no session holds more than one member with that id, so
-    // both entries carry it. A table naming it once says the join is over.
-    members[kHostMemberIndex].joinId = record.joinId;
-    for (wire::MembershipMember& member : members) {
-        // The connection group is what makes the consumer resolve the member's peer link. This
-        // host has no value for join compatibility or the join timestamp, so both stay cleared.
-        member.connectionPresent = true;
-    }
-    // Both entries carry the join id, so both take the same state. Once the peer reports its join
-    // finished they move to `established`, which is what stops it re-sending that report.
-    const wire::MemberState state =
-        record.joinComplete ? wire::MemberState::established : kJoinMemberState;
-    members[kHostMemberIndex].state = state;
-    members[kPeerMemberIndex].state = state;
-
-    std::array<wire::MembershipPlayer, 1> players{};
-    players[0].slot = kPeerPlayerSlot;
-    players[0].playerId = record.playerId;
-    players[0].memberIndex = static_cast<std::uint32_t>(kPeerMemberIndex);
-    players[0].addSequence = kFirstAddSequence;
-    if (record.hasPlayer) {
-        members[kPeerMemberIndex].ownsPlayerSlot = true;
-        members[kPeerMemberIndex].playerSlot = kPeerPlayerSlot;
-    }
-
-    wire::MembershipUpdate update{};
-    // The same per-region machine id the member table carries.
-    update.hostMachineId = record.sessionId;
-    update.revision = g_membershipRevision.fetch_add(1) + 1;
-    update.hostMemberIndex = kHostMemberIndex;
-    update.successionIndex = kHostMemberIndex;
-    update.members = members;
-    if (record.hasPlayer) {
-        update.players = players;
+    std::array<std::byte, descriptor::kNetAddrSize> hostAddress{};
+    descriptor::write_net_addr(host.address, host.port, hostAddress);
+    wire::SnapshotComposition composition{};
+    if (!wire::compose_membership_snapshot(record.sessionId,
+                                           g_membershipRevision.fetch_add(1) + 1,
+                                           hostAddress,
+                                           recipient,
+                                           {peers.data(), peerCount},
+                                           composition)) {
+        return false;
     }
 
     std::array<std::byte, kMembershipBodyCapacity> body{};
     bits::Writer writer(body);
     std::size_t size = 0;
-    if (!wire::write_membership_update(writer, update) || !writer.finish(size)) {
+    if (!wire::write_membership_update(writer, composition.update) || !writer.finish(size)) {
         return false;
     }
     // The peer logs the hash it wanted, so ours has to be logged next to it to read a mismatch.
     report(core::log::Level::info,
            "ev=gameplay stage=membership result=built revision=%u members=%zu players=%zu "
-           "hash=0x%08X",
-           update.revision,
-           update.members.size(),
-           update.players.size(),
-           wire::session_state_hash(update));
-    return peer::enqueue_reliable(
+           "hash=0x%08X peer=%u",
+           composition.update.revision,
+           composition.update.members.size(),
+           composition.update.players.size(),
+           wire::session_state_hash(composition.update),
+           record.endpoint.port);
+    const bool queued = peer::enqueue_reliable(
         record.sessionId,
+        record.endpoint,
         static_cast<std::uint8_t>(wire::SessionMessageId::membershipUpdate),
         wire::kMembershipUpdateSize,
         {body.data(), size},
         writer.bit_count());
+    if (queued) {
+        // The snapshot carried the record's whole current state, so it clears every publish this
+        // record owed, not just the one that triggered it.
+        record.joinPublished = record.joinComplete;
+        record.playerPublished = record.hasPlayer;
+        record.snapshotOwed = false;
+    }
+    return queued;
 }
-
 /**
  * Fills the `activity-host` body this host publishes.
  * The peer creates no activity client until it holds this parameter, and the public-region
@@ -394,6 +432,7 @@ void fill_activity_host(wire::ActivityHostParameter& body,
 
     const bool sent = send_reliable(
         record.sessionId,
+        record.endpoint,
         wire::kParameterUpdateId,
         wire::kParameterUpdateSize,
         [&update](bits::Writer& writer) { return wire::write_parameter_update(writer, update); });
@@ -433,6 +472,7 @@ void bind_view(const state::gameplay::Endpoint& from,
 
     const bool sent = send_reliable(
         sessionId,
+        from,
         wire::kViewMessageId,
         wire::kViewMessageSize,
         [&view](bits::Writer& writer) noexcept { return wire::write_view(writer, view); });
@@ -451,7 +491,9 @@ void bind_view(const state::gameplay::Endpoint& from,
  * @param sessionId Session the request named, which is also the link it goes back on.
  * @param requested Requested parameter mask, already reduced to its meaningful bits.
  */
-void answer_parameters(std::uint64_t sessionId, std::uint64_t requested) noexcept {
+void answer_parameters(const state::gameplay::Endpoint& from,
+                       std::uint64_t sessionId,
+                       std::uint64_t requested) noexcept {
     std::uint64_t carried = requested & wire::kEncodableParameters;
     const std::uint64_t activityHostMask =
         std::uint64_t{1} << static_cast<std::uint8_t>(wire::Parameter::activityHost);
@@ -481,6 +523,7 @@ void answer_parameters(std::uint64_t sessionId, std::uint64_t requested) noexcep
 
     const bool sent = send_reliable(
         sessionId,
+        from,
         wire::kParameterUpdateId,
         wire::kParameterUpdateSize,
         [&update](bits::Writer& writer) { return wire::write_parameter_update(writer, update); });
@@ -515,16 +558,19 @@ void answer_time(const state::gameplay::Endpoint& from,
  * A leave names one region's session, and the client's other region must keep its own link.
  * @param sessionId Session the peer is leaving.
  */
-void release(std::uint64_t sessionId) noexcept {
-    peer::drop(sessionId);
+void release(const state::gameplay::Endpoint& from, std::uint64_t sessionId) noexcept {
+    peer::drop(sessionId, from);
     // The region's activity host stays. A leave is also how the peer fast travels to the region it
     // is already in, and a fresh id there is `public_activity_host_mismatch`.
     AcquireSRWLockExclusive(&g_admittedLock);
     for (Admitted& entry : g_admitted) {
-        if (entry.occupied && entry.sessionId == sessionId) {
+        if (entry.occupied && entry.sessionId == sessionId && same_endpoint(entry.endpoint, from)) {
             entry = {};
         }
     }
+    // The leaver's row would otherwise live on as a ghost `established` member in every
+    // survivor's table until that survivor's own next event healed it.
+    mark_session_dirty(sessionId);
     ReleaseSRWLockExclusive(&g_admittedLock);
 }
 
@@ -534,11 +580,30 @@ void release(std::uint64_t sessionId) noexcept {
 void release_endpoint(const state::gameplay::Endpoint& endpoint) noexcept {
     std::size_t count = 0;
     AcquireSRWLockExclusive(&g_admittedLock);
+    // Gathered under the lock: every session the dropped endpoint held lost a member, and the
+    // survivors are owed a snapshot that no longer names it.
+    std::uint64_t touched[kAdmittedCapacity] = {};
+    std::size_t touchedCount = 0;
     for (Admitted& entry : g_admitted) {
-        if (entry.occupied && same_endpoint(entry.endpoint, endpoint)) {
-            ++count;
-            entry = {};
+        if (!entry.occupied || !same_endpoint(entry.endpoint, endpoint)) {
+            continue;
         }
+        ++count;
+        const std::uint64_t sessionId = entry.sessionId;
+        entry = {};
+        bool seen = false;
+        for (std::size_t index = 0; index < touchedCount; ++index) {
+            seen = touched[index] == sessionId;
+            if (seen) {
+                break;
+            }
+        }
+        if (!seen && touchedCount < std::size(touched)) {
+            touched[touchedCount++] = sessionId;
+        }
+    }
+    for (std::size_t index = 0; index < touchedCount; ++index) {
+        mark_session_dirty(touched[index]);
     }
     ReleaseSRWLockExclusive(&g_admittedLock);
     if (count != 0) {
@@ -577,9 +642,10 @@ bool consume(const state::gameplay::Endpoint& from,
         if (!wire::read_session_only(reader, leaving)) {
             return false;
         }
-        if (owned_elsewhere(from, leaving)) {
-            // A leave tears the session's link down, so a peer must not be able to send one for a
-            // session another endpoint was admitted for.
+        if (!holds_session(from, leaving)) {
+            // A leave tears the sender's own record down. With two peers on one session a leave
+            // from one endpoint must not touch the other's record, and an endpoint that holds no
+            // record for the session it names moves nobody's state at all.
             report(core::log::Level::warn,
                    "ev=gameplay stage=leave result=unowned session=0x%016llX",
                    static_cast<unsigned long long>(leaving));
@@ -596,7 +662,7 @@ bool consume(const state::gameplay::Endpoint& from,
                "ev=gameplay stage=leave result=%s session=0x%016llX",
                sent ? "acknowledged" : "fail",
                static_cast<unsigned long long>(leaving));
-        release(leaving);
+        release(from, leaving);
         return true;
     }
     if (id == static_cast<std::uint8_t>(wire::SessionMessageId::peerEstablish)) {
@@ -624,8 +690,11 @@ bool consume(const state::gameplay::Endpoint& from,
         if (record != nullptr) {
             record->joinComplete = true;
             if (owed) {
+                // This record's rung changed, so every record of the session is owed a snapshot
+                // that carries it (the others see a member move to `established`). The
+                // completing record's own publish clears its flags; the rest refresh on service.
+                mark_session_dirty(body.sessionId);
                 queued = publish_snapshot(*record);
-                record->joinPublished = queued;
             }
             // The peer only reads the parameter once its join is finished, and the queue is at its
             // fullest right here, so a refusal is expected and the service slice retries it.
@@ -651,7 +720,7 @@ bool consume(const state::gameplay::Endpoint& from,
         if (!wire::read_join_abort(reader, notice)) {
             return false;
         }
-        if (owned_elsewhere(from, notice.sessionId)) {
+        if (!holds_session(from, notice.sessionId)) {
             report(core::log::Level::warn,
                    "ev=gameplay stage=join result=unowned_abort session=0x%016llX",
                    static_cast<unsigned long long>(notice.sessionId));
@@ -660,7 +729,7 @@ bool consume(const state::gameplay::Endpoint& from,
         report(core::log::Level::info,
                "ev=gameplay stage=join result=abort session=0x%016llX",
                static_cast<unsigned long long>(notice.sessionId));
-        release(notice.sessionId);
+        release(from, notice.sessionId);
         return true;
     }
     if (id == wire::kParameterRequestId) {
@@ -712,9 +781,14 @@ bool consume(const state::gameplay::Endpoint& from,
                walk.tailBits);
         // The peer builds no activity client until it holds the host parameter, so the answer goes
         // out even when a later body could not be located. The tail above is what is unread, not
-        // the answer's own inputs. A session another endpoint holds is answered by that endpoint.
-        if (!owned_elsewhere(from, header.sessionId)) {
-            answer_parameters(header.sessionId, mask);
+        // the answer's own inputs. The request is answered only to an endpoint this host admitted
+        // for the session it names; every other endpoint is left to that session's own holders.
+        if (holds_session(from, header.sessionId)) {
+            answer_parameters(from, header.sessionId, mask);
+        } else {
+            report(core::log::Level::debug,
+                   "ev=gameplay stage=parameters result=unowned session=0x%016llX",
+                   static_cast<unsigned long long>(header.sessionId));
         }
         // Only a fully located request leaves the container readable behind it.
         return walk.complete;
@@ -744,12 +818,37 @@ bool consume(const state::gameplay::Endpoint& from,
         Admitted* const record = claim_owned(from, request.sessionId);
         bool published = false;
         if (record != nullptr) {
+            if (!record->hasPlayer) {
+                // A fresh player takes the lowest slot the session's other players do not hold,
+                // and the next add sequence. The first player of a session gets 0, which is what
+                // the consumer's own local add starts at too.
+                std::uint32_t used = 0;
+                std::uint32_t sequence = 0;
+                for (const Admitted& entry : g_admitted) {
+                    if (!entry.occupied || entry.sessionId != record->sessionId
+                        || &entry == record) {
+                        continue;
+                    }
+                    if (entry.hasPlayer) {
+                        used |= 1U << entry.playerSlot;
+                        if (entry.addSequence + 1 > sequence) {
+                            sequence = entry.addSequence + 1;
+                        }
+                    }
+                }
+                std::uint32_t slot = 0;
+                while (slot < 32 && (used & (1U << slot)) != 0) {
+                    ++slot;
+                }
+                record->playerSlot = slot;
+                record->addSequence = sequence;
+            }
             record->hasPlayer = true;
             record->playerId = request.playerId;
+            // The other peers are owed a snapshot naming this player; the adding peer's own copy
+            // is what its player-add waits on.
+            mark_session_dirty(request.sessionId);
             published = publish_snapshot(*record);
-            // The queue is at its fullest here, right after the join promotion, so a refusal is
-            // ordinary and the service slice retries it.
-            record->playerPublished = published;
         }
         ReleaseSRWLockExclusive(&g_admittedLock);
         // The player block and its tail are not decoded, so the body is reported and not consumed.
@@ -774,8 +873,9 @@ bool consume(const state::gameplay::Endpoint& from,
         if (record != nullptr && record->hasPlayer) {
             record->hasPlayer = false;
             record->playerId = 0;
+            // The slot stays with the record, so a re-add reuses the row the others already know.
+            mark_session_dirty(request.sessionId);
             published = publish_snapshot(*record);
-            record->playerPublished = published;
         }
         ReleaseSRWLockExclusive(&g_admittedLock);
         report(core::log::Level::info,
@@ -814,6 +914,9 @@ bool publish_membership(const state::gameplay::Endpoint& peer,
     Admitted* const record = claim(peer, sessionId);
     bool published = false;
     if (record != nullptr) {
+        // A fresh record joins the session the others already hold, and a retried one re-enters
+        // it, so every record is owed a snapshot naming the new composition.
+        mark_session_dirty(sessionId);
         // A retried join brings a new join id and drops any player the previous attempt added.
         // It also starts again at `ready`, so the previous attempt's completion does not carry.
         record->joinId = peerJoinId;
@@ -835,61 +938,81 @@ bool publish_membership(const state::gameplay::Endpoint& peer,
 void service(std::uint64_t now) noexcept {
     // Outside any staged push, so the state revision it advances cannot fail a transaction guard.
     allocate_claimed_host_sessions();
-    // The peer drops a stale target locally and sends no leave for it. Such a record shows up
-    // only as the least recently named one over the capacity.
+    // A client holds at most two public sessions at once (one current, one target), and drops a
+    // stale one locally with no leave. Such a record shows up only as the least recently named
+    // one over that capacity AT ITS OWN ENDPOINT, so the eviction is per endpoint too: two
+    // clients never evict each other's records.
     std::uint64_t retired = 0;
+    state::gameplay::Endpoint retiredEndpoint{};
     AcquireSRWLockExclusive(&g_admittedLock);
-    std::size_t occupied = 0;
-    Admitted* oldest = nullptr;
-    for (Admitted& record : g_admitted) {
-        if (!record.occupied) {
+    for (Admitted& pivot : g_admitted) {
+        if (!pivot.occupied) {
             continue;
         }
-        ++occupied;
-        if (oldest == nullptr || record.lastUse < oldest->lastUse) {
-            oldest = &record;
+        std::size_t held = 0;
+        Admitted* oldest = nullptr;
+        for (Admitted& record : g_admitted) {
+            if (!record.occupied
+                || record.endpoint.address != pivot.endpoint.address
+                || record.endpoint.port != pivot.endpoint.port) {
+                continue;
+            }
+            ++held;
+            if (oldest == nullptr || record.lastUse < oldest->lastUse) {
+                oldest = &record;
+            }
         }
-    }
-    if (occupied > kPublicSessionCapacity && oldest != nullptr) {
-        retired = oldest->sessionId;
-        *oldest = {};
+        if (held > kPublicSessionCapacity && oldest != nullptr) {
+            retired = oldest->sessionId;
+            retiredEndpoint = oldest->endpoint;
+            *oldest = {};
+            mark_session_dirty(retired);
+            break;
+        }
     }
     for (Admitted& record : g_admitted) {
         const bool owed =
             record.occupied
             && ((record.joinComplete && !record.joinPublished)
                 || (record.joinPublished && !record.activityHostPublished)
-                || (record.joinPublished && record.hasPlayer && !record.playerPublished));
+                || (record.joinPublished && record.hasPlayer && !record.playerPublished)
+                || record.snapshotOwed);
         if (!owed || now - record.lastRetry < kRetryInterval) {
             continue;
         }
         record.lastRetry = now;
         if (!record.joinPublished) {
-            record.joinPublished = publish_snapshot(record);
+            publish_snapshot(record);
             continue;
         }
         if (!record.activityHostPublished) {
             record.activityHostPublished = publish_activity_host(record);
-            continue;
+            // A refusing activity-host publish must not starve the composition refresh behind
+            // it: the join needs that order, but a session whose members changed cannot wait
+            // on a parameter the host row may never satisfy.
+            if (!record.snapshotOwed) {
+                continue;
+            }
         }
-        // Last, so the order the join needs is unchanged. The snapshot carries the player row the
-        // peer's own add asked for, and a refused one leaves the peer's player unnamed.
-        record.playerPublished = publish_snapshot(record);
+        // Last, so the order the join needs is unchanged. This also carries every refresh the
+        // session composition owed: the snapshot is the complete current state.
+        publish_snapshot(record);
     }
     ReleaseSRWLockExclusive(&g_admittedLock);
     // Outside the lock, in the order `release` already uses. The region's activity host stays: the
     // peer rotates back into a region it has not left, and a fresh id there is a hard error.
     if (retired != 0) {
-        peer::drop(retired);
+        peer::drop(retired, retiredEndpoint);
         report(core::log::Level::info,
-               "ev=gameplay stage=admitted result=retired session=0x%016llX held=%zu",
+               "ev=gameplay stage=admitted result=retired session=0x%016llX peer=%u",
                static_cast<unsigned long long>(retired),
-               occupied - 1);
+               retiredEndpoint.port);
     }
 }
 
 /** Publishes the parameter update a joining peer needs before it will finish its join. */
-bool publish_join_parameters(std::uint64_t sessionId) noexcept {
+bool publish_join_parameters(std::uint64_t sessionId,
+                             const state::gameplay::Endpoint& peer) noexcept {
     // A joining peer finishes only once it has applied one parameter update. Any update with a
     // named parameter and no body sets that latch. This host has no values, so it releases a slot
     // the peer never filled, which leaves the peer's state alone.
@@ -899,6 +1022,7 @@ bool publish_join_parameters(std::uint64_t sessionId) noexcept {
 
     const bool sent = send_reliable(
         sessionId,
+        peer,
         wire::kParameterUpdateId,
         wire::kParameterUpdateSize,
         [&update](bits::Writer& writer) { return wire::write_parameter_update(writer, update); });
@@ -909,11 +1033,6 @@ bool publish_join_parameters(std::uint64_t sessionId) noexcept {
            static_cast<unsigned>(update.releasedMask),
            wire::parameter_names(update.releasedMask, names.data(), names.size()));
     return sent;
-}
-
-/** Reports whether replication may produce entity output for one peer. */
-bool view_accepted(std::uint64_t sessionId) noexcept {
-    return peer::view_bound(sessionId);
 }
 
 /** Copies every admitted group-session record. */

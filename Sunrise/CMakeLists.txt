@@ -563,6 +563,7 @@ add_library(steam_api64 SHARED
     src/middleware/gameplay/peer/join_messages.cpp
     src/middleware/gameplay/group/session_messages.cpp
     src/middleware/gameplay/group/session_state.cpp
+    src/middleware/gameplay/group/snapshot_builder.cpp
     src/middleware/gameplay/group/view_message.cpp
     src/middleware/gameplay/group/parameter_messages.cpp
     src/middleware/gameplay/group/parameter_registry.cpp
@@ -850,6 +851,7 @@ add_executable(sunrise-server
     src/middleware/gameplay/group/parameter_registry.cpp
     src/middleware/gameplay/group/session_messages.cpp
     src/middleware/gameplay/group/session_state.cpp
+    src/middleware/gameplay/group/snapshot_builder.cpp
     src/middleware/gameplay/group/view_message.cpp
     src/middleware/gameplay/nat/introduction.cpp
     src/middleware/gameplay/peer/connect_messages.cpp
