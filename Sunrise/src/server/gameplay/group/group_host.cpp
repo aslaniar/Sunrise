@@ -76,6 +76,8 @@ struct Admitted {
     bool playerPublished{};
     /** Tick of the last retry, so a full queue is retried on a timer rather than every packet. */
     std::uint64_t lastRetry{};
+    /** Set while a publish is being held for the application-ready boundary, so it logs once. */
+    bool readyHeld{};
     /** Order in which the peer last named this session. The lowest is the least recently used. */
     std::uint64_t lastUse{};
 };
@@ -226,7 +228,45 @@ template <typename Body>
  * @param record Admitted peer the snapshot names.
  * @return True when the snapshot was queued on the peer's reliable channel.
  */
-[[nodiscard]] bool publish_snapshot(const Admitted& record) noexcept {
+/**
+ * Reports whether anything important may be published to one peer yet, logging each transition.
+ *
+ * THE APPLICATION-READY BOUNDARY (FINDINGS 20.118, handbook 18.5/18.6). The establish exchange
+ * alone does not cross it: before the peer sends one normal connected packet, the transport
+ * ACKNOWLEDGES reliable records without the application DISPATCHING their group messages. A
+ * membership snapshot published early is therefore acked, never delivered, and the peer re-joins
+ * on a timer having never seen it - measured as a ~21.7 s re-join cycle on a SINGLE client.
+ * An acknowledgement is not proof of dispatch, so nothing here may rely on the queue accepting.
+ *
+ * Refusing leaves the publish owed, and `service` retries it on its own timer.
+ * @param record Admitted peer whose publish is being considered. Caller holds the admitted lock.
+ * @return True when the peer may receive membership and parameter records.
+ */
+[[nodiscard]] bool may_publish(Admitted& record) noexcept {
+    if (peer::application_ready(record.sessionId)) {
+        if (record.readyHeld) {
+            record.readyHeld = false;
+            report(core::log::Level::info,
+                   "ev=gameplay stage=publish result=released reason=application_ready "
+                   "session=0x%016llX",
+                   static_cast<unsigned long long>(record.sessionId));
+        }
+        return true;
+    }
+    if (!record.readyHeld) {
+        record.readyHeld = true;
+        report(core::log::Level::info,
+               "ev=gameplay stage=publish result=held reason=not_application_ready "
+               "session=0x%016llX",
+               static_cast<unsigned long long>(record.sessionId));
+    }
+    return false;
+}
+
+[[nodiscard]] bool publish_snapshot(Admitted& record) noexcept {
+    if (!may_publish(record)) {
+        return false;
+    }
     const state::gameplay::Endpoint host = endpoint::advertised();
     std::array<wire::MembershipMember, kSnapshotMemberCount> members{};
     descriptor::write_net_addr(host.address, host.port, members[kHostMemberIndex].address);
@@ -328,7 +368,10 @@ void fill_activity_host(wire::ActivityHostParameter& body,
  * @param record Admitted peer the parameter is published to.
  * @return True when the update was queued on the peer's reliable channel.
  */
-[[nodiscard]] bool publish_activity_host(const Admitted& record) noexcept {
+[[nodiscard]] bool publish_activity_host(Admitted& record) noexcept {
+    if (!may_publish(record)) {
+        return false;
+    }
     // The body is built from this copy, so no retain is needed: `host_session_for_group` already
     // returns only a ready row whose State bindings still match, and nothing below reads the table.
     HostSessionBinding binding{};

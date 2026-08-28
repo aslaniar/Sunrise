@@ -106,6 +106,17 @@ void bind_view(const state::gameplay::Endpoint& from,
  * @param stage Receives the stage, or the absent one when no link carries the session.
  * @return True when a link carries it.
  */
+/**
+ * Reports whether the peer carrying one group session is APPLICATION-READY.
+ * The establish exchange alone does not cross this boundary: the peer must also have sent one
+ * normal connected (established, not out-of-band) packet. Before it, reliable records are
+ * acknowledged by the transport without the application dispatching them, so an acknowledgement
+ * is not proof of delivery and nothing important may be published (FINDINGS 20.118).
+ * @param sessionId Group session the link carries.
+ * @return True only once that boundary has been crossed on a connected link.
+ */
+[[nodiscard]] bool application_ready(std::uint64_t sessionId) noexcept;
+
 [[nodiscard]] bool link_stage(std::uint64_t sessionId, state::gameplay::PeerStage& stage) noexcept;
 
 /** The connect-exchange sequences that separate one link generation from its successor. */

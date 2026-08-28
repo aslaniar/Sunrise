@@ -192,6 +192,16 @@ struct PeerLink {
     std::array<std::byte, kNetAddrBlobSize> remoteAddress{};
     /** True once that address has been captured. */
     bool remoteAddressPresent{};
+    /**
+     * True once this peer has sent one ESTABLISHED (not out-of-band) packet.
+     *
+     * The application-ready boundary, and the establish exchange alone does not cross it. Before
+     * it, the transport ACKNOWLEDGES reliable records without the application DISPATCHING their
+     * group messages - so a membership snapshot published early is acked, never delivered, and
+     * the peer re-joins on a timer having never seen it (FINDINGS 20.118: a ~21.7 s re-join cycle
+     * measured on a single client).
+     */
+    bool applicationReady{};
     /** Newest packet sequence received from this peer. */
     std::uint16_t receiveHead{};
     bool ringInitialized{};

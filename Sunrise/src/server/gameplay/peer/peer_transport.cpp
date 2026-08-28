@@ -641,6 +641,10 @@ void consume_established(const gp::Endpoint& from,
         if (packet.ack.outboundHeadPresent) {
             record_sequence(*peer, packet.ack.outboundHead);
         }
+        // THE APPLICATION-READY BOUNDARY. Reaching here with an accepted channel guard IS the
+        // "normal connected packet" the boundary requires: this body is an established packet,
+        // not an out-of-band one, and it passed the peer's own connection-sequence check.
+        peer->applicationReady = true;
         clearedPacket = peer->outbound.sentInPacket;
         queueCleared = apply_acknowledgement(*peer, packet.ack);
         peer->acknowledgementOwed = true;
@@ -848,6 +852,20 @@ bool view_bound(std::uint64_t sessionId) noexcept {
     // the view belongs to a channel the peer has already rebuilt.
     const bool ready =
         peer != nullptr && peer->view.bound && peer->stage == gp::PeerStage::connected;
+    ReleaseSRWLockShared(&g_lock);
+    return ready;
+}
+
+/**
+ * Reports whether the peer carrying one session has crossed the application-ready boundary.
+ * Mirrors `view_bound`: the link must also be past its connect exchange, or the readiness belongs
+ * to a channel the peer has already rebuilt.
+ */
+bool application_ready(std::uint64_t sessionId) noexcept {
+    AcquireSRWLockShared(&g_lock);
+    const gp::PeerLink* peer = find_session_locked(sessionId);
+    const bool ready =
+        peer != nullptr && peer->applicationReady && peer->stage == gp::PeerStage::connected;
     ReleaseSRWLockShared(&g_lock);
     return ready;
 }
