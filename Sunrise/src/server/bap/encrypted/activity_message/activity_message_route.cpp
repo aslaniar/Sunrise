@@ -231,26 +231,34 @@ void report_message(std::uint32_t messageType,
     // `instance=PRIVATE CURRENT` with a blank ah-sid and never moved).
     server::gameplay::group::HostSessionBinding host{};
     const bool namesOwnSession = parsed.sessionId == request.accountHandle;
-    const bool namesAdvertisedHost =
-        !namesOwnSession
-        && server::gameplay::group::host_session_for_activity(parsed.sessionId, host)
-        && state::activity::binding_matches(host.target);
+    // UNCONDITIONAL (L8b, FINDINGS 20.132). This lookup used to sit behind `!namesOwnSession`,
+    // in the predicate AND in the instrument below, so `row=` printed 0 on every join ever
+    // recorded and the one fact that decides this lane - whether the joined session is a host
+    // row THIS server allocated and advertised - has never been measured. `publish_activity_host`
+    // fills `activityHost.hostId` from exactly these rows' targets, so a match here IS "the
+    // client joined the host we told it to join", which is what `namesAdvertisedHost` always
+    // meant. Pure observation, no switch (HARD RULES: bundle observation freely).
+    const bool hasRow = server::gameplay::group::host_session_for_activity(parsed.sessionId, host);
+    const bool namesHostRow = hasRow && state::activity::binding_matches(host.target);
+    const bool namesAdvertisedHost = !namesOwnSession && namesHostRow;
     // ROAD C, link L4 (FRONT_public-host-chain.md). Absence of `stage=bind result=public_target`
     // cannot by itself tell "the client never aimed at the advertised host" apart from "it aimed
     // and this refused it" (L13). One line per join names which of the two happened, and for a
     // foreign target it names why: no host row for that id, or a row whose binding did not match.
     {
-        std::array<char, 224> line{};
-        const bool hasRow =
-            !namesOwnSession && server::gameplay::group::host_session_for_activity(parsed.sessionId, host);
+        std::array<char, 256> line{};
         const int written = std::snprintf(
             line.data(),
             line.size(),
-            "ev=activity stage=join_target result=%s session=0x%llX handle=0x%llX row=%u",
+            "ev=activity stage=join_target result=%s session=0x%llX handle=0x%llX row=%u "
+            "match=%u region=%d group=0x%llX",
             namesOwnSession ? "own" : (namesAdvertisedHost ? "advertised" : "unknown"),
             static_cast<unsigned long long>(parsed.sessionId),
             static_cast<unsigned long long>(request.accountHandle),
-            hasRow ? 1U : 0U);
+            hasRow ? 1U : 0U,
+            namesHostRow ? 1U : 0U,
+            hasRow ? static_cast<int>(host.regionIndex) : -1,
+            static_cast<unsigned long long>(hasRow ? host.groupSessionId : 0));
         if (written > 0) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::info,
@@ -266,6 +274,12 @@ void report_message(std::uint32_t messageType,
     }
     plan.bindsPublicTarget = namesAdvertisedHost;
     plan.publicGroupSession = namesAdvertisedHost ? host.groupSessionId : 0;
+    // L8b: the join named a host row this server allocated and advertised, WHETHER OR NOT the
+    // envelope addressed that same id. `bindsPublicTarget` above is left exactly as it was -
+    // this is a second, additive flag, so the legacy role assignment and everything behind it
+    // are untouched.
+    plan.namesPublicHostRow = namesHostRow;
+    plan.publicHostSession = namesHostRow ? host.target.sessionId : 0;
     plan.correlation = parsed.correlation;
     plan.sessionId = parsed.sessionId;
     plan.joinCharacterSoid = parsed.characterSoid;

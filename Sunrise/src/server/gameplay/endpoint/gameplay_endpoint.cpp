@@ -205,6 +205,18 @@ bool initialize() noexcept {
            "ev=gameplay stage=endpoint result=ok mode=%s port=%u",
            embedded ? "embedded" : "external",
            static_cast<unsigned>(configured.port));
+    // U13 / L13: every behaviour switch in this block echoed ONCE at bind, because each of them
+    // is silent when off and a silent switch is indistinguishable from a switch that never
+    // parsed. A settings key the parser does not recognise is skipped without complaint and
+    // leaves its default standing, so "no lines from the feature" must never be the only
+    // evidence about whether the feature was even on.
+    report(core::log::Level::info,
+           "ev=gameplay stage=settings region_bound=%u join_machine_ids=%u "
+           "public_row_bodies=%u reserve=%u",
+           configured.activityHostRegionBound ? 1U : 0U,
+           configured.publishJoinMachineIds ? 1U : 0U,
+           static_cast<unsigned>(configured.activityPublicRowMembershipBodies),
+           static_cast<unsigned>(configured.serverReserveCount));
     return true;
 }
 

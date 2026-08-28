@@ -13,8 +13,20 @@ inline constexpr std::size_t kBapFrameCapacity = 256 * 1024;
 /**
  * Fixed BAP connection slots shared by the transport and the Server.
  * The activity route opens a second link beside the primary one, so one slot is never enough.
+ *
+ * THREE PER CLIENT, NOT TWO (FINDINGS 20.139, measured): a client that reaches a PUBLIC
+ * activity host runs `OUT PRIMARY`, `OUT FAH` (its private activity link) and `OUT GAH`
+ * (its public one). Four slots therefore hold ONE such client and starve the second - and
+ * that ceiling was invisible for the whole project because the public link used to STARVE
+ * AND DIE every ~20 s, recycling its slot before anyone noticed. p2(89) fixed the
+ * starvation, the link stopped dying, the mac held conn 1/2/3 permanently, and the rig got
+ * the single remaining slot - one short of the two its private activity client needs, which
+ * it reports as `timed_out_connecting_to_bap ... aborting to orbit` after 26 s.
+ * Sized as kAccountCapacity (4) x 3 links so every provisioned account can hold a full set.
+ * Cost is `Peer` (two kBapFrameCapacity buffers) + `Session` per slot; the 256 KiB scratch
+ * buffers are a single shared instance and do NOT scale with this.
  */
-inline constexpr std::size_t kBapConnectionCount = 4;
+inline constexpr std::size_t kBapConnectionCount = 12;
 
 /** HTTP request view passed from Client hooks to Server. Every span carries its size. */
 struct HttpRequest {

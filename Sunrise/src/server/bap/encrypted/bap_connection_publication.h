@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../../../core/settings/provisioning.h"
+
 #include <cstdint>
 
 #include "../internal.h"
@@ -27,6 +29,10 @@ struct ConnectionFields {
     std::uint64_t publicGroupSession{};
     /** Activity session the public link binds to. */
     std::uint64_t publicTargetSession{};
+    /** L8b (FINDINGS 20.132): join named an advertised host row, same-id case included. */
+    bool namesPublicHostRow{};
+    /** That row's session id, which the public membership body is addressed to. */
+    std::uint64_t publicHostSession{};
 };
 
 /**
@@ -35,6 +41,30 @@ struct ConnectionFields {
  * @return The fields to publish once the transaction commits.
  */
 [[nodiscard]] ConnectionFields connection_fields(const ServiceOutcome& outcome) noexcept;
+
+/**
+ * Records this account's PRIVATE activity session, for links that have none of their own.
+ *
+ * L8c (FINDINGS 20.138): the client's PUBLIC activity link (`OUT GAHN`) must be served the
+ * member table of the PRIVATE link OF THE SAME ACCOUNT, and no identity on the public link
+ * names that session. The member key cannot do it - the two links read the SAME identity
+ * blob at DIFFERENT WINDOWS (private `blob[0..7]`, public `blob[5..12]`, measured: they
+ * share only 3 bytes), so keying on it resolves nothing. The BAP account slot does: it is
+ * the same on both of a client's links and distinct per machine, and the public link's slot
+ * is provably correct because frames sealed with `state::bap(accountKey).sessionKey` on it
+ * were decrypted and acknowledged by the client (p2(88)).
+ * @param accountKey Provisioned account slot the connection authenticated as.
+ * @param sessionId The account's private activity session, or absent to clear it.
+ */
+void note_private_activity_session(core::settings::AccountKey accountKey,
+                                   std::uint64_t sessionId) noexcept;
+
+/**
+ * @param accountKey Provisioned account slot.
+ * @return That account's private activity session, or zero when none has been recorded.
+ */
+[[nodiscard]] std::uint64_t private_activity_session(
+    core::settings::AccountKey accountKey) noexcept;
 
 /**
  * Publishes the captured connection fields after a successful commit.

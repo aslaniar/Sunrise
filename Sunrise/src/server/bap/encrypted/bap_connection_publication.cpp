@@ -2,6 +2,9 @@
 
 #include <Windows.h>
 
+#include <array>
+#include <cstdio>
+
 #include "../../../core/logging/log.h"
 
 namespace sunrise::server::bap::encrypted {
@@ -36,6 +39,8 @@ ConnectionFields connection_fields(const ServiceOutcome& outcome) noexcept {
         fields.bindsPublicTarget = plan.bindsPublicTarget;
         fields.publicGroupSession = plan.publicGroupSession;
         fields.publicTargetSession = plan.sessionId;
+        fields.namesPublicHostRow = plan.namesPublicHostRow;
+        fields.publicHostSession = plan.publicHostSession;
     }
     // The initial load is a transition too, and its token does not arrive for several seconds.
     fields.opensTransitionWindow =
@@ -47,12 +52,40 @@ ConnectionFields connection_fields(const ServiceOutcome& outcome) noexcept {
     return fields;
 }
 
+/**
+ * This process's per-account private activity sessions. Four slots, one per provisioned
+ * account, written by whichever connection owns that account's private activity session and
+ * read by that account's public link, which owns none. Plain array under the BAP route's
+ * existing exclusive lock - every caller of both functions already holds it.
+ */
+std::array<std::uint64_t, core::settings::kAccountCapacity> g_privateActivitySessions{};
+
+/** Records this account's private activity session. See the header for why the key is the slot. */
+void note_private_activity_session(const core::settings::AccountKey accountKey,
+                                   const std::uint64_t sessionId) noexcept {
+    if (accountKey < core::settings::kAccountCapacity) {
+        g_privateActivitySessions[accountKey] = sessionId;
+    }
+}
+
+/** @return That account's private activity session, or zero when none has been recorded. */
+std::uint64_t private_activity_session(const core::settings::AccountKey accountKey) noexcept {
+    return accountKey < core::settings::kAccountCapacity ? g_privateActivitySessions[accountKey]
+                                                         : 0;
+}
+
 /** Publishes the captured connection fields after a successful commit. */
 void publish_connection_fields(Session& session,
                                const transactions::Publication& publication,
                                const ConnectionFields& fields) noexcept {
     if (publication.hasActivitySessionBinding) {
         session.activitySessionId = publication.activitySessionId;
+        // A link that owns an activity session is this account's PRIVATE half by definition -
+        // the public half never owns one (measured: `activesession=0x0` on every row-bearing
+        // connection, p2(88)/p2(89)). Recorded so that half can find this session.
+        if (publication.activitySessionId != session.activityPublicRowSession) {
+            note_private_activity_session(session.accountKey, publication.activitySessionId);
+        }
     }
     if (fields.joinMemberKey != 0) {
         session.activityMemberKey = fields.joinMemberKey;
@@ -87,6 +120,31 @@ void publish_connection_fields(Session& session,
                          "ev=activity stage=bind result=public_target");
     } else if (fields.joinsActivity && session.activityRole == ActivityClientRole::none) {
         session.activityRole = ActivityClientRole::privateCurrent;
+    }
+    // L8b (FINDINGS 20.132), STRICTLY ADDITIVE: record the shared activity-host session this
+    // link's client joined as its public target. Deliberately NOT an `else` and deliberately
+    // NOT touching `activityRole` or `activitySessionId` - one BAP link multiplexes both of the
+    // client's activity clients by the envelope's handle (which is why the envelope carries one
+    // at all), so reassigning the link's activity session would move the PRIVATE client's whole
+    // stream onto the public id, and the private member table is the only one carrying a member
+    // the client matches as its local player. The keepalive appends the public body next to that
+    // stream instead of replacing it.
+    if (fields.namesPublicHostRow && fields.publicHostSession != 0
+        && session.activityPublicRowSession != fields.publicHostSession) {
+        session.activityPublicRowSession = fields.publicHostSession;
+        session.activityPublicRowBodiesSent = 0;
+        std::array<char, 128> line{};
+        const int written =
+            std::snprintf(line.data(),
+                          line.size(),
+                          "ev=activity stage=bind result=public_host_row host=0x%llX sameid=%u",
+                          static_cast<unsigned long long>(fields.publicHostSession),
+                          fields.bindsPublicTarget ? 0U : 1U);
+        if (written > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::info,
+                             {line.data(), static_cast<std::size_t>(written)});
+        }
     }
 }
 

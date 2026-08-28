@@ -98,6 +98,27 @@ struct Settings {
      * without a rebuild (HARD RULES, p2(62)).
      */
     bool activityHostRegionBound{false};
+    /**
+     * Membership bodies this host addresses to the SHARED activity-host session the client
+     * joined as its public target (L8b, FINDINGS 20.132). Zero disables the whole path.
+     *
+     * MEASURED DEFECT: both clients' PUBLIC TARGET activity clients establish into the
+     * region-bound host row (0x9EAA3001:00200003) and this host has never sent that session
+     * one message - `stage=wire_snapshot` named only each client's own private activity
+     * session - so the public activity client sits at `MEM-0`, the public bubble reserves
+     * `0` peer slots 125/125, and the peer channel is dropped by the game for want of an
+     * owner. The existing `publicTarget` publisher cannot reach it: its role is set only by
+     * `bindsPublicTarget`, which requires the join to name a session OTHER than the handle
+     * the envelope addresses, and a client always addresses the host it is joining.
+     *
+     * This path is additive: each body is appended ALONGSIDE everything the link already
+     * sends, and the link's own `activitySessionId` is never reassigned, so the private
+     * activity client's stream is byte-for-byte what it is today. The count is a settings
+     * value rather than a bool because whether the client needs one body (the upstream
+     * `publicTarget` contract) or a live stream is exactly what the boot decides - raising
+     * it must not need a rebuild (HARD RULES, p2(62)).
+     */
+    std::uint16_t activityPublicRowMembershipBodies{0};
 };
 
 /**

@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdio>
+#include <limits>
 
 #include "../../../../../core/logging/log.h"
 #include "../../../../../core/settings/settings.h"
@@ -13,6 +14,7 @@
 #include "../../../../gameplay/gameplay_advertisement.h"
 #include "../../../../../state/activity/runtime.h"
 #include "../../activity_message/definition.h"
+#include "../../bap_connection_publication.h"
 #include "activity_arrival.h"
 #include "activity_global_state_push.h"
 #include "activity_membership_push.h"
@@ -94,6 +96,142 @@ bool consume_activity_keepalive(Session& session,
             : state::activity::membership::reported_region(session.activitySessionId);
     const bool regionChanged = !session.activityJoinedForeignSession && reportedRegion >= 0
                                && reportedRegion != session.activityAdvertisedRegion;
+
+    // ---- L8b (FINDINGS 20.132/20.133): serve the SHARED activity host. ----
+    // MEASURED, p2(88) run 2: the client runs TWO BAP connections, one per activity client, and
+    // `session_for(connectionId)` gives each its own Session. The PUBLIC half's join binds the
+    // host row on ITS connection; that connection carries no activity session of its own, so it
+    // bails on the `activitySessionId == 0` test below and never reaches the body it is owed.
+    // 14 `public_row_gate` lines, every one of them the PRIVATE connection
+    // (`rowsession=0x0 activesession=0x...00200001`), against 2 binds naming 0x...00200003.
+    // That is why the shared host has never been addressed and its activity client sits at MEM-0.
+    //
+    // Served HERE, ahead of that bail, and sourced from the PRIVATE session's table via
+    // `live_region_session` - the same helper, for the same reason, as the legacy `publicTarget`
+    // branch below: the public connection cannot read a table it does not own, and only the
+    // private snapshot carries a member the client matches as its local player.
+    const std::uint16_t publicRowBudget =
+        core::settings::get().server.gameplay.activityPublicRowMembershipBodies;
+    // PER-ACCOUNT, not global (FINDINGS 20.134). `live_region_session` was the wrong query in
+    // two separate ways, both measured: it is process-wide, so on a two-machine run it hands
+    // one client's member table to the OTHER client's public link - and upstream is explicit
+    // that a body carrying anything but the client's own private snapshot makes it prune the
+    // member and destroy the player; and once the public client reports a region it returns
+    // the PUBLIC session itself, which silenced this link the moment it started working. The
+    // member key is the client's machine id, identical on both of ITS links and different on
+    // every other machine's, so keying on it with the public session excluded names exactly
+    // one session: this account's private one.
+    // KEYED ON THE ACCOUNT SLOT, not the member key. p2(89) measured why the member key
+    // cannot work: the private link reported member=0x32E4DCEEB92DF1FE and the public link
+    // member=0x2DF1FE0138FBFC51 for the SAME machine - the same identity blob read at two
+    // different windows (`blob[0..7]` vs `blob[5..12]`, sharing only 3 bytes), exactly the
+    // window map recorded in BOOT_BRIEF_p2-87. Upstream's "the member key is the same on
+    // both links" does not hold for this build's pair. The account slot does hold, and the
+    // public link's slot is provably right: p2(88) sealed three bodies to it with that
+    // slot's key and the client decrypted and acknowledged them.
+    const std::uint64_t privateSessionId =
+        private_activity_session(session.accountKey) != session.activityPublicRowSession
+            ? private_activity_session(session.accountKey)
+            : state::activity::kAbsentSessionId;
+    // `activitySessionId == 0` is REQUIRED, not incidental: it is what makes this block
+    // strictly additive. This path returns early on delivery, so arming it on a connection
+    // that owns an activity session would preempt that connection's own keepalive - the FAH
+    // link, the one that has always worked. Measured in p2(88): the row-bearing connection
+    // always read `activesession=0x0` and the FAH ones always read `rowsession=0x0`, so the
+    // two never overlap in practice; this makes it impossible rather than merely observed.
+    const bool publicRowArmed = publicRowBudget != 0 && session.activityPublicRowSession != 0
+                                && session.activitySessionId == state::activity::kAbsentSessionId
+                                && privateSessionId != state::activity::kAbsentSessionId
+                                && session.activityPublicRowSession != privateSessionId
+                                && session.activityPublicRowBodiesSent < publicRowBudget;
+    if (publicRowBudget != 0) {
+        // U13: printed on EVERY pump of EVERY connection, before any bail, because the whole
+        // defect above was invisible while this line sat behind a guard on one connection.
+        std::array<char, 224> gateLine{};
+        const int gateWritten = std::snprintf(
+            gateLine.data(),
+            gateLine.size(),
+            "ev=activity stage=public_row_gate rowsession=0x%llX activesession=0x%llX "
+            "private=0x%llX member=0x%llX slot=%u sent=%u budget=%u due=%u armed=%u",
+            static_cast<unsigned long long>(session.activityPublicRowSession),
+            static_cast<unsigned long long>(session.activitySessionId),
+            static_cast<unsigned long long>(privateSessionId),
+            static_cast<unsigned long long>(session.activityMemberKey),
+            static_cast<unsigned>(session.accountKey),
+            static_cast<unsigned>(session.activityPublicRowBodiesSent),
+            static_cast<unsigned>(publicRowBudget),
+            keepaliveDue ? 1U : 0U,
+            publicRowArmed ? 1U : 0U);
+        if (gateWritten > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::info,
+                             {gateLine.data(), static_cast<std::size_t>(gateWritten)});
+        }
+    }
+    if (publicRowArmed && keepaliveDue) {
+        touchesScratch = true;
+        session.activityKeepaliveDueTick = now + kKeepaliveIntervalMs;
+        auto publicNonce = session.sendNonce;
+        std::size_t publicFramed = 0;
+        state::activity::membership::PendingMutation publicRow{};
+        const bool identityPublished =
+            privateSessionId != state::activity::kAbsentSessionId
+            && state::activity::membership::join_identity(privateSessionId) != 0;
+        const bool hasPublicRow =
+            identityPublished
+            && state::activity::membership::prepare_refresh(
+                privateSessionId, kCurrentRevision, kNoBubble, publicRow)
+            && publicRow.hasSnapshot;
+        bool appendedPublicRow = false;
+        if (hasPublicRow) {
+            activity_message::ActivityPlan plan{};
+            plan.sessionId = session.activityPublicRowSession;
+            plan.membershipMutation = publicRow;
+            appendedPublicRow = append_membership_notification(scratch,
+                                                              plan,
+                                                              state::bap(session.accountKey).sessionKey,
+                                                              publicNonce,
+                                                              scratch.framed,
+                                                              publicFramed);
+            SecureZeroMemory(&plan, sizeof plan);
+        }
+        const bool publicDelivered = publish_frame(session,
+                                                   scratch,
+                                                   response,
+                                                   written,
+                                                   publicFramed,
+                                                   publicNonce,
+                                                   appendedPublicRow);
+        if (publicDelivered
+            && session.activityPublicRowBodiesSent
+                   != (std::numeric_limits<std::uint16_t>::max)()) {
+            ++session.activityPublicRowBodiesSent;
+        }
+        std::array<char, 224> rowLine{};
+        const int rowWritten = std::snprintf(
+            rowLine.data(),
+            rowLine.size(),
+            "ev=activity stage=public_row_membership result=%s host=0x%llX private=0x%llX "
+            "bytes=%zu sent=%u revision=%u",
+            publicDelivered ? "delivered"
+                            : (appendedPublicRow ? "undelivered"
+                                                 : (hasPublicRow ? "encode_fail" : "no_snapshot")),
+            static_cast<unsigned long long>(session.activityPublicRowSession),
+            static_cast<unsigned long long>(privateSessionId),
+            publicFramed,
+            static_cast<unsigned>(session.activityPublicRowBodiesSent),
+            publicRow.snapshot.revision);
+        if (rowWritten > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::info,
+                             {rowLine.data(), static_cast<std::size_t>(rowWritten)});
+        }
+        SecureZeroMemory(&publicRow, sizeof publicRow);
+        if (publicDelivered) {
+            return true;
+        }
+    }
+
     if (session.activitySessionId == 0 || (!burstDue && !keepaliveDue && !regionChanged)) {
         return false;
     }

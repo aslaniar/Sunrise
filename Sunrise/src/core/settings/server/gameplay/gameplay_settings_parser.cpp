@@ -54,6 +54,7 @@ bool Parser::gameplay_settings(gameplay::Settings& output) noexcept {
     bool hasSearchSelfHost = false;
     bool hasPublishJoinMachineIds = false;
     bool hasActivityHostRegionBound = false;
+    bool hasPublicRowMembershipBodies = false;
     for (;;) {
         std::string_view key;
         if (!string(key) || !consume(':')) {
@@ -124,6 +125,14 @@ bool Parser::gameplay_settings(gameplay::Settings& output) noexcept {
                 return false;
             }
             hasActivityHostRegionBound = true;
+        } else if (key == "activity_public_row_membership_bodies") {
+            std::uint64_t value = 0;
+            if (hasPublicRowMembershipBodies || !unsigned_integer(value)
+                || value > (std::numeric_limits<std::uint16_t>::max)()) {
+                return false;
+            }
+            candidate.activityPublicRowMembershipBodies = static_cast<std::uint16_t>(value);
+            hasPublicRowMembershipBodies = true;
         } else if (!skip_value(0)) {
             return false;
         }

@@ -53,6 +53,15 @@ struct ActivityPlan final {
     /** Group session behind that host row, carried so the publication can name it. */
     std::uint64_t publicGroupSession{};
     /**
+     * Set when the join named an activity-host row THIS server allocated and advertised,
+     * regardless of whether the envelope addressed that same id (L8b, FINDINGS 20.132).
+     * `bindsPublicTarget` above cannot see that case: it requires the two ids to DIFFER, and a
+     * client always addresses the host it joins, so it has never once been set on any boot.
+     */
+    bool namesPublicHostRow{};
+    /** The advertised host row's own session id - the id the public membership body is framed to. */
+    std::uint64_t publicHostSession{};
+    /**
      * Set when the delta moved the player to a different region.
      * The new region has no bubble authority until the roster grants it, so waiting for the next
      * roster tick leaves it empty for up to a whole interval.

@@ -141,6 +141,14 @@ struct Session {
      * container, which is what turns its instance from PRIVATE into PUBLIC.
      */
     ActivityClientRole activityRole{ActivityClientRole::none};
+    /**
+     * Shared activity-host session this link's client joined as its PUBLIC target (L8b,
+     * FINDINGS 20.132). Held beside `activitySessionId`, never instead of it: the private
+     * activity client keeps the link's own session and its whole stream is unchanged.
+     */
+    std::uint64_t activityPublicRowSession{};
+    /** Membership bodies already addressed to that session, capped by the settings value. */
+    std::uint16_t activityPublicRowBodiesSent{};
     /** Group session the public link joined, or zero. Names the host row that advertised it. */
     std::uint64_t activityPublicGroupSession{};
     /** Cleared once the public link has published its single membership body. */
