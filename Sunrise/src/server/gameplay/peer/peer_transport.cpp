@@ -3,6 +3,7 @@
 #include <Windows.h>
 
 #include <array>
+#include <cstddef>
 
 #include "../../../middleware/crypto/random_bytes.h"
 #include "../../../middleware/encoding/bit_reader.h"
@@ -466,6 +467,56 @@ void answer_join(const gp::Endpoint& from, const wire::JoinRequest& request) noe
     return true;
 }
 
+/** Payload bytes logged per join-capture line; 512 hex characters fit kLineCapacity. */
+constexpr std::size_t kJoinCaptureChunk = 256;
+/** Upper bound of the join-request container capture. */
+constexpr std::size_t kJoinCaptureBytes = 1536;
+
+/**
+ * INSTRUMENT (p2(85)): dumps the whole join-request container payload as hex.
+ * Behind the admission prefix this host reads (protocol, build interval, executable
+ * type, session, join id - 211 bits in), the client's type-0x0A join request carries
+ * an address and machine-id table this host has never decoded. group_host publishes
+ * each peer's join id as its machineId stand-in, and the consumer drops the rows that
+ * stand-in cannot match - the deterministic symmetric row drop (FINDINGS 20.127
+ * addendum 3). The table starts mid-byte, so the whole container is captured
+ * bit-faithfully: `tail_bits` is the reader's remaining bit count right behind the
+ * decoded prefix, which locates the table's first bit inside the dump. Decoding
+ * happens offline (U2: instrument before intervention). This fires per join request -
+ * a handful of lines per boot, no flood.
+ * @param from Peer endpoint the container arrived from.
+ * @param payload Whole decrypted container payload.
+ * @param reader Copy of the container reader positioned behind the decoded prefix.
+ */
+void capture_join_container(const gp::Endpoint& from,
+                            std::span<const std::byte> payload,
+                            const bits::Reader& reader) noexcept {
+    const std::size_t bytes =
+        payload.size() < kJoinCaptureBytes ? payload.size() : kJoinCaptureBytes;
+    report(core::log::Level::info,
+           "ev=gameplay stage=joincapture result=begin peer=%u bytes=%zu tail_bits=%zu",
+           static_cast<unsigned>(from.port),
+           payload.size(),
+           reader.remaining_bits());
+    static constexpr char kDigits[] = "0123456789ABCDEF";
+    for (std::size_t offset = 0; offset < bytes; offset += kJoinCaptureChunk) {
+        const std::size_t count = bytes - offset < kJoinCaptureChunk ? bytes - offset
+                                                                     : kJoinCaptureChunk;
+        std::array<char, 2 * kJoinCaptureChunk + 1> hex{};
+        for (std::size_t index = 0; index < count; ++index) {
+            const auto value = std::to_integer<unsigned>(payload[offset + index]);
+            hex[index * 2] = kDigits[(value >> 4) & 0xF];
+            hex[(index * 2) + 1] = kDigits[value & 0xF];
+        }
+        hex[2 * count] = '\0';
+        report(core::log::Level::info,
+               "ev=gameplay stage=joincapture result=data peer=%u off=%zu hex=%s",
+               static_cast<unsigned>(from.port),
+               offset,
+               hex.data());
+    }
+}
+
 /**
  * Consumes one out-of-band message container.
  * @param from Peer endpoint.
@@ -531,6 +582,7 @@ void consume_container(const gp::Endpoint& from,
             }
             // The rest of the request is address and player tables this host does not decode,
             // so no later message in this container can be located.
+            capture_join_container(from, payload, reader);
             return;
         }
         if (header.id == static_cast<std::uint8_t>(wire::ConnectId::closed)) {
