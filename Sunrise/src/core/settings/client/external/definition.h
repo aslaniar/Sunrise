@@ -48,6 +48,15 @@ struct Settings {
 
     /** Answered to the config token getter. The Client compares it against manifest field 5. */
     std::array<char, kConfigGuidCapacity> configGuid{"d2legacy-0000-0000-0000-000000000001"};
+
+    /**
+     * Answers the machine's OWN name with its own LAN address (inside peerSubnet/
+     * peerPrefixBits) instead of the redirect host. The redirect answers every lookup,
+     * including "who am I", with the server's address - true on the server's own machine,
+     * a poison on every other client (FINDINGS 20.125/claims rig-stall-self-address.md).
+     * Default ON; off restores the old answer-everything-with-the-redirect-host behavior.
+     */
+    bool resolveSelfLocally{true};
 };
 
 } // namespace sunrise::core::settings::client::external

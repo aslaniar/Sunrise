@@ -691,7 +691,7 @@ target_include_directories(steam_api64 PRIVATE
 target_compile_options(steam_api64 PRIVATE -O2 -fms-extensions -Wno-braced-scalar-init)
 target_link_options(steam_api64 PRIVATE -static -Wl,--subsystem,windows -Wl,--gc-sections)
 target_link_libraries(steam_api64 PRIVATE
-    bcrypt user32 gdi32 dwmapi d3dcompiler shell32 ws2_32 synchronization imm32 ole32 uuid windowscodecs
+    bcrypt user32 gdi32 dwmapi d3dcompiler shell32 ws2_32 synchronization imm32 ole32 uuid windowscodecs iphlpapi
 )
 set_target_properties(steam_api64 PROPERTIES PREFIX "" OUTPUT_NAME "steam_api64")
 

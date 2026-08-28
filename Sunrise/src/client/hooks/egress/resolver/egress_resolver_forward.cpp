@@ -5,6 +5,8 @@
 #include "redirect.h"
 #include "replacements.h"
 
+#include "self_address.h"
+
 namespace sunrise::client::hooks::egress::resolver {
 namespace {
 
@@ -49,9 +51,18 @@ INT WSAAPI address_info_a(PCSTR node,
         return deny_resolution(policy::NameOperation::resolve, node, family);
     }
     policy::log_name_decision(policy::NameOperation::resolve, true, node, family);
+    // FINDINGS 20.125 step 1: the machine's own name answers with its own LAN address, not
+    // with the server's (the rig joined believing it lived at the host it was dialing).
+    char selfHost[16]{};
+    in_addr selfAddress{};
+    const char* forwardedNode = redirect_host_a();
+    if (self_address::is_self_name(node)
+        && self_address::self_address(selfHost, sizeof(selfHost), selfAddress)) {
+        self_address::log_self(node, selfHost);
+        forwardedNode = selfHost;
+    }
     const ADDRINFOA forwarded = redirect_hints(hints, family);
-    return call(
-        family == AF_INET6 ? kLoopbackHost6A : redirect_host_a(), service, &forwarded, result);
+    return call(family == AF_INET6 ? kLoopbackHost6A : forwardedNode, service, &forwarded, result);
 }
 
 /** Maps a synchronous wide lookup to the numeric redirect target of its requested family. */
@@ -68,9 +79,24 @@ INT WSAAPI address_info_w(PCWSTR node,
         return deny_resolution(policy::NameOperation::resolve, node, family);
     }
     policy::log_name_decision(policy::NameOperation::resolve, true, node, family);
+    char selfHost[16]{};
+    wchar_t selfHostWide[16]{};
+    in_addr selfAddress{};
+    const wchar_t* forwardedNode = redirect_host_w();
+    if (self_address::is_self_name(node)
+        && self_address::self_address(selfHost, sizeof(selfHost), selfAddress)) {
+        self_address::log_self(selfHost, selfHost);
+        for (std::size_t index = 0; index + 1 < sizeof(selfHostWide) / sizeof(selfHostWide[0]);
+             ++index) {
+            selfHostWide[index] = static_cast<wchar_t>(selfHost[index]);
+            if (selfHost[index] == '\0') {
+                break;
+            }
+        }
+        forwardedNode = selfHostWide;
+    }
     const ADDRINFOW forwarded = redirect_hints(hints, family);
-    return call(
-        family == AF_INET6 ? kLoopbackHost6W : redirect_host_w(), service, &forwarded, result);
+    return call(family == AF_INET6 ? kLoopbackHost6W : forwardedNode, service, &forwarded, result);
 }
 
 /** Maps one extended narrow-character lookup to the numeric redirect target. */
@@ -95,7 +121,15 @@ INT WSAAPI address_info_ex_a(PCSTR name,
         return deny_resolution(policy::NameOperation::resolve, name, 0);
     }
     policy::log_name_decision(policy::NameOperation::resolve, true, name, 0);
-    return call(redirect_host_a(),
+    char selfHost[16]{};
+    in_addr selfAddress{};
+    const char* forwardedNode = redirect_host_a();
+    if (self_address::is_self_name(name)
+        && self_address::self_address(selfHost, sizeof(selfHost), selfAddress)) {
+        self_address::log_self(name, selfHost);
+        forwardedNode = selfHost;
+    }
+    return call(forwardedNode,
                 service,
                 nameSpace,
                 provider,
@@ -129,7 +163,23 @@ INT WSAAPI address_info_ex_w(PCWSTR name,
         return deny_resolution(policy::NameOperation::resolve, name, 0);
     }
     policy::log_name_decision(policy::NameOperation::resolve, true, name, 0);
-    return call(redirect_host_w(),
+    char selfHostN[16]{};
+    wchar_t selfHost[16]{};
+    in_addr selfAddress{};
+    const wchar_t* forwardedNode = redirect_host_w();
+    if (self_address::is_self_name(name)
+        && self_address::self_address(selfHostN, sizeof(selfHostN), selfAddress)) {
+        self_address::log_self(selfHostN, selfHostN);
+        for (std::size_t index = 0; index + 1 < sizeof(selfHost) / sizeof(selfHost[0]);
+             ++index) {
+            selfHost[index] = static_cast<wchar_t>(selfHostN[index]);
+            if (selfHostN[index] == '\0') {
+                break;
+            }
+        }
+        forwardedNode = selfHost;
+    }
+    return call(forwardedNode,
                 service,
                 nameSpace,
                 provider,
@@ -159,7 +209,15 @@ hostent* WSAAPI host_by_name(const char* name) noexcept {
     thread_local char* addressList[2]{};
     thread_local char* aliases[1]{};
     thread_local hostent entry{};
-    address = redirect_address();
+    char selfHost[16]{};
+    in_addr selfAddress{};
+    if (self_address::is_self_name(name)
+        && self_address::self_address(selfHost, sizeof(selfHost), selfAddress)) {
+        self_address::log_self(name, selfHost);
+        address = selfAddress;
+    } else {
+        address = redirect_address();
+    }
     addressList[0] = reinterpret_cast<char*>(&address);
     addressList[1] = nullptr;
     aliases[0] = nullptr;

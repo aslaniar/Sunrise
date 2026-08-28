@@ -73,6 +73,7 @@ bool Parser::client_external_settings(external::Settings& output) noexcept {
     bool hasConfigGuid = false;
     bool hasPeerSubnet = false;
     bool hasPeerPrefixBits = false;
+    bool hasResolveSelfLocally = false;
     if (consume('}')) {
         return true;
     }
@@ -124,6 +125,13 @@ bool Parser::client_external_settings(external::Settings& output) noexcept {
             }
             candidate.peerPrefixBits = static_cast<std::uint8_t>(value);
             hasPeerPrefixBits = true;
+        } else if (key == "resolve_self_locally") {
+            // Default ON, so an omitted key keeps the self-name exception live. An explicit
+            // false restores the answer-everything-with-the-redirect-host behavior.
+            if (hasResolveSelfLocally || !boolean(candidate.resolveSelfLocally)) {
+                return false;
+            }
+            hasResolveSelfLocally = true;
         } else if (!skip_value(0)) {
             return false;
         }
