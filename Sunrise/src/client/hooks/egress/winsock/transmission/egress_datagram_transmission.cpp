@@ -6,8 +6,15 @@
 #include "../discovery/egress_discovery_responder.h"
 #include "replacements.h"
 
+#include "../netprobe.h"
+
 namespace sunrise::client::hooks::egress::winsock::transmission {
 namespace {
+
+/** FINDINGS 20.125 instrument: per-stage observation counters (netprobe.h rate-limits). */
+std::uint32_t g_probeSendTo = 0;
+std::uint32_t g_probeWsaSendTo = 0;
+
 
 /** A null destination picks the connected peer only when the address length is 0. */
 constexpr int kConnectedDestinationLength = 0;
@@ -97,6 +104,14 @@ int WSAAPI send_bytes_to(SOCKET socket,
                          int flags,
                          const sockaddr* destination,
                          int destinationLength) noexcept {
+    const void* const probeCaller = _ReturnAddress();
+    netprobe::enter("sendto",
+                    g_probeSendTo,
+                    socket,
+                    destination,
+                    destinationLength,
+                    length,
+                    probeCaller);
     const auto call = original<decltype(&::sendto)>(HookSlot::sendTo);
     if (buffer != nullptr && length >= 0) {
         const discovery::Result discoveryResult =
@@ -108,6 +123,7 @@ int WSAAPI send_bytes_to(SOCKET socket,
                               call);
         if (discoveryResult.handled) {
             log_discovery(discoveryResult.result != SOCKET_ERROR);
+            netprobe::exit_call("sendto", g_probeSendTo, discoveryResult.result);
             return discoveryResult.result;
         }
     }
@@ -119,9 +135,12 @@ int WSAAPI send_bytes_to(SOCKET socket,
         socket, destination, destinationLength, redirected, forwardedDestination, forwardedLength);
     if (call == nullptr
         || !policy::allow_socket_call(policy::SocketOperation::send, targetsRedirect, true)) {
-        return policy::deny_socket_call();
+        netprobe::exit_call("sendto", g_probeSendTo, policy::deny_socket_call());
+        return SOCKET_ERROR;
     }
-    return call(socket, buffer, length, flags, forwardedDestination, forwardedLength);
+    const int sent = call(socket, buffer, length, flags, forwardedDestination, forwardedLength);
+    netprobe::exit_call("sendto", g_probeSendTo, sent);
+    return sent;
 }
 
 /** Handles local discovery or redirects vectored datagrams to the redirect target. */
@@ -134,6 +153,16 @@ int WSAAPI send_buffers_to(SOCKET socket,
                            int destinationLength,
                            LPWSAOVERLAPPED overlapped,
                            LPWSAOVERLAPPED_COMPLETION_ROUTINE completion) noexcept {
+    const void* const probeCaller = _ReturnAddress();
+    netprobe::enter("wsasendto",
+                    g_probeWsaSendTo,
+                    socket,
+                    destination,
+                    destinationLength,
+                    buffers != nullptr && bufferCount == 1
+                        ? static_cast<int>(buffers[0].len)
+                        : -1,
+                    probeCaller);
     const auto call = original<decltype(&::WSASendTo)>(HookSlot::wsaSendTo);
     const auto sendTo = original<decltype(&::sendto)>(HookSlot::sendTo);
     const discovery::Result discoveryResult = handle_buffer_discovery(socket,
@@ -151,6 +180,7 @@ int WSAAPI send_buffers_to(SOCKET socket,
             *bytesSent = succeeded ? buffers[0].len : 0;
         }
         log_discovery(succeeded);
+        netprobe::exit_call("wsasendto", g_probeWsaSendTo, succeeded ? 0 : SOCKET_ERROR);
         return succeeded ? 0 : SOCKET_ERROR;
     }
 
@@ -162,17 +192,20 @@ int WSAAPI send_buffers_to(SOCKET socket,
     if (call == nullptr
         || !policy::allow_socket_call(policy::SocketOperation::send, targetsRedirect, true)) {
         clear_bytes(bytesSent);
-        return policy::deny_socket_call();
+        netprobe::exit_call("wsasendto", g_probeWsaSendTo, policy::deny_socket_call());
+        return SOCKET_ERROR;
     }
-    return call(socket,
-                buffers,
-                bufferCount,
-                bytesSent,
-                flags,
-                forwardedDestination,
-                forwardedLength,
-                overlapped,
-                completion);
+    const int sent = call(socket,
+                          buffers,
+                          bufferCount,
+                          bytesSent,
+                          flags,
+                          forwardedDestination,
+                          forwardedLength,
+                          overlapped,
+                          completion);
+    netprobe::exit_call("wsasendto", g_probeWsaSendTo, sent);
+    return sent;
 }
 
 } // namespace sunrise::client::hooks::egress::winsock::transmission

@@ -4,8 +4,15 @@
 #include "../../policy/policy.h"
 #include "../../resolver/redirect.h"
 
+#include "../netprobe.h"
+
 namespace sunrise::client::hooks::egress::winsock::connection {
 namespace {
+
+/** FINDINGS 20.125 instrument: per-stage observation counters (netprobe.h rate-limits). */
+std::uint32_t g_probeConnect = 0;
+std::uint32_t g_probeConnectEx = 0;
+
 
 /** WSAConnectByList could otherwise pick an endpoint off the redirect target. */
 constexpr INT kAllowedAddressCount = 1;
@@ -14,16 +21,20 @@ constexpr INT kAllowedAddressCount = 1;
 
 /** Redirects one complete IPv4 destination to the exact redirect target. */
 int WSAAPI connect_socket(SOCKET socket, const sockaddr* name, int nameLength) noexcept {
+    netprobe::enter("connect", g_probeConnect, socket, name, nameLength, 0, _ReturnAddress());
     const auto call = original<decltype(&::connect)>(HookSlot::connect);
     sockaddr_in redirected{};
     const bool targetsRedirect = policy::redirect_ipv4(name, nameLength, redirected);
     if (call == nullptr
         || !policy::allow_socket_call(policy::SocketOperation::connect, targetsRedirect, true)) {
-        return policy::deny_socket_call();
+        netprobe::exit_call("connect", g_probeConnect, policy::deny_socket_call());
+        return SOCKET_ERROR;
     }
-    return call(socket,
-                reinterpret_cast<const sockaddr*>(&redirected),
-                static_cast<int>(sizeof(redirected)));
+    const int connected = call(socket,
+                               reinterpret_cast<const sockaddr*>(&redirected),
+                               static_cast<int>(sizeof(redirected)));
+    netprobe::exit_call("connect", g_probeConnect, connected);
+    return connected;
 }
 
 /** Redirects an IPv4 connection with caller and quality-of-service data to the redirect target. */
@@ -34,20 +45,24 @@ int WSAAPI connect_socket_ex(SOCKET socket,
                              LPWSABUF calleeData,
                              LPQOS socketQos,
                              LPQOS groupQos) noexcept {
+    netprobe::enter("wsaconnect", g_probeConnectEx, socket, name, nameLength, 0, _ReturnAddress());
     const auto call = original<decltype(&::WSAConnect)>(HookSlot::wsaConnect);
     sockaddr_in redirected{};
     const bool targetsRedirect = policy::redirect_ipv4(name, nameLength, redirected);
     if (call == nullptr
         || !policy::allow_socket_call(policy::SocketOperation::connect, targetsRedirect, true)) {
-        return policy::deny_socket_call();
+        netprobe::exit_call("wsaconnect", g_probeConnectEx, policy::deny_socket_call());
+        return SOCKET_ERROR;
     }
-    return call(socket,
-                reinterpret_cast<const sockaddr*>(&redirected),
-                static_cast<int>(sizeof(redirected)),
-                callerData,
-                calleeData,
-                socketQos,
-                groupQos);
+    const int connected = call(socket,
+                               reinterpret_cast<const sockaddr*>(&redirected),
+                               static_cast<int>(sizeof(redirected)),
+                               callerData,
+                               calleeData,
+                               socketQos,
+                               groupQos);
+    netprobe::exit_call("wsaconnect", g_probeConnectEx, connected);
+    return connected;
 }
 
 /** Redirects every nonempty ANSI node to the IPv4 redirect literal. */
