@@ -91,7 +91,7 @@ void free_retired_host_sessions() noexcept {
     }
 }
 
-/** Copies one ready row selected by a predicate, then validates both retained State bindings. */
+/** Copies one ready row selected by a predicate, then validates its retained State bindings. */
 template <typename Predicate>
 [[nodiscard]] bool find_ready(Predicate predicate, HostSessionBinding& output) noexcept {
     output = {};
@@ -103,8 +103,14 @@ template <typename Predicate>
         }
     }
     ReleaseSRWLockShared(&g_hostSessionLock);
-    if (output.generation == 0 || !state::activity::binding_matches(output.source)
-        || !state::activity::binding_matches(output.target)) {
+    // REGION-BOUND (p2(87), FINDINGS 20.130): when the row belongs to the (group session,
+    // region), its validity no longer depends on the first source's own session record - that
+    // record recycles with the client's ~22.8 s cycle, and a source-liveness check here made
+    // every recycle invalidate the shared activity session both clients were joining. The
+    // allocated target is this host's own session and still has to be alive.
+    const bool regionBound = core::settings::get().server.gameplay.activityHostRegionBound;
+    if (output.generation == 0 || !state::activity::binding_matches(output.target)
+        || (!regionBound && !state::activity::binding_matches(output.source))) {
         output = {};
         return false;
     }
@@ -134,8 +140,20 @@ HostSessionState request_host_session(std::uint64_t groupSessionId,
             break;
         }
     }
+    const bool regionBound = core::settings::get().server.gameplay.activityHostRegionBound;
+    const bool sameRegion = matching != nullptr && matching->binding.regionIndex == regionIndex;
     if (matching != nullptr && same_generation(matching->binding.source, source)
-        && matching->binding.regionIndex == regionIndex) {
+        && sameRegion) {
+        matching->lastUse = ++g_useStamp;
+        output = matching->binding;
+        result = matching->state;
+    } else if (regionBound && matching != nullptr && sameRegion) {
+        // REGION-BOUND (p2(87), FINDINGS 20.130): the row belongs to the (group session,
+        // region), not to whichever client's activity source pushed last. With two clients in
+        // one public region the source generation differs on every other push, and the old
+        // retire-and-reallocate here tore down the shared activity session 118 times in one
+        // run. The caller's fresh source retain is released below (sourceTransferred stays
+        // false); the row keeps the source whose destination it was allocated with.
         matching->lastUse = ++g_useStamp;
         output = matching->binding;
         result = matching->state;

@@ -85,6 +85,19 @@ struct Settings {
      * (HARD RULES, p2(62)).
      */
     bool publishJoinMachineIds{false};
+    /**
+     * Bind the activity-host session to the (group session, region) instead of to whichever
+     * client's activity source pushed last (FINDINGS 20.130).
+     *
+     * With two clients in one public region, every membership push from the other client used
+     * to retire the shared host row and reallocate it under a NEW activity-session id - 118
+     * allocations and 116 retires in one run - so the activity session both clients' activity
+     * clients must join never outlived the next push, and co-location could never form. True
+     * reuses the row when the (group session, region) matches and lets it outlive its first
+     * source's own (recycling) session record. False restores the source-bound behaviour
+     * without a rebuild (HARD RULES, p2(62)).
+     */
+    bool activityHostRegionBound{false};
 };
 
 /**

@@ -53,6 +53,7 @@ bool Parser::gameplay_settings(gameplay::Settings& output) noexcept {
     bool hasJoinGrant = false;
     bool hasSearchSelfHost = false;
     bool hasPublishJoinMachineIds = false;
+    bool hasActivityHostRegionBound = false;
     for (;;) {
         std::string_view key;
         if (!string(key) || !consume(':')) {
@@ -118,6 +119,11 @@ bool Parser::gameplay_settings(gameplay::Settings& output) noexcept {
                 return false;
             }
             hasPublishJoinMachineIds = true;
+        } else if (key == "activity_host_region_bound") {
+            if (hasActivityHostRegionBound || !boolean(candidate.activityHostRegionBound)) {
+                return false;
+            }
+            hasActivityHostRegionBound = true;
         } else if (!skip_value(0)) {
             return false;
         }
