@@ -4,6 +4,7 @@
 #include "../../../../middleware/gameplay/descriptor/join_descriptor.h"
 #include "../../../gameplay/endpoint/gameplay_endpoint.h"
 #include "../../../../core/logging/log.h"
+#include "../../../../core/settings/settings.h"
 #include <cstdio>
 #include <array>
 #include <cstring>
@@ -230,13 +231,33 @@ bool encode_response(state::matchmaking::ContextHandle context,
         response = {};
     }
 
-    // FINDINGS 20.34/20.35: an empty search result is what kept every client alone. Answer with
-    // ANOTHER context's advertisement - the session some other client actually published - not a
-    // synthetic self-descriptor. A client handed its own session back has nothing to join, which
-    // is why the solo boot could never have succeeded whatever we encoded.
+    // FINDINGS 20.114: THE SEARCH ANSWER NAMES THE HOST, and until now it named the wrong one.
+    //
+    // 20.34/20.35 reasoned that a searcher must be handed ANOTHER context's advertisement,
+    // because "a client handed its own session back has nothing to join". That is correct for a
+    // peer-to-peer topology and WRONG here: under road C this server hosts every instance and
+    // both clients are its guests, so the descriptor a searcher should receive is OURS. The blob
+    // that reading forwarded is the client's own STEAM-IDENTITY advertisement (raw bytes decode
+    // as ASCII "steamid:76561198776753.."), which names a Steam networking path this build stubs
+    // and that has never run - `get_certificate` returned 0 once and `send_rendezvous` has never
+    // fired (20.111). It is order-dependent besides: the FIRST client to search finds no foreign
+    // advertisement and gets the empty answer, which the client takes as final.
+    //
+    // `build_search_descriptor` has existed since p2(24) and was never called. It is called now.
+    std::array<std::byte, middleware::gameplay::descriptor::kDescriptorSize> selfDescriptor{};
     state::matchmaking::LatestSnapshot foreign{};
-    if (response.kind == service::RequestKind::sessionSearch
-        && state::matchmaking::foreign_advertisement(context, foreign) && foreign.hasDescriptor) {
+    const bool selfHost = core::settings::get().server.gameplay.searchSelfHost;
+    if (response.kind == service::RequestKind::sessionSearch && selfHost
+        && build_search_descriptor(selfDescriptor)) {
+        // Stable for the whole boot, so a client that searches twice is pointed at one host.
+        // The id is an opaque handle the result carries; only nonzero is required.
+        const server::gameplay::endpoint::Identity identity = server::gameplay::endpoint::identity();
+        response.advertisementId = identity.machineId;
+        response.descriptor = std::span<const std::byte>(selfDescriptor);
+        log_descriptor("serve_self", response.descriptor);
+    } else if (response.kind == service::RequestKind::sessionSearch
+               && state::matchmaking::foreign_advertisement(context, foreign)
+               && foreign.hasDescriptor) {
         response.advertisementId = foreign.advertisementId;
         response.descriptor = std::span<const std::byte>(foreign.descriptor);
         log_descriptor("serve", response.descriptor);

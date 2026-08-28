@@ -60,6 +60,20 @@ struct Settings {
     std::uint16_t serverReserveCount{kDefaultServerReserve};
     /** Entity indices the join grants. The rest stay free for the client to request. */
     std::uint16_t clientJoinGrantCount{kDefaultClientJoinGrant};
+    /**
+     * Answer a session search with THIS server's gameplay endpoint instead of relaying another
+     * client's advertisement (FINDINGS 20.114).
+     *
+     * Under road C the server hosts every instance and both clients are its guests, so the
+     * descriptor every searcher should receive is ours. The relay it replaces hands client A
+     * client B's STEAM-IDENTITY blob, which names a Steam networking path this build stubs and
+     * has never run - and it is order-dependent besides, because the first client to search
+     * finds no foreign advertisement at all.
+     *
+     * False restores the relay behaviour without a rebuild, which is what makes any freeze this
+     * causes bisectable (HARD RULES, p2(62)).
+     */
+    bool searchSelfHost{true};
 };
 
 /**
