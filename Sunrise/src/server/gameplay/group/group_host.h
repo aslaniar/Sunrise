@@ -34,11 +34,14 @@ namespace sunrise::server::gameplay::group {
  * accepts it only while the state replica behind its hash is byte exact.
  * @param peer Endpoint of the admitted peer, in host order.
  * @param peerJoinId Join id the peer's join request carried. Its entry has to echo it.
+ * @param peerMachineId Machine identity the peer's join request carried (zero when its identity
+ *                      table did not decode; the snapshot then falls back to the joinId).
  * @param sessionId Group-session id the peer named, which its parameter updates have to echo.
  * @return True when the snapshot was queued on the peer's reliable channel.
  */
 [[nodiscard]] bool publish_membership(const state::gameplay::Endpoint& peer,
                                       std::uint64_t peerJoinId,
+                                      std::uint64_t peerMachineId,
                                       std::uint64_t sessionId) noexcept;
 
 /** One admitted peer's group session and how far its join has got. */

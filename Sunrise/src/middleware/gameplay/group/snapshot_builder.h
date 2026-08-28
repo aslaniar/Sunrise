@@ -29,6 +29,10 @@ inline constexpr std::size_t kSnapshotPeerCapacity = 6;
 struct SnapshotPeer {
     /** Join id the peer's own join request carried. Its entry echoes it, and so does the host's. */
     std::uint64_t joinId{};
+    /** Machine identity the peer's join request carried (FINDINGS 20.128). The caller decides
+     *  what this publishes - the real id, or the joinId stand-in it replaces - so the composer
+     *  writes it verbatim. */
+    std::uint64_t machineId{};
     /** Player identity the owning member sent in its player-add. Valid when `hasPlayer`. */
     std::uint64_t playerId{};
     bool hasPlayer{};

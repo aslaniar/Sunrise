@@ -64,6 +64,39 @@ struct JoinRefuse {
  */
 [[nodiscard]] bool read_join_request(encoding::bits::Reader& reader, JoinRequest& output) noexcept;
 
+/**
+ * One machine identity as the join request's identity table carries it.
+ * MEASURED (p2-85 captures, FINDINGS 20.128): behind the admission prefix (211 bits in) the
+ * table holds, in this order, an 8-bit entry tag (0x08 observed on both machines), a NetAddr
+ * pair (32-bit address in network order, 16-bit port low byte first - the descriptor's own
+ * grammar), four 6-byte placeholder groups, the SAME address and port again, and a machine
+ * identity blob whose first qword differs per machine and is stable for the whole boot.
+ * Both machines name their own address in the first entry, which is the decoder's self-check.
+ */
+struct JoinMachineIdentity {
+    /** First entry's tag byte. 0x08 on every capture so far. */
+    std::uint8_t entryTag{};
+    /** First entry's address, network order (comparable to Endpoint::address). */
+    std::uint32_t address{};
+    /** First entry's port, decoded low byte first (the descriptor's port grammar). */
+    std::uint16_t port{};
+    /** The identity blob's first qword, read low byte first like the descriptor's machineId. */
+    std::uint64_t machineId{};
+    /** The same 8 wire bytes read big-endian first, kept so a boot can disambiguate the order
+     *  the consumer compares against without another capture run. Logging-only. */
+    std::uint64_t machineIdReversed{};
+};
+
+/**
+ * Reads the machine identity table behind one admission prefix.
+ * @param reader Reader positioned directly behind `read_join_request`'s prefix.
+ * @param output Receives the decoded identity.
+ * @return True when the tag, both NetAddr pairs, and the identity qword were present and
+ *         mutually consistent (the repeated address and port equal the first pair).
+ */
+[[nodiscard]] bool read_join_machine_identity(encoding::bits::Reader& reader,
+                                              JoinMachineIdentity& output) noexcept;
+
 /** Writes a join refusal body. @return True when every field fit. */
 [[nodiscard]] bool write_join_refuse(encoding::bits::Writer& writer,
                                      const JoinRefuse& body) noexcept;

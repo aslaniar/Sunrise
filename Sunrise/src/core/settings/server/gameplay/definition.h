@@ -74,6 +74,17 @@ struct Settings {
      * causes bisectable (HARD RULES, p2(62)).
      */
     bool searchSelfHost{true};
+    /**
+     * Publish each peer's REAL machine id (decoded from its join request's identity table,
+     * FINDINGS 20.128) in membership snapshots, instead of the joinId stand-in.
+     *
+     * The joinId stand-in is the prime suspect for the deterministic symmetric row drop
+     * (20.127 addendum 3): the consumer rebuilds its member table from every snapshot and
+     * drops the foreign member's row, and the stand-in matches nothing it holds. False
+     * restores the stand-in without a rebuild, so the row-drop boot stays bisectable
+     * (HARD RULES, p2(62)).
+     */
+    bool publishJoinMachineIds{false};
 };
 
 /**

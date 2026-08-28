@@ -39,6 +39,56 @@ bool read_join_request(bits::Reader& reader, JoinRequest& output) noexcept {
     return true;
 }
 
+/** Reads the machine identity table behind one admission prefix (p2-85 measured layout). */
+bool read_join_machine_identity(bits::Reader& reader, JoinMachineIdentity& output) noexcept {
+    JoinMachineIdentity candidate{};
+    std::uint64_t tag = 0;
+    std::uint64_t address = 0;
+    std::uint64_t port = 0;
+    if (!reader.read(8, tag) || !reader.read(32, address) || !reader.read(16, port)) {
+        return false;
+    }
+    candidate.entryTag = static_cast<std::uint8_t>(tag);
+    candidate.address = static_cast<std::uint32_t>(address);
+    // The port rides low byte first (the descriptor's memory order), so the 16 bits the reader
+    // assembled most-significant-first swap into the host value here.
+    candidate.port = static_cast<std::uint16_t>(((port & 0xFFU) << 8) | ((port >> 8) & 0xFFU));
+    // Four placeholder groups of six bytes each sit between the two NetAddr pairs. Identical on
+    // every capture so far; skipped without validation so an unrelated filler change cannot
+    // wedge admission (the identity is a bonus, never a gate).
+    if (!reader.skip(4 * 6 * 8)) {
+        return false;
+    }
+    std::uint64_t address2 = 0;
+    std::uint64_t port2 = 0;
+    if (!reader.read(32, address2) || !reader.read(16, port2)) {
+        return false;
+    }
+    // The second pair repeats the first on every capture; a divergence means the layout moved.
+    if (address2 != address || port2 != port) {
+        return false;
+    }
+    if (candidate.entryTag != 0x08) {
+        return false;
+    }
+    // The identity qword rides low byte first, like the descriptor's machineId field and the
+    // port above. The reversed read is kept logging-only (INFERRED order - one boot settles it).
+    for (unsigned index = 0; index < 8; ++index) {
+        std::uint64_t byte = 0;
+        if (!reader.read(8, byte)) {
+            return false;
+        }
+        candidate.machineId |= byte << (index * 8);
+        candidate.machineIdReversed =
+            (candidate.machineIdReversed << 8) | byte;
+    }
+    if (candidate.machineId == 0) {
+        return false;
+    }
+    output = candidate;
+    return true;
+}
+
 /** Writes a join refusal body. */
 bool write_join_refuse(bits::Writer& writer, const JoinRefuse& body) noexcept {
     return bits::write_raw_u64(writer, body.sessionId) && bits::write_raw_u64(writer, body.joinId)

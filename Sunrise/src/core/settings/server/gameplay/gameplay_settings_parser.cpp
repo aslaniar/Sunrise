@@ -52,6 +52,7 @@ bool Parser::gameplay_settings(gameplay::Settings& output) noexcept {
     bool hasReserve = false;
     bool hasJoinGrant = false;
     bool hasSearchSelfHost = false;
+    bool hasPublishJoinMachineIds = false;
     for (;;) {
         std::string_view key;
         if (!string(key) || !consume(':')) {
@@ -112,6 +113,11 @@ bool Parser::gameplay_settings(gameplay::Settings& output) noexcept {
                 return false;
             }
             hasSearchSelfHost = true;
+        } else if (key == "publish_join_machine_ids") {
+            if (hasPublishJoinMachineIds || !boolean(candidate.publishJoinMachineIds)) {
+                return false;
+            }
+            hasPublishJoinMachineIds = true;
         } else if (!skip_value(0)) {
             return false;
         }

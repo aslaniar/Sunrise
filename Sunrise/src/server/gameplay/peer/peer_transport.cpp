@@ -376,8 +376,12 @@ void answer_connect(const gp::Endpoint& from,
  * A protocol mismatch is dropped with no reply.
  * @param from Requesting endpoint.
  * @param request Decoded admission prefix.
+ * @param machineId Machine identity the request's identity table carried, or zero when it did
+ *                  not decode (the snapshot then falls back to the joinId stand-in).
  */
-void answer_join(const gp::Endpoint& from, const wire::JoinRequest& request) noexcept {
+void answer_join(const gp::Endpoint& from,
+                 const wire::JoinRequest& request,
+                 std::uint64_t machineId) noexcept {
     const std::uint64_t hostSession = endpoint::identity().onlineSessionId;
     wire::RefuseReason reason = wire::RefuseReason::notFound;
     if (wire::admit(request, hostSession, reason)) {
@@ -385,7 +389,7 @@ void answer_join(const gp::Endpoint& from, const wire::JoinRequest& request) noe
         // carrying it is a retry.
         const bool bound = bind_session(from, request.sessionId);
         const bool published =
-            bound && group::publish_membership(from, request.joinId, request.sessionId);
+            bound && group::publish_membership(from, request.joinId, machineId, request.sessionId);
         // The peer needs both before it finishes: the snapshot names it, and the parameter update
         // releases the latch its own tick waits on.
         const bool parameters =
@@ -393,13 +397,14 @@ void answer_join(const gp::Endpoint& from, const wire::JoinRequest& request) noe
         // Nothing else names what the peer thinks it is joining.
         report(core::log::Level::info,
                "ev=gameplay stage=join result=admit build=%u..%u exe=%u session=0x%016llX "
-               "host=0x%016llX join=0x%016llX membership=%s parameters=%s",
+               "host=0x%016llX join=0x%016llX machine=0x%016llX membership=%s parameters=%s",
                request.minimumBuild,
                request.maximumBuild,
                static_cast<unsigned>(request.executableType),
                static_cast<unsigned long long>(request.sessionId),
                static_cast<unsigned long long>(hostSession),
                static_cast<unsigned long long>(request.joinId),
+               static_cast<unsigned long long>(machineId),
                published ? "queued" : "fail",
                parameters ? "queued" : "fail");
         return;
@@ -578,7 +583,27 @@ void consume_container(const gp::Endpoint& from,
         if (header.id == static_cast<std::uint8_t>(wire::JoinId::request)) {
             wire::JoinRequest request{};
             if (wire::read_join_request(reader, request)) {
-                answer_join(from, request);
+                // The identity table sits directly behind the admission prefix. Its first entry
+                // names the sender's own address, so a decode that disagrees with the datagram's
+                // source is a wrong parse and publishes nothing (fail-safe to the stand-in).
+                wire::JoinMachineIdentity identity{};
+                const bool identified = wire::read_join_machine_identity(reader, identity);
+                const bool selfcheck = identified && identity.address == from.address
+                                       && identity.port == from.port;
+                report(core::log::Level::info,
+                       "ev=gameplay stage=identity result=%s tag=%u addr=0x%08X port=%u "
+                       "machine=0x%016llX machine_rev=0x%016llX selfcheck=%s",
+                       !identified ? "absent"
+                       : selfcheck ? "ok"
+                                   : "mismatch",
+                       static_cast<unsigned>(identity.entryTag),
+                       identity.address,
+                       static_cast<unsigned>(identity.port),
+                       static_cast<unsigned long long>(identity.machineId),
+                       static_cast<unsigned long long>(identity.machineIdReversed),
+                       selfcheck ? "ok" : "fail");
+                answer_join(from, request,
+                            identified && selfcheck ? identity.machineId : 0);
             }
             // The rest of the request is address and player tables this host does not decode,
             // so no later message in this container can be located.

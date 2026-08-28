@@ -56,7 +56,9 @@ bool compose_membership_snapshot(
     for (std::size_t index = 0; index < peers.size(); ++index) {
         const SnapshotPeer& peer = peers[index];
         MembershipMember& member = output.members[index + 1];
-        fill_member(member, peer.address, peer.joinId, peer.joinId, peer_state(peer.joinComplete));
+        // The peer's own machine id - real or stand-in, the caller's decision - now that the
+        // join-request identity table names it (FINDINGS 20.128).
+        fill_member(member, peer.address, peer.machineId, peer.joinId, peer_state(peer.joinComplete));
         if (peer.hasPlayer) {
             member.ownsPlayerSlot = true;
             member.playerSlot = peer.playerSlot;

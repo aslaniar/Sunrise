@@ -66,6 +66,9 @@ constexpr std::uint64_t kRetryInterval = 250;
 struct Admitted {
     state::gameplay::Endpoint endpoint{};
     std::uint64_t joinId{};
+    /** Machine identity the peer's join request carried (FINDINGS 20.128). Stable for the
+     *  peer's whole boot; zero when its identity table did not decode. */
+    std::uint64_t machineId{};
     std::uint64_t playerId{};
     /** Group-session id the peer named in its join request, which its parameters must echo. */
     std::uint64_t sessionId{};
@@ -318,6 +321,12 @@ void mark_session_dirty(std::uint64_t sessionId) noexcept {
         }
         wire::SnapshotPeer& peer = peers[peerCount];
         peer.joinId = entry.joinId;
+        // The real machine id the peer's join request carried, behind the switch; the switch
+        // off (or an undecoded identity) restores the joinId stand-in byte for byte.
+        peer.machineId =
+            core::settings::get().server.gameplay.publishJoinMachineIds && entry.machineId != 0
+                ? entry.machineId
+                : entry.joinId;
         peer.playerId = entry.playerId;
         peer.hasPlayer = entry.hasPlayer;
         peer.joinComplete = entry.joinComplete;
@@ -909,6 +918,7 @@ bool consume(const state::gameplay::Endpoint& from,
 /** Publishes the membership snapshot that completes one peer's join. */
 bool publish_membership(const state::gameplay::Endpoint& peer,
                         std::uint64_t peerJoinId,
+                        std::uint64_t peerMachineId,
                         std::uint64_t sessionId) noexcept {
     AcquireSRWLockExclusive(&g_admittedLock);
     Admitted* const record = claim(peer, sessionId);
@@ -919,7 +929,10 @@ bool publish_membership(const state::gameplay::Endpoint& peer,
         mark_session_dirty(sessionId);
         // A retried join brings a new join id and drops any player the previous attempt added.
         // It also starts again at `ready`, so the previous attempt's completion does not carry.
+        // The machine id is stable across the peer's retries (measured: 21 identical identity
+        // tables in one boot), so it re-stamps harmlessly.
         record->joinId = peerJoinId;
+        record->machineId = peerMachineId;
         record->sessionId = sessionId;
         record->hasPlayer = false;
         record->playerId = 0;
