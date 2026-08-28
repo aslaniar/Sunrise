@@ -146,7 +146,14 @@ __declspec(noinline) bool __fastcall reader(std::uint32_t sliceSet) noexcept {
     const auto& client = core::settings::get().client;
     const bool mustBePrivate =
         client.regionPrivate || state::activity::forced::override_active();
-    const bool answer = mustBePrivate ? false : (client.regionPublic || native);
+    // A named slice set beats the blanket switch. p2(76) showed the blanket one is too broad:
+    // the first transition through this point is ORBIT, and an orbit forced public waits on a
+    // connection forever without ever allocating an activity host (FINDINGS 20.117).
+    const bool forcePublic =
+        client.regionPublicSliceSet >= 0
+            ? static_cast<std::uint32_t>(client.regionPublicSliceSet) == sliceSet
+            : client.regionPublic;
+    const bool answer = mustBePrivate ? false : (forcePublic || native);
     report(sliceSet, native, answer);
     return answer;
 }

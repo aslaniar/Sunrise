@@ -57,6 +57,18 @@ struct Settings {
      */
     bool regionPublic{false};
     /**
+     * Slice set whose region transition is forced PUBLIC, or -1 for none.
+     *
+     * p2(76) proved `region_public` is too broad: the starter's decision point is reached for the
+     * ORBIT transition first, and an orbit forced public sits in "PUBLIC but not yet connected"
+     * forever - the client never even allocates an activity host, so the whole boot stalls before
+     * the work we want to test. Naming ONE slice set keeps the handbook's rule (change the input
+     * at the exact native decision point) without changing every other transition.
+     *
+     * Takes precedence over `region_public` when set: -1 means "use region_public".
+     */
+    std::int32_t regionPublicSliceSet{-1};
+    /**
      * Runs the graphics target-discovery probe at attach (a real D3D11 device +
      * swapchain created purely to read the swapchain vtable). The probe's costs
      * are throwaway on a native driver but NOT on a translation layer (DXMT on

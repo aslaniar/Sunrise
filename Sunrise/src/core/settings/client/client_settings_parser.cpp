@@ -15,6 +15,7 @@ bool Parser::client_settings(client::Settings& output) noexcept {
     bool hasForceJoinRequestReady = false;
     bool hasRegionPrivate = false;
     bool hasRegionPublic = false;
+    bool hasRegionPublicSliceSet = false;
     bool hasPinReplicatedRecord = false;
     bool hasGraphicsProbe = false;
     bool hasGraphicsProbeWarp = false;
@@ -55,6 +56,14 @@ bool Parser::client_settings(client::Settings& output) noexcept {
                 return false;
             }
             hasForceJoinRequestReady = true;
+        } else if (key == "region_public_slice_set") {
+            std::int64_t value = 0;
+            if (hasRegionPublicSliceSet || !signed_integer(value)
+                || value < -1 || value > (std::numeric_limits<std::int32_t>::max)()) {
+                return false;
+            }
+            candidate.regionPublicSliceSet = static_cast<std::int32_t>(value);
+            hasRegionPublicSliceSet = true;
         } else if (key == "region_public") {
             if (hasRegionPublic || !boolean(candidate.regionPublic)) {
                 return false;
