@@ -14,6 +14,7 @@ bool Parser::client_settings(client::Settings& output) noexcept {
     bool hasJoinRosterObserver = false;
     bool hasForceJoinRequestReady = false;
     bool hasRegionPrivate = false;
+    bool hasRegionPublic = false;
     bool hasPinReplicatedRecord = false;
     bool hasGraphicsProbe = false;
     bool hasGraphicsProbeWarp = false;
@@ -54,6 +55,11 @@ bool Parser::client_settings(client::Settings& output) noexcept {
                 return false;
             }
             hasForceJoinRequestReady = true;
+        } else if (key == "region_public") {
+            if (hasRegionPublic || !boolean(candidate.regionPublic)) {
+                return false;
+            }
+            hasRegionPublic = true;
         } else if (key == "region_private") {
             if (hasRegionPrivate || !boolean(candidate.regionPrivate)) {
                 return false;

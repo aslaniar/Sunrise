@@ -43,6 +43,20 @@ struct Settings {
      */
     bool regionPrivate{false};
     /**
+     * Forces the region transition's public-flag input to PUBLIC at the native decision point.
+     *
+     * The community handbook 15.3 records this as the change that started the citizen and search
+     * path on a route that had stayed private: "Changing the region transition input to public
+     * started the citizen and search path. The change occurred at the transition-starter call...
+     * Change the input at the exact native decision point. Do not force a downstream result
+     * globally."
+     *
+     * The starter's own call site is the only one the hook answers for, so this is that exact
+     * point and not a global override. `region_private` still wins if both are set, and a forced
+     * destination still loads solo - no public host serves one.
+     */
+    bool regionPublic{false};
+    /**
      * Runs the graphics target-discovery probe at attach (a real D3D11 device +
      * swapchain created purely to read the swapchain vtable). The probe's costs
      * are throwaway on a native driver but NOT on a translation layer (DXMT on

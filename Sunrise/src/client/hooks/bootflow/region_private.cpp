@@ -92,7 +92,7 @@ std::atomic<unsigned> g_forced{0};
  * @param sliceSet Slice-set index whose bubble the reader called public.
  * @param forced True when the answer was replaced, false when the region stays public.
  */
-void report(std::uint32_t sliceSet, bool forced) noexcept {
+void report(std::uint32_t sliceSet, bool native, bool answer) noexcept {
     // One atomic claim per line, so a concurrent transition cannot reuse a budget slot.
     if (g_forced.fetch_add(1, std::memory_order_relaxed) >= kMaxReports) {
         return;
@@ -100,8 +100,11 @@ void report(std::uint32_t sliceSet, bool forced) noexcept {
     std::array<char, kLineCapacity> line{};
     const int written = std::snprintf(line.data(),
                                       line.size(),
-                                      "ev=bootflow stage=region result=%s slice_set=%u",
-                                      forced ? "forced" : "public",
+                                      "ev=bootflow stage=region result=%s native=%d answer=%d "
+                                      "slice_set=%u",
+                                      native == answer ? "native" : "forced",
+                                      native ? 1 : 0,
+                                      answer ? 1 : 0,
                                       static_cast<unsigned>(sliceSet));
     if (written > 0) {
         core::log::write(core::log::Channel::client,
@@ -111,29 +114,41 @@ void report(std::uint32_t sliceSet, bool forced) noexcept {
 }
 
 /**
- * Reports a bubble as private, for the region transition's own call only.
- * A public region holds its slice-set switch until a public activity host connects. The answer
- * is public unless `client.region_private` is on, or a destination is forced.
- * @return False on the starter's call, otherwise the reader's own answer.
+ * Answers the bubble public-flag for the region transition's own call only.
+ *
+ * INSTRUMENT FIX (FINDINGS 20.116). The previous body returned early on a false native answer,
+ * BEFORE reporting. Every boot since 20.82 therefore emitted zero decision lines, and that
+ * silence was read as "the filtered call site is never reached" - so `region_private` was
+ * written off as inert on a reading its own instrument could not support. The true meaning was
+ * the opposite and far more useful: the site IS reached and the NATIVE answer is already false.
+ * Both branches now report, and the line carries the native answer and ours separately (L13).
+ *
+ * The handbook 15.3 records forcing this input to PUBLIC as the change that started the citizen
+ * and search path, at this exact call - "Change the input at the exact native decision point.
+ * Do not force a downstream result globally."
+ *
+ * @return The starter's answer, forced by settings; the reader's own answer everywhere else.
  */
 __declspec(noinline) bool __fastcall reader(std::uint32_t sliceSet) noexcept {
+    // Taken FIRST: _ReturnAddress must be read before any call in this frame.
+    const auto* const caller = static_cast<const std::byte*>(_ReturnAddress());
     const Reader original = g_original.load(std::memory_order_acquire);
     // The detour is live for a few instructions before install publishes its trampoline.
     if (original == nullptr) {
         return false;
     }
-    if (!original(sliceSet)) {
-        return false;
-    }
-    const auto* const caller = static_cast<const std::byte*>(_ReturnAddress());
+    const bool native = original(sliceSet);
     if (caller != g_returnSite.load(std::memory_order_acquire)) {
-        return true;
+        return native;
     }
-    // No public host serves a forced destination, so that run waits forever. It must load solo.
-    const bool forced =
-        core::settings::get().client.regionPrivate || state::activity::forced::override_active();
-    report(sliceSet, forced);
-    return !forced;
+    // No public host serves a forced destination, so that run waits forever. It must load solo,
+    // and that outranks a public force.
+    const auto& client = core::settings::get().client;
+    const bool mustBePrivate =
+        client.regionPrivate || state::activity::forced::override_active();
+    const bool answer = mustBePrivate ? false : (client.regionPublic || native);
+    report(sliceSet, native, answer);
+    return answer;
 }
 
 /** @param reason Key naming the step that failed. @return False, for a direct return. */
