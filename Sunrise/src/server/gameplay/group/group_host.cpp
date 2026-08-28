@@ -34,6 +34,8 @@ constexpr std::size_t kBodyCapacity = 128;
 constexpr std::size_t kMembershipBodyCapacity = 512;
 /** Only the low 25 bitmap bits name a registry parameter. */
 constexpr std::uint64_t kParameterMaskBits = 0x1FFFFFF;
+/** Hex characters of the captured parameter-request body, plus its terminator. */
+constexpr std::size_t kRequestCaptureCapacity = 513;
 /** Room for every registry name plus its separators. */
 constexpr std::size_t kParameterNameCapacity = 640;
 /** Member index this host takes, and the index it nominates to succeed it. */
@@ -675,6 +677,29 @@ bool consume(const state::gameplay::Endpoint& from,
                wire::parameter_names(mask, names.data(), names.size()));
         // The selected bodies are walked before the answer goes out, so nothing is answered from
         // a request that was only read as far as its header.
+        // INSTRUMENT (FINDINGS 20.121). Parameter 21 `publicSessionReservations` is where the
+        // walk stops, and our ANSWER for it is a clear root bit - "no value, keep your own" -
+        // because its body layout is unrecovered. The client then sets its public bubble
+        // reservation to 0 slots and recycles the session every ~22.8 s. Inventing a body is the
+        // policy-31 fatal-decode class the handbook warns about, so capture the peer's OWN bytes
+        // instead and decode the layout offline (U2: instrument before intervention).
+        {
+            bits::Reader capture = reader;
+            std::array<char, kRequestCaptureCapacity> hex{};
+            std::size_t written = 0;
+            std::uint64_t byte = 0;
+            while (written + 2 < hex.size() && capture.read(8, byte)) {
+                static constexpr char kDigits[] = "0123456789ABCDEF";
+                hex[written++] = kDigits[(byte >> 4) & 0xF];
+                hex[written++] = kDigits[byte & 0xF];
+            }
+            hex[written] = '\0';
+            report(core::log::Level::info,
+                   "ev=gameplay stage=parameters result=body_capture mask=0x%08X bytes=%zu hex=%s",
+                   static_cast<unsigned>(mask),
+                   written / 2,
+                   hex.data());
+        }
         wire::ParameterRequestWalk walk{};
         const bool intact = wire::walk_parameter_request(reader, mask, walk);
         report(walk.complete ? core::log::Level::debug : core::log::Level::info,
