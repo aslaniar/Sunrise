@@ -62,6 +62,17 @@ constexpr std::size_t kMessageReportCapacity = 8;
  * sequences ahead of its window, so this host must not send faster than the peer does.
  */
 constexpr std::uint64_t kResendInterval = 250;
+/**
+ * Milliseconds of silence before this host sends an empty established packet.
+ *
+ * FINDINGS 20.119: once a join settles, `service` had nothing owed and nothing to resend, so this
+ * host sent NOTHING and the peer sent nothing back. The link then idled out and the peer rebuilt
+ * its channel every ~21.5 s (`connect result=ok rebuilt=1`), tearing down and redoing a join that
+ * had completed cleanly. A real host emits a continuous packet stream; this is the minimum that
+ * keeps the link alive. Well under the observed timeout, and one packet per second costs one
+ * sequence out of a 1024 modulus.
+ */
+constexpr std::uint64_t kKeepaliveInterval = 1000;
 
 SRWLOCK g_lock{SRWLOCK_INIT};
 std::array<gp::PeerLink, gp::kAssociationCapacity> g_peers;
@@ -906,7 +917,13 @@ void service(std::uint64_t now) noexcept {
         // An unacknowledged send queue keeps the packet going out until the peer confirms it.
         // Every packet burns one sequence, so the resend is paced.
         const bool resendDue = peer.outbound.count != 0 && now - peer.lastSend >= kResendInterval;
-        const bool due = peer.acknowledgementOwed || resendDue;
+        // An established link that owes nothing still has to be heard from, or the peer treats it
+        // as dead and rebuilds (20.119). Only connected links: anything earlier is still in its
+        // connect exchange and has its own retries.
+        const bool keepaliveDue =
+            peer.stage == gp::PeerStage::connected && now - peer.lastSend >= kKeepaliveInterval;
+        const bool due = peer.acknowledgementOwed || resendDue || keepaliveDue;
+        const bool keepaliveOnly = keepaliveDue && !peer.acknowledgementOwed && !resendDue;
         if (peer.stage == gp::PeerStage::absent || !due) {
             continue;
         }
@@ -924,6 +941,14 @@ void service(std::uint64_t now) noexcept {
             static_cast<std::uint16_t>((peer.outboundHead + 1) % kPacketSequenceModulus);
         peer.outboundHeadPresent = true;
         peer.lastTick = now;
+        if (keepaliveOnly) {
+            // Debug, and one per second per peer: it is the only evidence the link is being held
+            // open rather than merely quiet, and those two look identical from outside (L13).
+            report(core::log::Level::debug,
+                   "ev=gameplay stage=keepalive result=sent peer=%u sequence=%u",
+                   static_cast<unsigned>(peer.endpoint.port),
+                   static_cast<unsigned>(peer.outboundHead));
+        }
         owed[count] = peer;
         ++count;
     }
