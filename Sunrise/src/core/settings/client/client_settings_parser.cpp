@@ -14,6 +14,8 @@ bool Parser::client_settings(client::Settings& output) noexcept {
     bool hasJoinRosterObserver = false;
     bool hasAdmissionCensus = false;
     bool hasAdmissionInject = false;
+    bool hasProfileHarvest = false;
+    bool hasProfileIngress = false;
     bool hasAdmissionMemberIndex = false;
     bool hasAdmissionXuid = false;
     bool hasAdmissionPeerSteamId = false;
@@ -62,6 +64,16 @@ bool Parser::client_settings(client::Settings& output) noexcept {
                 return false;
             }
             hasAdmissionCensus = true;
+        } else if (key == "profile_ingress") {
+            if (hasProfileIngress || !boolean(candidate.profileIngress)) {
+                return false;
+            }
+            hasProfileIngress = true;
+        } else if (key == "profile_harvest") {
+            if (hasProfileHarvest || !boolean(candidate.profileHarvest)) {
+                return false;
+            }
+            hasProfileHarvest = true;
         } else if (key == "admission_inject") {
             if (hasAdmissionInject || !boolean(candidate.admissionInject)) {
                 return false;

@@ -93,6 +93,8 @@ add_library(steam_api64 SHARED
     src/client/hooks/phase_probe/phase_probe_observer.cpp
     src/client/hooks/admission/admission_observer.cpp
     src/client/hooks/nat_probe/nat_probe_observer.cpp
+    src/client/hooks/profile_harvest/profile_harvest_observer.cpp
+    src/client/hooks/profile_ingress/profile_ingress_observer.cpp
     src/client/hooks/item_gate/item_gate_observer.cpp
     src/client/hooks/handle_message/handle_message_observer.cpp
     src/client/hooks/schema_capture/schema_capture_observer.cpp

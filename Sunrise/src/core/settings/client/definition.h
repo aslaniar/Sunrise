@@ -46,6 +46,26 @@ struct Settings {
      * geometry AND shown `admission_member_index` to be an unused record.
      */
     bool admissionInject{};
+    /**
+     * Harvests a real ~260B profile blob (marker + region A + header + tail) from the
+     * registry commit wrapper 0x1417a6040, whose arguments carry all of it at ENTRY
+     * (claims/profile-builder.md CLAIM 2/4, and see the observer header for why the
+     * other two anchors were declined). OBSERVATION ONLY - it writes nothing.
+     * FALSE by default anyway: it is a detour on an INTERNAL function, which is the
+     * mechanism that poisoned the mac across p2(102)-p2(109) when it was used to WRITE.
+     * Read-only makes that safe, but shipping it disarmed keeps the arm/disarm free.
+     */
+    bool profileHarvest{};
+    /**
+     * The RECEIVE side of the appearance question: observes 0x1417AF360, the region-A/
+     * header/tail apply helper, which the apply 0x141781800 calls ONLY when a player
+     * row's profile-present flag is set. Its firing answers "does a profile block ever
+     * reach this client, from any source"; its arguments carry the decoded bytes, which
+     * is the only grounded input for a server-side encoder (the wire->delta decoder was
+     * never located). OBSERVATION ONLY. FALSE by default, like every internal detour.
+     */
+    bool profileIngress{};
+
     /** Member-record index the injection writes. Must be unused - the census names one. */
     std::uint32_t admissionMemberIndex{};
     /** Peer xuid the injection publishes. Zero disables the injection outright. */

@@ -25,6 +25,8 @@
 #include "../hooks/gate_trace/gate_trace_observer.h"
 #include "../hooks/admission/admission_observer.h"
 #include "../hooks/nat_probe/nat_probe_observer.h"
+#include "../hooks/profile_harvest/profile_harvest_observer.h"
+#include "../hooks/profile_ingress/profile_ingress_observer.h"
 #include "../hooks/phase_probe/phase_probe_observer.h"
 #include "../hooks/item_gate/item_gate_observer.h"
 #include "../hooks/handle_message/handle_message_observer.h"
@@ -234,6 +236,21 @@ void clear_game_targets() noexcept {
     // the dial arguments (client object, payload pointer) under SEH so the endpoint
     // array's container is named. Log-only, first 8 calls, no settings switch.
     (void)hooks::nat_probe::install();
+    // (profile_harvest, FINDINGS 20.145 + claims/profile-builder.md): harvests a real
+    // ~260B profile blob (marker + region A + header + tail) from the registry commit
+    // wrapper 0x1417a6040, which carries every piece as an ENTRY argument - including
+    // the blob's own expected lookup3 hash, so the dump has an offline oracle. p2(110)
+    // showed every group_target row at pc=0 (no profile, nothing to draw) while the
+    // fireteam self-row is pc=1, so a real blob exists locally to harvest. Read-only,
+    // SEH-guarded, capped, and gated by client.profile_harvest (DEFAULT FALSE).
+    (void)hooks::profile_harvest::install();
+    // (profile_ingress, FINDINGS 20.174): the RECEIVE side. 0x1417AF360 runs only when a
+    // player row carries a profile block, so its firing answers "does one ever arrive"
+    // and its arguments carry the decoded bytes. Caller RVA separates the wire apply from
+    // the local registry commit. Read-only, SEH-guarded, capped, gated by
+    // client.profile_ingress (DEFAULT FALSE). NOTE: 0x1417AF2D0 (region B) is NOT hooked -
+    // pdata_bounds proves it is not a function start.
+    (void)hooks::profile_ingress::install();
     // The weapon/armor validation-chain observers (item_gate, FINDINGS 14.23): log-only
     // research instrumentation for the two-bugs front, which CLOSED at 15.9. Left
     // uninstalled by default (2026-08-22) - the "cool path" note above was wrong: it
