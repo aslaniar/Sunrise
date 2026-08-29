@@ -132,6 +132,31 @@ struct Settings {
      */
     bool activityMemberSetupFlags{true};
     /**
+     * Makes the slice set this host PUBLISHES follow the region the client REPORTED,
+     * instead of staying pinned to the destination's own arrival bubble (FINDINGS 20.153).
+     * True by default.
+     *
+     * MEASURED DEFECT (p2(90) boot, both machines, symmetric): every keepalive read
+     * `region=56 slice=48` for the whole run. `effective_region` already lets the reported
+     * region win for `region.index`, and activity_membership_query.h says outright that a
+     * reported region "beats the destination's own arrival slice set wherever the host must
+     * say where the player is" - but `region.arrival` keeps the arrival bubble (48), and the
+     * two consumers that name the slice set both read the arrival: the roster's spawn
+     * override (activity_roster_snapshot.cpp) and the global-activity-state body's
+     * sliceSetIndex (activity_global_state_push.cpp).
+     *
+     * CONSEQUENCE: the client precaches PUB56.56, finishes ('slice_set_loader: Successfully
+     * loaded pending slice-set 56'), and then stalls forever because the authority still
+     * says 48. A private or orbit slice-set transition self-simulates its phase
+     * (':simulator: advancing simulated phase directly to switch-now'), so PRV24/PRV48
+     * complete with no server agreement at all; a PUBLIC 'normal_z_leg' transition has no
+     * simulator arm and never gets its slice-set-switch task. Neither client ever swaps out
+     * of its private Tower.
+     *
+     * False restores the arrival-pinned behaviour without a rebuild (HARD RULES, p2(62)).
+     */
+    bool activitySliceSetFollowsRegion{true};
+    /**
      * Membership bodies this host addresses to the SHARED activity-host session the client
      * joined as its public target (L8b, FINDINGS 20.132). Zero disables the whole path.
      *

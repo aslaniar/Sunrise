@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <string_view>
 
+#include "../../../../../core/settings/settings.h"
 #include "../../../../../state/account/account_state.h"
 #include "../../../../../state/activity/defaults/activity_defaults_snapshot.h"
 #include "../../../../../state/activity/destination/activity_destination_snapshot.h"
@@ -153,6 +154,17 @@ EffectiveRegion effective_region(std::uint64_t sessionId) noexcept {
     const std::int32_t reported = state::activity::membership::reported_region(sessionId);
     region.reported = reported >= 0;
     region.index = region.reported ? reported : static_cast<std::int32_t>(region.arrival);
+    // FINDINGS 20.153: the reported region must also move the SLICE SET, not just the index.
+    // activity_membership_query.h documents the reported region as beating "the destination's
+    // own arrival slice set wherever the host must say where the player is", and this is one of
+    // the two places that says it - the roster's spawn override reads `arrival` directly. Left
+    // pinned, every keepalive publishes `region=56 slice=48` and the client's PUBLIC
+    // `normal_z_leg` transition never gets its slice-set-switch task (a private transition
+    // self-simulates that phase; a public one does not).
+    if (region.reported
+        && core::settings::get().server.gameplay.activitySliceSetFollowsRegion) {
+        region.arrival = static_cast<std::uint16_t>(reported);
+    }
     return region;
 }
 

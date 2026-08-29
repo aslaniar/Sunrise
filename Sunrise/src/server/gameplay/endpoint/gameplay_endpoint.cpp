@@ -212,12 +212,14 @@ bool initialize() noexcept {
     // evidence about whether the feature was even on.
     report(core::log::Level::info,
            "ev=gameplay stage=settings region_bound=%u join_machine_ids=%u "
-           "public_row_bodies=%u region_survives_churn=%u member_setup_flags=%u reserve=%u",
+           "public_row_bodies=%u region_survives_churn=%u member_setup_flags=%u "
+           "slice_follows_region=%u reserve=%u",
            configured.activityHostRegionBound ? 1U : 0U,
            configured.publishJoinMachineIds ? 1U : 0U,
            static_cast<unsigned>(configured.activityPublicRowMembershipBodies),
            configured.activityRegionSurvivesChurn ? 1U : 0U,
            configured.activityMemberSetupFlags ? 1U : 0U,
+           configured.activitySliceSetFollowsRegion ? 1U : 0U,
            static_cast<unsigned>(configured.serverReserveCount));
     return true;
 }

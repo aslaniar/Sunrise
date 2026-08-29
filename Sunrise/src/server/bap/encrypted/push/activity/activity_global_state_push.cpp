@@ -6,7 +6,9 @@
 #include <string_view>
 
 #include "../../../../../middleware/bap/activity_message/activity_global_state_encoder.h"
+#include "../../../../../core/settings/settings.h"
 #include "../../../../../middleware/secure_channel/runtime.h"
+#include "../../../../../state/activity/membership/activity_membership_query.h"
 #include "../../../../../state/activity/defaults/activity_defaults_snapshot.h"
 #include "../../../../../state/activity/destination/activity_destination_snapshot.h"
 #include "../../../../../state/activity/destination/activity_destination_spawn_binding.h"
@@ -39,6 +41,26 @@ void copy_name(const state::activity::destination::DestinationSelection& selecti
         state.name[index] = static_cast<char>(selection.packageName[index]);
     }
     state.nameLength = length;
+}
+
+/**
+ * Applies the reported region to a resolved arrival slice set.
+ * FINDINGS 20.153: this body's sliceSetIndex is the second of the two places the host says
+ * where the player is, and the arrival bubble it resolved from is a spawn point, not a
+ * position. Once the client reports a region, the arrival is stale by definition - the p2(90)
+ * boot published slice 48 for the whole run while both clients sat in region 56, precached,
+ * and waited for an authority that never agreed.
+ * @param sessionId Session whose reported region is consulted.
+ * @param arrival Slice set the destination's arrival bubble resolved to.
+ * @return The reported region when one has arrived and the switch is on, else the arrival.
+ */
+[[nodiscard]] std::uint16_t published_slice_set(std::uint64_t sessionId,
+                                                std::uint16_t arrival) noexcept {
+    if (!core::settings::get().server.gameplay.activitySliceSetFollowsRegion) {
+        return arrival;
+    }
+    const std::int32_t reported = state::activity::membership::reported_region(sessionId);
+    return reported >= 0 ? static_cast<std::uint16_t>(reported) : arrival;
 }
 
 } // namespace
@@ -79,8 +101,8 @@ resolve_state(std::uint64_t sessionId,
         std::copy(
             layout.bubbleStates.begin(), layout.bubbleStates.end(), output.bubbleStates.begin());
         output.hasSliceSet = true;
-        output.sliceSetIndex =
-            arrival_slice_set(defaults.defaultDestination, selection, name, layout);
+        output.sliceSetIndex = published_slice_set(
+            sessionId, arrival_slice_set(defaults.defaultDestination, selection, name, layout));
         return true;
     }
     output.bubbleCount = fallback.bubbleCount;
@@ -89,8 +111,9 @@ resolve_state(std::uint64_t sessionId,
         output.bubbleStates[index] = stateful ? kBubbleEnabledByte : message::kBubbleStateNone;
     }
     output.hasSliceSet = true;
-    // No layout means no bubble array to derive an arrival from, so the authored index stands.
-    output.sliceSetIndex = fallback.initialSliceSet;
+    // No layout means no bubble array to derive an arrival from, so the authored index stands -
+    // unless the client has told us where it actually is (FINDINGS 20.153).
+    output.sliceSetIndex = published_slice_set(sessionId, fallback.initialSliceSet);
     return true;
 }
 
