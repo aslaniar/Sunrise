@@ -53,6 +53,8 @@ constexpr std::size_t kLineCapacity = 384;
 constexpr std::size_t kConnLabelCapacity = 96;
 /** The activity-message envelope's discriminator byte value (handbook p46). */
 constexpr std::uint8_t kEnvelopeDiscriminator = 1;
+/** The activity session id follows the discriminator in the svc-9 DOWN envelope. */
+constexpr std::size_t kAsidOffset = 1;
 /** Envelope fields before the message type: handle + discriminator (p46). */
 constexpr std::size_t kTypeOffset = 9;
 /** The BAP notification service that carries activity-message envelopes. */
@@ -134,16 +136,24 @@ __declspec(noinline) std::uint64_t __fastcall observer(std::uint32_t session,
     // The activity-message envelope decodes only on the svc-9 notification
     // (handle + discriminator + type, handbook p46); queuez (123) frames use a
     // different layout and stay named at the service level only.
+    // LAYOUT (verified two ways 2026-08-28): the svc-9 DOWN envelope is
+    // [disc=1][u64be asid][u32be type][u32be len][payload] - discriminator at
+    // byte 0, type at byte 9 (NotificationLayout + the decode lane's frame map;
+    // the old payload[8] test read the svc-8 REQUEST layout's offset, where an
+    // 8-byte account handle precedes the discriminator, so type= never fired).
     if (service == kActivityMessageService && payload != nullptr && payloadLen >= kTypeOffset + 4
-        && payload[8] == kEnvelopeDiscriminator) {
+        && payload[0] == kEnvelopeDiscriminator) {
         const std::uint32_t type = read_u32_be(payload + kTypeOffset);
         const char* kind = type <= 0xFFU ? protocol::kind_name(static_cast<std::uint8_t>(type))
                                          : "";
         const int extended = std::snprintf(line.data() + used,
                                            line.size() - used,
-                                           " type=%u msg=%s handle=0x%016llX",
+                                           " type=%u msg=%s asid=0x%016llX "
+                                           "handle=0x%016llX",
                                            type,
                                            kind != nullptr && kind[0] != '\0' ? kind : "unknown",
+                                           static_cast<unsigned long long>(
+                                               read_u64_be(payload + kAsidOffset)),
                                            static_cast<unsigned long long>(
                                                read_u64_be(payload)));
         if (extended > 0) {
