@@ -2,6 +2,8 @@
 
 #include <Windows.h>
 
+#include <intrin.h>
+
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -17,6 +19,19 @@ namespace {
 
 /** Image RVA of the peer-adoption function; RCX = netmgr (`lea r15,[rcx+0x860]`). */
 constexpr std::uintptr_t kAdoptionRva = 0x1769A50;
+
+/**
+ * Image RVA of the PEER-SLOT CREATOR (FINDINGS 20.159). One function serving what two
+ * lanes named separately: it derives the 0xb8-stride slot array, a 0x38-stride array and
+ * the peer states (+0x1758, stride 0x120) from a single base, and writes the slot's
+ * machine id at +0xc8. Five callers - and TWO of them sit inside fn 0x141781800, the
+ * message-30 membership apply, i.e. the handler for the bodies THIS SERVER PUBLISHES,
+ * both passing kind 0xa. Which caller actually fires decides the whole road: if the apply
+ * reaches it for a peer, the fix is server-side in a body we already send; if only the
+ * join gate ever does, the DLL injection is the road and must create the slot itself.
+ * The caller RVA is therefore the point of this observer, not the arguments.
+ */
+constexpr std::uintptr_t kSlotCreateRva = 0x17692E0;
 
 /** Every array below is indexed off this one base inside netmgr. */
 constexpr std::uintptr_t kArenaOffset = 0x860;
@@ -43,6 +58,91 @@ constexpr std::size_t kMemberScan = 8;
 /** Hard line cap - this sits on a session tick. */
 constexpr unsigned kLineCap = 48;
 constexpr std::size_t kLineCapacity = 256;
+
+/**
+ * Verified ABI of the slot creator, read off its two call sites in the message-30 apply:
+ * RCX = the arena object, EDX = slot index, R8D = kind (0xa at both apply sites), R9D = a
+ * flag, then FOUR stack arguments. The observer mirrors all eight so every one passes
+ * through untouched.
+ */
+using SlotCreate = std::uint64_t(__fastcall*)(void*,
+                                              std::uint32_t,
+                                              std::uint32_t,
+                                              std::uint32_t,
+                                              void*,
+                                              void*,
+                                              void*,
+                                              void*) noexcept;
+
+hooking::detour::Handle g_slotCreate{};
+std::atomic<unsigned> g_slotLines{};
+
+/** @return Machine id currently in a slot, or 0 when unreadable. */
+[[nodiscard]] std::uint64_t slot_machine(std::uint8_t* arena, std::uint32_t index) noexcept {
+    if (arena == nullptr) {
+        return 0;
+    }
+    __try {
+        return *reinterpret_cast<const std::uint64_t*>(arena + index * kPeerSlotStride
+                                                       + kPeerMachineOffset);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
+/**
+ * Observes one slot creation. Logs the CALLER RVA (which names the path), the arguments,
+ * and the slot's machine id before and after - so a create, a no-op and an overwrite are
+ * all distinguishable. Slot creation is not a per-tick event, so every call is logged up
+ * to the cap rather than only changes.
+ */
+std::uint64_t __fastcall observe_slot_create(void* arena,
+                                             std::uint32_t index,
+                                             std::uint32_t kind,
+                                             std::uint32_t flag,
+                                             void* a5,
+                                             void* a6,
+                                             void* a7,
+                                             void* a8) noexcept {
+    const void* const caller = _ReturnAddress();
+    auto* const bytes = static_cast<std::uint8_t*>(arena);
+    const std::uint64_t before = slot_machine(bytes, index);
+    const auto original = reinterpret_cast<SlotCreate>(g_slotCreate.original);
+    const std::uint64_t result = original(arena, index, kind, flag, a5, a6, a7, a8);
+    if (g_slotLines.load(std::memory_order_relaxed) >= kLineCap) {
+        return result;
+    }
+    g_slotLines.fetch_add(1, std::memory_order_relaxed);
+    const std::uint64_t after = slot_machine(bytes, index);
+    std::uintptr_t callerRva = 0;
+    HMODULE module{};
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                               | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           static_cast<LPCSTR>(caller),
+                           &module)
+        != 0) {
+        callerRva = reinterpret_cast<std::uintptr_t>(caller)
+                    - reinterpret_cast<std::uintptr_t>(module);
+    }
+    std::array<char, kLineCapacity> text{};
+    const int written = std::snprintf(text.data(),
+                                      text.size(),
+                                      "ev=admission stage=slot_create caller=0x%llX idx=%u "
+                                      "kind=%u flag=%u machine_before=0x%llX "
+                                      "machine_after=0x%llX",
+                                      static_cast<unsigned long long>(callerRva),
+                                      index,
+                                      kind,
+                                      flag,
+                                      static_cast<unsigned long long>(before),
+                                      static_cast<unsigned long long>(after));
+    if (written > 0) {
+        core::log::write(core::log::Channel::client,
+                         core::log::Level::info,
+                         {text.data(), static_cast<std::size_t>(written)});
+    }
+    return result;
+}
 
 /** Verified ABI: RCX = netmgr. Remaining integer registers pass through untouched. */
 using Adoption = std::uint64_t(__fastcall*)(void*, void*, void*, void*) noexcept;
@@ -253,18 +353,27 @@ bool install() noexcept {
         || !diagnostics::contains(range, baseValue + kAdoptionRva)) {
         return fail_install("range");
     }
+    if (!diagnostics::contains(range, baseValue + kSlotCreateRva)) {
+        return fail_install("range_slot");
+    }
     const hooking::detour::Spec spec{reinterpret_cast<void*>(baseValue + kAdoptionRva),
                                      reinterpret_cast<void*>(&observe)};
     if (!hooking::detour::install(spec, g_handle)) {
         return fail_install("attach");
     }
+    const hooking::detour::Spec slotSpec{reinterpret_cast<void*>(baseValue + kSlotCreateRva),
+                                         reinterpret_cast<void*>(&observe_slot_create)};
+    if (!hooking::detour::install(slotSpec, g_slotCreate)) {
+        return fail_install("attach_slot");
+    }
     const auto& client = core::settings::get().client;
     std::array<char, 160> text{};
     const int written = std::snprintf(text.data(),
                                       text.size(),
-                                      "ev=admission stage=install result=ok rva=0x%llX "
+                                      "ev=admission stage=install result=ok rva=0x%llX slot=0x%llX "
                                       "census=%u inject=%u idx=%d xuid=0x%llX",
                                       static_cast<unsigned long long>(kAdoptionRva),
+                                      static_cast<unsigned long long>(kSlotCreateRva),
                                       client.admissionCensus ? 1U : 0U,
                                       client.admissionInject ? 1U : 0U,
                                       static_cast<int>(client.admissionMemberIndex),
@@ -278,11 +387,18 @@ bool install() noexcept {
 }
 
 bool uninstall() noexcept {
-    return g_handle.attached ? hooking::detour::uninstall(g_handle) : true;
+    bool ok = true;
+    if (g_slotCreate.attached) {
+        ok = hooking::detour::uninstall(g_slotCreate) && ok;
+    }
+    if (g_handle.attached) {
+        ok = hooking::detour::uninstall(g_handle) && ok;
+    }
+    return ok;
 }
 
 bool is_installed() noexcept {
-    return g_handle.attached;
+    return g_handle.attached || g_slotCreate.attached;
 }
 
 } // namespace sunrise::client::hooks::admission
