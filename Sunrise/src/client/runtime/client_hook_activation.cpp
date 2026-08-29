@@ -24,6 +24,7 @@
 #include "../hooks/ability_gate/ability_gate_observer.h"
 #include "../hooks/gate_trace/gate_trace_observer.h"
 #include "../hooks/admission/admission_observer.h"
+#include "../hooks/nat_probe/nat_probe_observer.h"
 #include "../hooks/phase_probe/phase_probe_observer.h"
 #include "../hooks/item_gate/item_gate_observer.h"
 #include "../hooks/handle_message/handle_message_observer.h"
@@ -227,6 +228,12 @@ void clear_game_targets() noexcept {
     // OFF, gated by client.admission_inject. Attaching here is safe either way - with
     // inject off this is a read-only walk on a tick, rate-limited like the phase probe.
     (void)hooks::admission::install();
+    // (nat_probe, FINDINGS 20.168): the bdNAT dial-site argument dump. The wedge at
+    // setup:orbit is a NAT-traversal retry loop dialing identity-string bytes as
+    // sockaddr endpoints; this pass-through on the bdNAT logging shim (0x9E3230) dumps
+    // the dial arguments (client object, payload pointer) under SEH so the endpoint
+    // array's container is named. Log-only, first 8 calls, no settings switch.
+    (void)hooks::nat_probe::install();
     // The weapon/armor validation-chain observers (item_gate, FINDINGS 14.23): log-only
     // research instrumentation for the two-bugs front, which CLOSED at 15.9. Left
     // uninstalled by default (2026-08-22) - the "cool path" note above was wrong: it
