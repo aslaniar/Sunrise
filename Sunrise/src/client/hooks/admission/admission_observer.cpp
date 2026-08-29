@@ -50,12 +50,19 @@ constexpr std::uintptr_t kMemberStride = 0x1a8;
 constexpr std::uintptr_t kMemberAddressOffset = 0x3c00;
 constexpr std::uintptr_t kMemberFlagsOffset = 0x3c30;
 constexpr std::uintptr_t kMemberMembershipOffset = 0x3b78;
-/** ADMIT sets flags bits 0,2,3,4 (0x1D); bit 4 is the one the adoption path reads. */
-constexpr std::uint16_t kAdmitFlagBits = 0x1D;
+/**
+ * Flags a LIVE member record carries, measured in p2(97): 0x3D (bits 0,2,3,4,5). ADMIT's
+ * recorded stores only account for 0x1D - bit 5 is set elsewhere on the real path
+ * (20.158). We write what a real record actually holds, not what the disassembly of one
+ * writer explains. Bit 4 is the one the adoption path reads as flagsB.
+ */
+constexpr std::uint16_t kAdmitFlagBits = 0x3D;
 /** Slot the injection targets: measured free on both machines (p2(97)/p2(98)). */
 constexpr std::uint32_t kInjectSlot = 1;
 /** The kind the one CREATING call carries. kind=10 creates nothing (20.160). */
 constexpr std::uint32_t kCreateKind = 5;
+/** Member record for the injected slot. Index 0 belongs to slot 0 (self), so 1 is free. */
+constexpr std::int32_t kInjectMemberIndex = 1;
 /** Capacities of the captured a5 string and a6 block. */
 constexpr std::size_t kIdentityCapacity = 0x50;
 constexpr std::size_t kBlockCapacity = 0x40;
@@ -352,6 +359,11 @@ struct PeerView {
     return view;
 }
 
+/** @return True when the slot now holds a machine id, i.e. the create really landed. */
+[[nodiscard]] bool after_created(std::uint8_t* arena, std::uint32_t slot) noexcept {
+    return slot_machine(arena, slot) != 0;
+}
+
 /** Writes one census line. */
 void report_peer(std::size_t index, const PeerView& view) noexcept {
     std::array<char, kLineCapacity> text{};
@@ -475,14 +487,27 @@ std::uint64_t __fastcall observe(void* netmgr, void* second, void* third, void* 
                                       reinterpret_cast<void*>(client.admissionA7),
                                       reinterpret_cast<void*>(GetTickCount64()));
                 }
+                // SECOND HALF (FINDINGS 20.163). A slot with no member record is a peer
+                // the adoption path can see but has nothing to say about - p2(101)
+                // measured exactly that: slot 1 created, members=0, roster unchanged.
+                // These are the only three fields that path reads (20.157), plus the
+                // slot's member list that points at them.
+                bool member = false;
+                if (after_created(arena, kInjectSlot) && client.admissionXuid != 0) {
+                    member = inject_member(
+                        arena, kInjectSlot, kInjectMemberIndex, client.admissionXuid);
+                }
                 const PeerView after = read_peer(arena, kInjectSlot);
                 std::array<char, kLineCapacity> text{};
                 const int written =
                     std::snprintf(text.data(),
                                   text.size(),
-                                  "ev=admission stage=inject result=%s slot=%u ret=%llu "
-                                  "machine_now=0x%llX id=%.44s",
+                                  "ev=admission stage=inject result=%s member=%u "
+                                  "members_now=%d slot=%u ret=%llu "
+                                  "machine_now=0x%llX id=%.36s",
                                   built ? "called" : "id_build_failed",
+                                  member ? 1U : 0U,
+                                  after.memberCount,
                                   static_cast<unsigned>(kInjectSlot),
                                   static_cast<unsigned long long>(created),
                                   static_cast<unsigned long long>(after.machineId),
