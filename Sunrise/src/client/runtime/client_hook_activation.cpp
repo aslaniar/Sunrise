@@ -23,6 +23,7 @@
 #include "../hooks/join_roster/join_roster_observer.h"
 #include "../hooks/ability_gate/ability_gate_observer.h"
 #include "../hooks/gate_trace/gate_trace_observer.h"
+#include "../hooks/admission/admission_observer.h"
 #include "../hooks/phase_probe/phase_probe_observer.h"
 #include "../hooks/item_gate/item_gate_observer.h"
 #include "../hooks/handle_message/handle_message_observer.h"
@@ -221,6 +222,11 @@ void clear_game_targets() noexcept {
     // logs only when the answer tuple CHANGES and stops at 64 lines, so the per-frame
     // cost is one compare. Remove it once the phase question is closed.
     (void)hooks::phase_probe::install();
+    // (admission, FINDINGS 20.157): the peer-adoption observer. Its CENSUS half is
+    // observation and defaults on; its INJECT half writes live netmgr state and defaults
+    // OFF, gated by client.admission_inject. Attaching here is safe either way - with
+    // inject off this is a read-only walk on a tick, rate-limited like the phase probe.
+    (void)hooks::admission::install();
     // The weapon/armor validation-chain observers (item_gate, FINDINGS 14.23): log-only
     // research instrumentation for the two-bugs front, which CLOSED at 15.9. Left
     // uninstalled by default (2026-08-22) - the "cool path" note above was wrong: it

@@ -12,6 +12,10 @@ bool Parser::client_settings(client::Settings& output) noexcept {
     bool hasExternalServer = false;
     bool hasFadeRelease = false;
     bool hasJoinRosterObserver = false;
+    bool hasAdmissionCensus = false;
+    bool hasAdmissionInject = false;
+    bool hasAdmissionMemberIndex = false;
+    bool hasAdmissionXuid = false;
     bool hasForceJoinRequestReady = false;
     bool hasRegionPrivate = false;
     bool hasRegionPublic = false;
@@ -50,6 +54,29 @@ bool Parser::client_settings(client::Settings& output) noexcept {
             if (hasJoinRosterObserver || !boolean(candidate.joinRosterObserver)) {
                 return false;
             }
+        } else if (key == "admission_census") {
+            if (hasAdmissionCensus || !boolean(candidate.admissionCensus)) {
+                return false;
+            }
+            hasAdmissionCensus = true;
+        } else if (key == "admission_inject") {
+            if (hasAdmissionInject || !boolean(candidate.admissionInject)) {
+                return false;
+            }
+            hasAdmissionInject = true;
+        } else if (key == "admission_member_index") {
+            std::uint64_t value = 0;
+            if (hasAdmissionMemberIndex || !unsigned_integer(value)
+                || value > (std::numeric_limits<std::uint32_t>::max)()) {
+                return false;
+            }
+            candidate.admissionMemberIndex = static_cast<std::uint32_t>(value);
+            hasAdmissionMemberIndex = true;
+        } else if (key == "admission_xuid") {
+            if (hasAdmissionXuid || !unsigned_integer(candidate.admissionXuid)) {
+                return false;
+            }
+            hasAdmissionXuid = true;
             hasJoinRosterObserver = true;
         } else if (key == "force_join_request_ready") {
             if (hasForceJoinRequestReady || !boolean(candidate.forceJoinRequestReady)) {

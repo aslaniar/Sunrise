@@ -32,6 +32,25 @@ struct Settings {
      */
     bool joinRosterObserver{true};
     /**
+     * Logs the peer slots, states, machine ids and member lists the peer-adoption path
+     * walks (FINDINGS 20.157). Observation only. True by default: it is the runtime
+     * verification of a geometry that is currently a STATIC reading by the roster-caller
+     * lane, whose reserve->admit trigger chain that lane itself labels INFERRED.
+     */
+    bool admissionCensus{true};
+    /**
+     * Injects the member record the peer-adoption path needs - the three fields ADMIT
+     * (0x141777EC0) writes and the adoption arm reads. FALSE by default and deliberately
+     * so: this writes into live netmgr state, and p2(62) changed six bindings, froze, and
+     * its cause is now unknowable. Flip only after a census boot has confirmed the
+     * geometry AND shown `admission_member_index` to be an unused record.
+     */
+    bool admissionInject{};
+    /** Member-record index the injection writes. Must be unused - the census names one. */
+    std::uint32_t admissionMemberIndex{};
+    /** Peer xuid the injection publishes. Zero disables the injection outright. */
+    std::uint64_t admissionXuid{};
+    /**
      * Forces the activity session's status 5-to-6 ready check.
      * Two of its five terms are client flags no host message reaches, so the host cannot open it.
      */
