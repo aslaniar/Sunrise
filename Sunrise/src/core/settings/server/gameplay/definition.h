@@ -99,6 +99,22 @@ struct Settings {
      */
     bool activityHostRegionBound{false};
     /**
+     * Seeds a freshly committed activity-session record with the account's last
+     * client-reported region (FINDINGS 20.147). True by default.
+     *
+     * MEASURED DEFECT: a client's reported region lives on its session record, and a
+     * session re-creation (the client's re-target after a withdrawn membership) starts a
+     * fresh record with no report, so `effective_region` falls back to the arrival slice
+     * set forever. The client reports its desired public region once and never repeats it
+     * after a re-target, so the churned session can never reach the public region: no
+     * citizen join, no second BAP link, and the Tower load hangs at
+     * `Waiting for managed-session-start for all peers`. The player did not move - only
+     * the session id did - so the fresh record inherits the account's last reported
+     * region. False restores the per-session behaviour without a rebuild (HARD RULES,
+     * p2(62)).
+     */
+    bool activityRegionSurvivesChurn{true};
+    /**
      * Membership bodies this host addresses to the SHARED activity-host session the client
      * joined as its public target (L8b, FINDINGS 20.132). Zero disables the whole path.
      *
