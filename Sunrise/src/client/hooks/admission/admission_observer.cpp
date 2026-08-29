@@ -294,6 +294,144 @@ std::uint64_t __fastcall observe_slot_create(void* arena,
 /** Verified ABI: RCX = netmgr. Remaining integer registers pass through untouched. */
 using Adoption = std::uint64_t(__fastcall*)(void*, void*, void*, void*) noexcept;
 
+/**
+ * THE RECORD-READER CENSUS (FINDINGS 20.167's D3 branch). The adoption path is the only
+ * reader of the forged member record that announces itself in logs. The static field
+ * census (field_xref on +0x3b78/+0x3c00/+0x3c30, pdata_bounds-resolved) names four MORE
+ * functions whose code touches the record fields; whether any of them RUNS for the
+ * forged record - and which read is the last thing before setup:orbit wedges - is what
+ * this instrument answers. Log-only entry probes: every probe classifies its pointer
+ * arguments against the member-record spans (arena + i*0x1a8 + 0x3b78 .. +0xF8) and logs
+ * hits with all four register args; the first two misses are logged as the LIVENESS
+ * proof that the probe ran at all (L13: an instrument that can only fire on the
+ * interesting case turns silence into an unreadable result).
+ */
+constexpr unsigned kReaderCount = 4;
+constexpr std::uintptr_t kReaderRvas[kReaderCount] = {
+    0x1777EC0, // ADMIT itself: four bit tests on the flags word (+0x3c30)
+    0x1771060, // 353B predicate: membership byte (+0x3b78) == 0 gate
+    0x178FE00, // 2409B: reads the flags word (+0x3c30)
+    0x17A0B60, // 3927B: reads BOTH the flags word and the membership byte
+};
+/** Pass-through shape for ABI-unknown targets: 4 register args + 16 stack slots,
+ *  forwarded bit-exact (LESSONS 18 corollary 2). fn 0x178FE00 reads stack slots up to
+ *  #13 (rbp+0x1ba8 == rsp_entry+0x70, verified in its disassembly before attach), so the
+ *  12-slot depth that served reserve/admit is NOT deep enough here; 16 covers it and is
+ *  harmless for the shallower ABIs (a callee ignores slots beyond its own). */
+constexpr unsigned kReaderStackSlots = 16;
+using ReaderFn = std::uint64_t(__fastcall*)(void*, void*, void*, void*,
+                                            void*, void*, void*, void*, void*, void*,
+                                            void*, void*, void*, void*, void*, void*,
+                                            void*, void*, void*, void*) noexcept;
+
+struct ReaderProbe {
+    hooking::detour::Handle handle{};
+    std::atomic<unsigned> hits{};
+    std::atomic<unsigned> misses{};
+    std::atomic<unsigned> loggedHits{};
+};
+ReaderProbe g_readers[kReaderCount]{};
+/** Cap per function - these may be warm paths; hits past the cap still count. */
+constexpr unsigned kReaderLogCap = 48;
+/** record_index_of sentinel: no pointer argument landed in any member-record span. */
+constexpr std::uintptr_t kNoRecord = 0xFFu;
+/** Set by the adoption observer on every tick; probes classify against it. */
+std::atomic<const std::uint8_t*> g_arena{};
+
+/** @return Index of the member record whose span contains ptr, or kNoRecord. */
+[[nodiscard]] std::uintptr_t record_index_of(const void* ptr) noexcept {
+    const std::uint8_t* const arena = g_arena.load(std::memory_order_relaxed);
+    if (arena == nullptr || ptr == nullptr) {
+        return kNoRecord;
+    }
+    const auto off = static_cast<const std::uint8_t*>(ptr) - arena;
+    if (off < 0) {
+        return kNoRecord;
+    }
+    for (std::uintptr_t index = 0; index < kMemberScan; ++index) {
+        const std::uintptr_t low =
+            index * kMemberStride + kRecordCopyStart;
+        if (off >= low && off < low + static_cast<std::uintptr_t>(kRecordCopyBytes)) {
+            return index;
+        }
+    }
+    return kNoRecord;
+}
+
+/** One reader line. Values only - no argument is ever dereferenced. */
+void reader_log(unsigned id, std::uintptr_t rec, void* rcx, void* rdx, void* r8, void* r9,
+                const char* note) noexcept {
+    std::array<char, kLineCapacity> text{};
+    const int written = std::snprintf(text.data(),
+                                      text.size(),
+                                      "ev=admission stage=reader fn=0x%llX rec=%llu "
+                                      "rcx=0x%llX rdx=0x%llX r8=0x%llX r9=0x%llX%s",
+                                      static_cast<unsigned long long>(kReaderRvas[id]),
+                                      static_cast<unsigned long long>(rec),
+                                      static_cast<unsigned long long>(
+                                          reinterpret_cast<std::uintptr_t>(rcx)),
+                                      static_cast<unsigned long long>(
+                                          reinterpret_cast<std::uintptr_t>(rdx)),
+                                      static_cast<unsigned long long>(
+                                          reinterpret_cast<std::uintptr_t>(r8)),
+                                      static_cast<unsigned long long>(
+                                          reinterpret_cast<std::uintptr_t>(r9)),
+                                      note);
+    if (written > 0) {
+        core::log::write(core::log::Channel::client,
+                         core::log::Level::info,
+                         {text.data(), static_cast<std::size_t>(written)});
+    }
+}
+
+/** Classifies the four register args; @return the first record span hit, kNoRecord else. */
+[[nodiscard]] std::uintptr_t reader_classify(void* rcx, void* rdx, void* r8, void* r9) noexcept {
+    for (const void* const candidate : {rcx, rdx, r8, r9}) {
+        const std::uintptr_t rec = record_index_of(candidate);
+        if (rec != kNoRecord) {
+            return rec;
+        }
+    }
+    return kNoRecord;
+}
+
+/**
+ * Defines one pass-through probe. The 16 stack slots exist ONLY so the forward is
+ * bit-exact for deep ABIs (see kReaderStackSlots); none are dereferenced here.
+ */
+#define SUNRISE_READER_PROBE(name, id)                                          \
+    std::uint64_t __fastcall name(void* rcx, void* rdx, void* r8, void* r9,     \
+                                  void* s0, void* s1, void* s2, void* s3,       \
+                                  void* s4, void* s5, void* s6, void* s7,       \
+                                  void* s8, void* s9, void* s10, void* s11,     \
+                                  void* s12, void* s13, void* s14, void* s15)   \
+        noexcept                                                                \
+    {                                                                           \
+        const std::uintptr_t rec = reader_classify(rcx, rdx, r8, r9);           \
+        ReaderProbe& probe = g_readers[id];                                     \
+        if (rec != kNoRecord) {                                                 \
+            probe.hits.fetch_add(1, std::memory_order_relaxed);                 \
+            if (probe.loggedHits.fetch_add(1, std::memory_order_relaxed)        \
+                < kReaderLogCap) {                                              \
+                reader_log(id, rec, rcx, rdx, r8, r9, "");                      \
+            }                                                                   \
+        } else {                                                                \
+            if (probe.misses.fetch_add(1, std::memory_order_relaxed) < 2) {     \
+                reader_log(id, rec, rcx, rdx, r8, r9, " (miss sample)");        \
+            }                                                                   \
+        }                                                                       \
+        const auto original = reinterpret_cast<ReaderFn>(probe.handle.original); \
+        return original(rcx, rdx, r8, r9, s0, s1, s2, s3, s4, s5, s6, s7, s8,   \
+                        s9, s10, s11, s12, s13, s14, s15);                      \
+    }
+
+SUNRISE_READER_PROBE(reader_admit, 0)
+SUNRISE_READER_PROBE(reader_predicate, 1)
+SUNRISE_READER_PROBE(reader_flags_word, 2)
+SUNRISE_READER_PROBE(reader_both_fields, 3)
+
+#undef SUNRISE_READER_PROBE
+
 hooking::detour::Handle g_handle{};
 std::atomic<std::uint64_t> g_lastKey{~0ULL};
 std::atomic<unsigned> g_lines{};
@@ -501,6 +639,9 @@ void report_peer(std::size_t index, const PeerView& view) noexcept {
 /** The observer. Censuses at entry, optionally injects, then runs the original. */
 std::uint64_t __fastcall observe(void* netmgr, void* second, void* third, void* fourth) noexcept {
     std::uint8_t* const arena = arena_of(netmgr);
+    if (arena != nullptr) {
+        g_arena.store(arena, std::memory_order_relaxed);
+    }
     const auto& client = core::settings::get().client;
     if (arena != nullptr && g_lines.load(std::memory_order_relaxed) < kLineCap) {
         std::array<PeerView, kPeerScan> views{};
@@ -566,20 +707,24 @@ std::uint64_t __fastcall observe(void* netmgr, void* second, void* third, void* 
                         arena, kInjectSlot, kInjectMemberIndex, client.admissionXuid);
                 }
                 const PeerView after = read_peer(arena, kInjectSlot);
+                const std::uint8_t* const rec1 =
+                    arena + static_cast<std::uintptr_t>(kInjectMemberIndex) * kMemberStride;
                 std::array<char, kLineCapacity> text{};
                 const int written =
                     std::snprintf(text.data(),
                                   text.size(),
                                   "ev=admission stage=inject result=%s member=%u "
                                   "members_now=%d slot=%u ret=%llu "
-                                  "machine_now=0x%llX id=%.36s",
+                                  "machine_now=0x%llX id=%.36s rec1=0x%llX",
                                   built ? "called" : "id_build_failed",
                                   member ? 1U : 0U,
                                   after.memberCount,
                                   static_cast<unsigned>(kInjectSlot),
                                   static_cast<unsigned long long>(created),
                                   static_cast<unsigned long long>(after.machineId),
-                                  identity.data());
+                                  identity.data(),
+                                  static_cast<unsigned long long>(
+                                      reinterpret_cast<std::uintptr_t>(rec1)));
                 if (written > 0) {
                     core::log::write(core::log::Channel::client,
                                      core::log::Level::info,
@@ -633,6 +778,22 @@ bool install() noexcept {
     if (!hooking::detour::install(slotSpec, g_slotCreate)) {
         return fail_install("attach_slot");
     }
+    // THE RECORD-READER CENSUS (20.167's D3 branch). Static candidates verified before
+    // attach: none reads its caller's frame beyond the arg area, and the deepest ABI
+    // (fn 0x178FE00) consumes 13 stack slots, inside the 16 we forward bit-exact.
+    constexpr ReaderFn kReaderDetours[kReaderCount] = {
+        &reader_admit, &reader_predicate, &reader_flags_word, &reader_both_fields};
+    for (unsigned id = 0; id < kReaderCount; ++id) {
+        if (!diagnostics::contains(range, baseValue + kReaderRvas[id])) {
+            return fail_install("range_reader");
+        }
+        const hooking::detour::Spec readerSpec{
+            reinterpret_cast<void*>(baseValue + kReaderRvas[id]),
+            reinterpret_cast<void*>(kReaderDetours[id])};
+        if (!hooking::detour::install(readerSpec, g_readers[id].handle)) {
+            return fail_install("attach_reader");
+        }
+    }
     const auto& client = core::settings::get().client;
     std::array<char, 160> text{};
     const int written = std::snprintf(text.data(),
@@ -655,6 +816,11 @@ bool install() noexcept {
 
 bool uninstall() noexcept {
     bool ok = true;
+    for (unsigned id = 0; id < kReaderCount; ++id) {
+        if (g_readers[id].handle.attached) {
+            ok = hooking::detour::uninstall(g_readers[id].handle) && ok;
+        }
+    }
     if (g_slotCreate.attached) {
         ok = hooking::detour::uninstall(g_slotCreate) && ok;
     }
