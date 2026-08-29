@@ -63,6 +63,21 @@ constexpr std::uint32_t kInjectSlot = 1;
 constexpr std::uint32_t kCreateKind = 5;
 /** Member record for the injected slot. Index 0 belongs to slot 0 (self), so 1 is free. */
 constexpr std::int32_t kInjectMemberIndex = 1;
+/**
+ * Record index whose live field group the injection COPIES. Index 0 is self's, and it is
+ * present and complete on every boot on record (p2(97)/p2(101) censuses).
+ */
+constexpr std::int32_t kTemplateMemberIndex = 0;
+/**
+ * Span copied from the template record, covering every field either writer touches:
+ * the membership byte (+0x3b78), the 48-byte address block ADMIT writes with three
+ * movups (+0x3c00/+0x3c10/+0x3c20), the flags word (+0x3c30), +0x3c32 and +0x3c68.
+ * p2(102) wrote only the xuid out of this span and the client froze at setup:orbit -
+ * a record flagged PRESENT is visible to every consumer, not only the adoption path we
+ * mapped, so a partial record is worse than none (20.164).
+ */
+constexpr std::uintptr_t kRecordCopyStart = 0x3b78;
+constexpr std::size_t kRecordCopyBytes = 0xF8;
 /** Capacities of the captured a5 string and a6 block. */
 constexpr std::size_t kIdentityCapacity = 0x50;
 constexpr std::size_t kBlockCapacity = 0x40;
@@ -430,6 +445,59 @@ void report_peer(std::size_t index, const PeerView& view) noexcept {
     return true;
 }
 
+/**
+ * Builds a peer's member record by COPYING a live one and substituting the identity.
+ *
+ * p2(102) proved the mechanism works - the roster named the peer - and proved that
+ * writing only the fields the adoption path reads is not enough: the record is flagged
+ * present, every consumer can see it, and the unwritten bytes froze the client at
+ * setup:orbit (20.164). Replay-with-substitution has now worked twice (the slot's a5/a6,
+ * and the slot itself) where partial synthesis has failed twice, so this copies a whole
+ * live field group and changes one qword.
+ *
+ * KNOWN APPROXIMATION: the copied address block is SELF's, so the peer's record carries
+ * self's address bytes. That is structurally valid where zeros were not, but it is not
+ * the peer's real address, and any consumer that routes on those bytes will route wrongly.
+ * If the freeze survives this, that is the first thing to suspect.
+ *
+ * @param arena netmgr's array arena.
+ * @param slot Peer slot to attach the record to.
+ * @param memberIndex Record to build. Must be unused.
+ * @param xuid Identity to substitute into the address-block head.
+ * @return True when the template was live, the target was free, and every write landed.
+ */
+[[nodiscard]] bool inject_member_full(std::uint8_t* arena,
+                                      std::uint32_t slot,
+                                      std::int32_t memberIndex,
+                                      std::uint64_t xuid) noexcept {
+    __try {
+        const std::uint8_t* const source =
+            arena + static_cast<std::uintptr_t>(kTemplateMemberIndex) * kMemberStride;
+        std::uint8_t* const target =
+            arena + static_cast<std::uintptr_t>(memberIndex) * kMemberStride;
+        // The template must be a live record, or we would copy zeros with extra steps.
+        if (*reinterpret_cast<const std::uint64_t*>(source + kMemberAddressOffset) == 0) {
+            return false;
+        }
+        // The target must be untouched, or the game owns it (the p2(62) rule).
+        if (*reinterpret_cast<const std::uint64_t*>(target + kMemberAddressOffset) != 0
+            || *reinterpret_cast<const std::uint16_t*>(target + kMemberFlagsOffset) != 0) {
+            return false;
+        }
+        for (std::size_t i = 0; i < kRecordCopyBytes; ++i) {
+            target[kRecordCopyStart + i] = source[kRecordCopyStart + i];
+        }
+        *reinterpret_cast<std::uint64_t*>(target + kMemberAddressOffset) = xuid;
+
+        std::uint8_t* const peerSlot = arena + slot * kPeerSlotStride;
+        *reinterpret_cast<std::int32_t*>(peerSlot + kPeerMemberListOffset) = memberIndex;
+        *reinterpret_cast<std::int32_t*>(peerSlot + kPeerMemberCountOffset) = 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    return true;
+}
+
 /** The observer. Censuses at entry, optionally injects, then runs the original. */
 std::uint64_t __fastcall observe(void* netmgr, void* second, void* third, void* fourth) noexcept {
     std::uint8_t* const arena = arena_of(netmgr);
@@ -494,7 +562,7 @@ std::uint64_t __fastcall observe(void* netmgr, void* second, void* third, void* 
                 // slot's member list that points at them.
                 bool member = false;
                 if (after_created(arena, kInjectSlot) && client.admissionXuid != 0) {
-                    member = inject_member(
+                    member = inject_member_full(
                         arena, kInjectSlot, kInjectMemberIndex, client.admissionXuid);
                 }
                 const PeerView after = read_peer(arena, kInjectSlot);
