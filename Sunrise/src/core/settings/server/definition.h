@@ -110,8 +110,17 @@ struct Settings {
      * Peer-bearing bodies published without an acknowledgement before the peer row is
      * withdrawn for that session. Zero disables the cap, which is how the 127-body storm
      * that blocked a client's Tower load became possible. A refusal must be cheap.
+     * Default 2, not 6: p2(111) ran the cap at 6, produced 146 peer bodies, and BLOCKED
+     * the mac's Tower load (HANDOFF_2026-08-29_PROFILE-WRITER.md, what-not-to-redo 2).
      */
-    std::uint32_t membershipPeerRetryCap{6};
+    std::uint32_t membershipPeerRetryCap{2};
+    /**
+     * Publish a minimal player profile block on every player row of a membership snapshot
+     * instead of the absent flag (FINDINGS 20.177 RESULT 5). The block is the decoder-correct
+     * minimum: an empty profile that sets the client's profile-present state without identity
+     * or appearance content. Default false; flip at the boot with no rebuild.
+     */
+    bool publishPlayerProfile{false};
     /** Peer-bearing bodies one shape carries before advancing. Zero takes the default. */
     std::uint64_t membershipSweepBodies{4};
     /** Milliseconds one shape must also hold, so a burst cannot skip shapes. Zero = default. */

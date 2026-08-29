@@ -97,9 +97,46 @@ constexpr std::uint8_t kPlayerOwnedIndexWidth = 1;
 constexpr std::uint8_t kPlayerSequenceWidth = 20;
 /** Value the decoder requires of the member's own player index. */
 constexpr std::uint64_t kPlayerOwnedIndexZero = 0;
-/** A clear flag ends a player row after its identity group. The profile block it would gate has
- *  no writer here, so no row carries one. */
+/** A clear flag ends a player row after its identity group: the profile block it would gate is
+ *  not published. With `publish_player_profile` the row instead carries the gate SET plus the
+ *  minimal block below. */
 constexpr std::uint64_t kPlayerProfileAbsent = 0;
+
+// --- The minimal player profile block (FINDINGS 20.177 RESULT 5, decoder 0x14173BFC0) --------
+// Every width was read from the decoder, not inferred. The block is presence-bit-prefixed
+// sub-chunks, never raw bytes; the field list below sums to 178 bits (36 header + 37 region A
+// + 1 region B + 104 tail). FINDINGS 20.177's "total 150 bits" summary does not match its own
+// field list; the decoder-read widths win (20.176 RESULT 3 corroborates each one).
+/** The block header's first word. Its meaning is unread; replayed from the p2(113) harvest. */
+constexpr std::uint64_t kProfileHeader1 = 0;
+/** The block header's second field is read as 3 bits and then DECed, so a stored 0 is a
+ *  written 1. Writing 0 would store 0xFF. */
+constexpr std::uint64_t kProfileHeader2Stored = 1;
+/** Region A chunk 1 is the name: 16-bit words until a zero word. One zero word IS the
+ *  terminator, and the name scan needs that zero word to return true. */
+constexpr std::uint8_t kProfileNameWidth = 16;
+/** Region A chunks 4 and 5 each read 6 bits and then DEC it, so writing 1 stores 0 (the range
+ *  check needs stored+1 <= 0x20). Writing 0 would store 0xFF and fail it. */
+constexpr std::uint8_t kProfileDecByteWidth = 6;
+/** See kProfileDecByteWidth. */
+constexpr std::uint64_t kProfileDecByteStoredZero = 1;
+/** Tail word [rdi+0x00], replayed from the p2(113) harvest. */
+constexpr std::uint64_t kProfileTailWord0 = 0;
+/** Tail word [rdi+0x04], replayed from the p2(113) harvest. */
+constexpr std::uint64_t kProfileTailWord1 = 0;
+/** Tail word [rdi+0x08], replayed from the p2(113) harvest. */
+constexpr std::uint64_t kProfileTailWord2 = 0x01000000;
+/** The tail's 5-bit field. Bit 0x10 of the STORED byte must stay CLEAR or the decoder reads a
+ *  further section and the stream desyncs. */
+constexpr std::uint8_t kProfileTailField3Width = 5;
+/** See kProfileTailField3Width. Value 1 has bit 0x10 clear. */
+constexpr std::uint64_t kProfileTailField3 = 1;
+/** The tail's 2-bit field. */
+constexpr std::uint8_t kProfileTailField4Width = 2;
+/** See kProfileTailField4Width, replayed from the p2(113) harvest. */
+constexpr std::uint64_t kProfileTailField4 = 0;
+/** The tail's trailing flag, replayed from the p2(113) harvest. */
+constexpr std::uint64_t kProfileTailField5 = 0;
 /** This host publishes no 264-byte identity block and neither trailing delta-entry flag. */
 constexpr std::uint64_t kEntryFieldAbsent = 0;
 /** The four tail groups are all omitted, which leaves the consumer's own values alone. */
@@ -204,20 +241,73 @@ write_peer_delta(bits::Writer& writer, std::size_t index, const MembershipMember
 }
 
 /**
- * Writes one player-delta entry carrying an identity and no profile block.
+ * Writes the decoder-correct MINIMAL profile block (FINDINGS 20.177 RESULT 5): an empty
+ * profile whose shape alone forces all four of region A's exit conditions true by
+ * construction - chunk 6 absent keeps r15b at its entry value 1, chunk 1's single zero word
+ * satisfies the name terminator, and chunks 4/5 store 0, passing both range checks. It
+ * carries no identity and no appearance content.
+ * @param writer Open writer positioned right after the profile-present gate bit.
+ * @return True when every field fit.
+ */
+[[nodiscard]] bool write_minimal_profile(bits::Writer& writer) noexcept {
+    // Header, after the gate bit the caller wrote: one 32-bit word, then the 3-bit field the
+    // decoder decrements.
+    if (!writer.write(kProfileHeader1, kWordWidth)
+        || !writer.write(kProfileHeader2Stored, 3)) {
+        return false;
+    }
+    // Region A: nine 1-bit presence flags IN WIRE ORDER - not mask-value order; the 0x100
+    // chunk is emitted FIFTH. The 9-bit mask is built by the reader and never travels the wire
+    // as a field.
+    //   #1 0x001 name (one zero word)  #2 0x002 absent  #3 0x004 absent
+    //   #4 0x008 dec-byte              #5 0x100 dec-byte (still wire position five)
+    //   #6 0x010 absent                #7 0x020 absent   #8 0x040 absent  #9 0x080 absent
+    if (!writer.write(1U, kFlagWidth) || !writer.write(0U, kProfileNameWidth)
+        || !writer.write(0U, kFlagWidth) || !writer.write(0U, kFlagWidth)
+        || !writer.write(1U, kFlagWidth)
+        || !writer.write(kProfileDecByteStoredZero, kProfileDecByteWidth)
+        || !writer.write(1U, kFlagWidth)
+        || !writer.write(kProfileDecByteStoredZero, kProfileDecByteWidth)
+        || !writer.write(0U, kFlagWidth) || !writer.write(0U, kFlagWidth)
+        || !writer.write(0U, kFlagWidth) || !writer.write(0U, kFlagWidth)) {
+        return false;
+    }
+    // Region B: one presence bit, body absent.
+    // Tail: fixed and unconditional - three 32-bit words, a 5-bit field whose 0x10 bit stays
+    // clear, a 2-bit field, and one flag. 104 bits.
+    return writer.write(0U, kFlagWidth) && writer.write(kProfileTailWord0, kWordWidth)
+           && writer.write(kProfileTailWord1, kWordWidth)
+           && writer.write(kProfileTailWord2, kWordWidth)
+           && writer.write(kProfileTailField3, kProfileTailField3Width)
+           && writer.write(kProfileTailField4, kProfileTailField4Width)
+           && writer.write(kProfileTailField5, kFlagWidth);
+}
+
+/**
+ * Writes one player-delta entry carrying an identity and either the absent flag or the
+ * minimal profile block.
  * @param writer Open writer.
  * @param player Player row to publish.
+ * @param publishProfile When true, set the profile-present gate and write the minimal block.
  * @return True when every field fit.
  */
 [[nodiscard]] bool write_player_delta(bits::Writer& writer,
-                                      const MembershipPlayer& player) noexcept {
-    return writer.write(player.slot, kPlayerIndexWidth) && writer.write(kDeltaEntryFull, kFlagWidth)
-           && writer.write(1U, kFlagWidth) && bits::write_raw_u64(writer, player.playerId)
-           && writer.write(player.memberIndex, kPlayerMemberWidth)
-           && writer.write(kPlayerOwnedIndexZero, kPlayerOwnedIndexWidth)
-           && writer.write(player.addSequence, kPlayerSequenceWidth)
-           && writer.write(player.flag ? 1U : 0U, kFlagWidth)
-           && writer.write(kPlayerProfileAbsent, kFlagWidth);
+                                      const MembershipPlayer& player,
+                                      bool publishProfile) noexcept {
+    if (!writer.write(player.slot, kPlayerIndexWidth) || !writer.write(kDeltaEntryFull, kFlagWidth)
+        || !writer.write(1U, kFlagWidth) || !bits::write_raw_u64(writer, player.playerId)
+        || !writer.write(player.memberIndex, kPlayerMemberWidth)
+        || !writer.write(kPlayerOwnedIndexZero, kPlayerOwnedIndexWidth)
+        || !writer.write(player.addSequence, kPlayerSequenceWidth)
+        || !writer.write(player.flag ? 1U : 0U, kFlagWidth)) {
+        return false;
+    }
+    if (!publishProfile) {
+        return writer.write(kPlayerProfileAbsent, kFlagWidth);
+    }
+    // The gate bit, then the block. A false return leaves the body truncated; the caller
+    // refuses the whole message, which is the safe direction.
+    return writer.write(1U, kFlagWidth) && write_minimal_profile(writer);
 }
 
 } // namespace
@@ -318,8 +408,13 @@ bool write_time_synchronize(bits::Writer& writer, const TimeSynchronize& body) n
     return writer.write(body.sampleB, kSampleWidth) && writer.write(body.sampleC, kSampleWidth);
 }
 
-/** Writes a complete-snapshot membership update. */
-bool write_membership_update(bits::Writer& writer, const MembershipUpdate& body) noexcept {
+/** Writes a complete-snapshot membership update.
+ *  @param publishProfile When true, every player row carries the minimal profile block
+ *                        (FINDINGS 20.177 RESULT 5) behind its set gate bit.
+ *  @return True when the whole body fit and the revision and member count are encodable. */
+bool write_membership_update(bits::Writer& writer,
+                             const MembershipUpdate& body,
+                             bool publishProfile) noexcept {
     // The consumer refuses the message unless the base revision is below the message revision,
     // and a complete snapshot always publishes base revision 0.
     if (body.revision == 0 || body.members.size() > kMemberCapacity
@@ -352,7 +447,7 @@ bool write_membership_update(bits::Writer& writer, const MembershipUpdate& body)
         }
     }
     for (const MembershipPlayer& player : body.players) {
-        if (!write_player_delta(writer, player)) {
+        if (!write_player_delta(writer, player, publishProfile)) {
             return false;
         }
     }

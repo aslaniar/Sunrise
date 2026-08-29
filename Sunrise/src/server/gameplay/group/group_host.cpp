@@ -379,7 +379,10 @@ void mark_session_dirty(std::uint64_t sessionId) noexcept {
     std::array<std::byte, kMembershipBodyCapacity> body{};
     bits::Writer writer(body);
     std::size_t size = 0;
-    if (!wire::write_membership_update(writer, composition.update) || !writer.finish(size)) {
+    if (!wire::write_membership_update(writer,
+                                       composition.update,
+                                       core::settings::get().server.publishPlayerProfile)
+        || !writer.finish(size)) {
         return false;
     }
     // The peer logs the hash it wanted, so ours has to be logged next to it to read a mismatch.

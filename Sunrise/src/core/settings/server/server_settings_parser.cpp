@@ -100,6 +100,7 @@ bool Parser::server_settings(server::Settings& output) noexcept {
     bool hasMembershipSweepBodies = false;
     bool hasMembershipSweepPin = false;
     bool hasMembershipPeerRetryCap = false;
+    bool hasPublishPlayerProfile = false;
     bool hasGameplay = false;
     bool hasActivation = false;
     for (;;) {
@@ -259,6 +260,11 @@ bool Parser::server_settings(server::Settings& output) noexcept {
             }
             output.membershipPeerRetryCap = static_cast<std::uint32_t>(value);
             hasMembershipPeerRetryCap = true;
+        } else if (key == "publish_player_profile") {
+            if (hasPublishPlayerProfile || !boolean(output.publishPlayerProfile)) {
+                return false;
+            }
+            hasPublishPlayerProfile = true;
         } else if (key == "membership_sweep_pin") {
             std::int64_t value = 0;
             if (hasMembershipSweepPin || !signed_integer(value) || value < -1 || value > 5) {
