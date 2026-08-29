@@ -23,6 +23,7 @@
 #include "../hooks/join_roster/join_roster_observer.h"
 #include "../hooks/ability_gate/ability_gate_observer.h"
 #include "../hooks/gate_trace/gate_trace_observer.h"
+#include "../hooks/phase_probe/phase_probe_observer.h"
 #include "../hooks/item_gate/item_gate_observer.h"
 #include "../hooks/handle_message/handle_message_observer.h"
 #include "../hooks/schema_capture/schema_capture_observer.h"
@@ -211,6 +212,15 @@ void clear_game_targets() noexcept {
     // (uncomment both installs) only when actually resuming that investigation.
     // (void)hooks::ability_gate::install();
     // (void)hooks::gate_trace::install();
+    // (phase_probe, FINDINGS 20.154/20.155): ACTIVE. Log-only observer on the slice-set
+    // transition phase query (0xE22C70). It reads the two bytes that gate a PUBLIC
+    // transition's switch-now - [obj+0x2bc] (wants 1) and [obj+0x2c1] (wants 2) - which
+    // static analysis cannot resolve: +0x2c1 has no disp32 writer in .text and the
+    // predicate behind +0x2bc calls into a non-exported function of our own DLL.
+    // Unlike the two observers above this one is SAFE ON A HOT PATH BY CONSTRUCTION: it
+    // logs only when the answer tuple CHANGES and stops at 64 lines, so the per-frame
+    // cost is one compare. Remove it once the phase question is closed.
+    (void)hooks::phase_probe::install();
     // The weapon/armor validation-chain observers (item_gate, FINDINGS 14.23): log-only
     // research instrumentation for the two-bugs front, which CLOSED at 15.9. Left
     // uninstalled by default (2026-08-22) - the "cool path" note above was wrong: it

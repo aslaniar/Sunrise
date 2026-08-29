@@ -90,6 +90,7 @@ add_library(steam_api64 SHARED
     src/client/persistence_stub.cpp
     src/client/hooks/ability_gate/ability_gate_observer.cpp
     src/client/hooks/gate_trace/gate_trace_observer.cpp
+    src/client/hooks/phase_probe/phase_probe_observer.cpp
     src/client/hooks/item_gate/item_gate_observer.cpp
     src/client/hooks/handle_message/handle_message_observer.cpp
     src/client/hooks/schema_capture/schema_capture_observer.cpp
