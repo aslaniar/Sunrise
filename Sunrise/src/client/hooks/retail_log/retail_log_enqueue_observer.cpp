@@ -76,7 +76,7 @@ volatile LONG64 g_nextAssertTick{};
  * Rate-limited to one report per distinct (target, RVA): these lines are on the game's own
  * logging path and a Tower session emits thousands.
  */
-constexpr std::size_t kTargetCount = 10;
+constexpr std::size_t kTargetCount = 16;
 constexpr const char* kCallerTargets[kTargetCount] = {
     "Adding player",
     "Could not find tracking data",
@@ -92,6 +92,25 @@ constexpr const char* kCallerTargets[kTargetCount] = {
     "activity_host_changed",
     "waiting to connect to AH",
     "join request to AH",
+    // FINDINGS 20.153, THE PHASE LANE. Both clients precache PUB56.56 and then never take the
+    // slice-set-switch task; a PRIVATE or ORBIT transition self-simulates its switch-now phase
+    // and completes, a PUBLIC normal_z_leg has no simulator arm and waits for something we have
+    // not identified. Two publish hypotheses (the member setup flags, then the published slice
+    // set) were spent guessing at it, so this escalates to the instrument (U7, LESSONS 18c).
+    // Every string below is one that DOES fire, so each yields an RVA, and together they
+    // bracket the whole decision: where the phase is set, where it is read, what runs when the
+    // precache finishes, what assigns the switch, and what closes the transition. Resolve each
+    // with pdata_bounds.py, then disassemble the owning functions to name the phase variable
+    // and its network-fed writer.
+    // Split by variant, not by the shared "advancing simulated phase" tail: the capture keeps
+    // ONE rva per target string, and the Orbit and private arms may be separate call sites.
+    // Matching the distinct prefixes yields both.
+    "Transition to Orbit slice-set",
+    "Transition to private slice-set",
+    "slice-set-switch task is not possible yet",
+    "is being assigned the slice-set-switch task",
+    "Finished precaching slice-set",
+    "Stopping transition of type",
 };
 std::uintptr_t g_reportedRva[kTargetCount]{};
 
