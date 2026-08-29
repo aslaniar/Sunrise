@@ -76,7 +76,7 @@ volatile LONG64 g_nextAssertTick{};
  * Rate-limited to one report per distinct (target, RVA): these lines are on the game's own
  * logging path and a Tower session emits thousands.
  */
-constexpr std::size_t kTargetCount = 16;
+constexpr std::size_t kTargetCount = 19;
 constexpr const char* kCallerTargets[kTargetCount] = {
     "Adding player",
     "Could not find tracking data",
@@ -111,6 +111,21 @@ constexpr const char* kCallerTargets[kTargetCount] = {
     "is being assigned the slice-set-switch task",
     "Finished precaching slice-set",
     "Stopping transition of type",
+    // FINDINGS 20.168, THE WEDGE MECHANISM. At setup:orbit the client runs Demonware
+    // NAT traversal (bdNATTravClient) and dials SIX INTRO REQs whose "addresses" are
+    // ASCII windows (stride exactly 6 = sockaddr-shaped) over the INJECTED PEER IDENTITY
+    // STRING "steamid:...#...". The client-internal wait is that retry loop against
+    // garbage endpoints: the adopted record feeds a connection path that needs the
+    // peer's REAL transport endpoint and gets identity-string bytes. These three lines
+    // come from DIFFERENT call sites (bdNATTravClient.cpp 461/464/812), so each target
+    // yields its own RVA and the three bracket the dial: the retry loop, the public-addr
+    // report, and the INTRO sender itself. Resolve each with pdata_bounds.py, then
+    // disassemble the INTRO sender to name the endpoint-array argument, and field_xref
+    // that buffer's base to find who WRITES it - that writer is where a real peer's
+    // endpoint bytes would come from.
+    "Request timed out",
+    "Public Addr",
+    "sent INTRO REQ",
 };
 std::uintptr_t g_reportedRva[kTargetCount]{};
 
