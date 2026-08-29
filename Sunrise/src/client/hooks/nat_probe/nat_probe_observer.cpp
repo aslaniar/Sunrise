@@ -26,8 +26,8 @@ using ShimFn = std::uint64_t(__fastcall*)(void*, void*, void*, void*,
 /** Bytes per hexdump line. */
 constexpr std::size_t kDumpBytes = 0x80;
 constexpr std::size_t kLineCapacity = 512;
-/** The retry loop re-fires; the first 8 calls are the whole story. */
-constexpr unsigned kDumpCap = 8;
+/** The retry loop re-fires; the first 8 LOGGED-TYPE calls are the whole story. */
+constexpr unsigned kDumpCap = 16;
 
 hooking::detour::Handle g_handle{};
 std::atomic<unsigned> g_calls{};
@@ -77,13 +77,20 @@ void dump_hex(const char* tag, const void* address) noexcept {
                      {text.data(), static_cast<std::size_t>(written)});
 }
 
-/** The pass-through probe: count, dump the first calls, forward bit-exact. */
+/** The pass-through probe: count, dump the first LOGGED-TYPE calls, forward bit-exact.
+ *  CORRECTION (p2(108) run): the shim also receives type-0 calls - suppressed startup
+ *  messages (UPnP/bdNet init) whose dispatch jumps straight to the epilogue. They
+ *  burned the original 8-call cap at t=16-17k, before the INTRO dial at t=76837, so
+ *  the wedge's dumps were missed. Only types 1..3 actually log (the shim's three
+ *  dispatch arms, disassembly-verified), so only those are dumped now. */
 std::uint64_t __fastcall observe_shim(void* rcx, void* rdx, void* r8, void* r9,
                                       void* s0, void* s1, void* s2, void* s3,
                                       void* s4, void* s5, void* s6, void* s7,
                                       void* s8, void* s9, void* s10, void* s11,
                                       void* s12, void* s13, void* s14, void* s15) noexcept {
-    if (g_calls.fetch_add(1, std::memory_order_relaxed) < kDumpCap) {
+    const auto type = reinterpret_cast<std::uintptr_t>(rdx);
+    if (type >= 1 && type <= 3
+        && g_calls.fetch_add(1, std::memory_order_relaxed) < kDumpCap) {
         std::array<char, 192> text{};
         const int written = std::snprintf(text.data(),
                                           text.size(),
