@@ -205,10 +205,29 @@ std::uint64_t __fastcall observe_slot_create(void* arena,
     // synthesise them. The created slot is dumped too - its 0x50-byte blob at +0x50 is
     // the one field a hand-written injection currently cannot reproduce.
     if (kind == 5 && after != 0 && !g_argsDumped.exchange(true, std::memory_order_relaxed)) {
+        // ONLY a5 AND a6 ARE POINTERS. Read off the call site that actually fires -
+        // the join gate at 0x141772A99 - a5 is `lea rax,[rbp+0x1b0]` and a6 is the
+        // return of 0x1402ffd20, while a7 is a bare `rbx` and a8 is the return of the
+        // TIMESTAMP function 0x1402fe650. Dereferencing those two crashed the client at
+        // character selection in p2(99): the earlier version took its ABI from the two
+        // call sites inside the message-30 apply, which p2(98) had just proven never
+        // execute. A call site that does not run cannot tell you the shape of one that
+        // does. a7/a8 are now logged as VALUES and never dereferenced.
         dump_hex("a5", a5, kDumpBytes);
         dump_hex("a6", a6, kDumpBytes);
-        dump_hex("a7", a7, kDumpBytes);
-        dump_hex("a8", a8, kDumpBytes);
+        std::array<char, kLineCapacity> raw{};
+        const int rawWritten =
+            std::snprintf(raw.data(),
+                          raw.size(),
+                          "ev=admission stage=arg tag=a7a8 a7=0x%llX a8=0x%llX (values, "
+                          "not dereferenced)",
+                          static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(a7)),
+                          static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(a8)));
+        if (rawWritten > 0) {
+            core::log::write(core::log::Channel::client,
+                             core::log::Level::info,
+                             {raw.data(), static_cast<std::size_t>(rawWritten)});
+        }
         if (bytes != nullptr) {
             std::uint8_t* const slot = bytes + index * kPeerSlotStride;
             dump_hex("slot48", slot + 0x48, kDumpBytes);
