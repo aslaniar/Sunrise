@@ -358,13 +358,19 @@ void mark_session_dirty(std::uint64_t sessionId) noexcept {
                                            composition)) {
         return false;
     }
-    // FINDINGS 20.151 (ms-start-gate2): the client derives per-peer activity-setup-
-    // complete from member-record flag bytes its managed-session member record reads
-    // at +0xED/+0xEF - carried by member fields 11/12, which composed snapshots
-    // historically published as the cleared 0. Publish 1 for every member when the
-    // switch is on (session_messages.h documents the caveats).
+    // FINDINGS 20.151/20.152 (ms-start-gate2/3): the client derives per-peer activity-
+    // setup-complete from member-record flag bytes at record +181/+183 (the gate's +0xED/
+    // +0xEF readers use a different base) - carried by member protobuf fields 11/12,
+    // PROVEN the only 1-byte member fields by the client's own descriptor table
+    // (0x141ca68e0). Value 1 on every row EXCEPT the recipient's own: the p2(91)
+    // all-rows experiment broke the citizen join, and the recipient identifies its own
+    // row by NetAddr (members[0] is the host, members[i+1] is peers[i]).
     if (core::settings::get().server.gameplay.activityMemberSetupFlags) {
+        const std::size_t selfRow = recipient + 1;
         for (std::size_t index = 0; index < composition.update.members.size(); ++index) {
+            if (index == selfRow) {
+                continue;
+            }
             composition.members[index].flagA = 1;
             composition.members[index].flagB = 1;
         }
