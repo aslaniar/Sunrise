@@ -76,6 +76,8 @@ using SlotCreate = std::uint64_t(__fastcall*)(void*,
 
 hooking::detour::Handle g_slotCreate{};
 std::atomic<unsigned> g_slotLines{};
+/** The kind=5 argument dump is worth exactly one occurrence. */
+std::atomic<bool> g_argsDumped{};
 
 /** @return Machine id currently in a slot, or 0 when unreadable. */
 [[nodiscard]] std::uint64_t slot_machine(std::uint8_t* arena, std::uint32_t index) noexcept {
@@ -88,6 +90,61 @@ std::atomic<unsigned> g_slotLines{};
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return 0;
     }
+}
+
+/** Bytes shown per hexdump line. 64 renders to 128 chars, inside kLineCapacity. */
+constexpr std::size_t kDumpBytes = 64;
+
+/**
+ * Hex-dumps borrowed memory into one log line, or reports it unreadable.
+ * @param tag Field name for the line.
+ * @param address Borrowed pointer; may be null or bad.
+ * @param count Bytes to render, capped at kDumpBytes.
+ */
+void dump_hex(const char* tag, const void* address, std::size_t count) noexcept {
+    std::array<char, kLineCapacity> text{};
+    if (address == nullptr) {
+        const int empty = std::snprintf(
+            text.data(), text.size(), "ev=admission stage=arg tag=%s ptr=null", tag);
+        if (empty > 0) {
+            core::log::write(core::log::Channel::client,
+                             core::log::Level::info,
+                             {text.data(), static_cast<std::size_t>(empty)});
+        }
+        return;
+    }
+    std::array<std::uint8_t, kDumpBytes> copy{};
+    const std::size_t take = count < kDumpBytes ? count : kDumpBytes;
+    bool ok = true;
+    __try {
+        const auto* const source = static_cast<const std::uint8_t*>(address);
+        for (std::size_t i = 0; i < take; ++i) {
+            copy[i] = source[i];
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        ok = false;
+    }
+    int written = std::snprintf(
+        text.data(),
+        text.size(),
+        "ev=admission stage=arg tag=%s ptr=0x%llX ok=%u hex=",
+        tag,
+        static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(address)),
+        ok ? 1U : 0U);
+    if (written <= 0) {
+        return;
+    }
+    if (ok) {
+        for (std::size_t i = 0; i < take && written + 2 < static_cast<int>(text.size()); ++i) {
+            written += std::snprintf(text.data() + written,
+                                     text.size() - static_cast<std::size_t>(written),
+                                     "%02X",
+                                     copy[i]);
+        }
+    }
+    core::log::write(core::log::Channel::client,
+                     core::log::Level::info,
+                     {text.data(), static_cast<std::size_t>(written)});
 }
 
 /**
@@ -140,6 +197,23 @@ std::uint64_t __fastcall observe_slot_create(void* arena,
         core::log::write(core::log::Channel::client,
                          core::log::Level::info,
                          {text.data(), static_cast<std::size_t>(written)});
+    }
+    // ARGUMENT CAPTURE (FINDINGS 20.160). Only the kind=5 call creates a slot, so only
+    // that one is dumped, and only once. The four stack arguments are pointers the join
+    // gate built: whether they are PEER-SPECIFIC or session-generic decides whether an
+    // injection can replay them with a substituted index and machine id, or must
+    // synthesise them. The created slot is dumped too - its 0x50-byte blob at +0x50 is
+    // the one field a hand-written injection currently cannot reproduce.
+    if (kind == 5 && after != 0 && !g_argsDumped.exchange(true, std::memory_order_relaxed)) {
+        dump_hex("a5", a5, kDumpBytes);
+        dump_hex("a6", a6, kDumpBytes);
+        dump_hex("a7", a7, kDumpBytes);
+        dump_hex("a8", a8, kDumpBytes);
+        if (bytes != nullptr) {
+            std::uint8_t* const slot = bytes + index * kPeerSlotStride;
+            dump_hex("slot48", slot + 0x48, kDumpBytes);
+            dump_hex("slot88", slot + 0x88, kDumpBytes);
+        }
     }
     return result;
 }
