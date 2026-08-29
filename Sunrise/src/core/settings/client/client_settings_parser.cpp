@@ -16,6 +16,9 @@ bool Parser::client_settings(client::Settings& output) noexcept {
     bool hasAdmissionInject = false;
     bool hasAdmissionMemberIndex = false;
     bool hasAdmissionXuid = false;
+    bool hasAdmissionPeerSteamId = false;
+    bool hasAdmissionPeerMachine = false;
+    bool hasAdmissionA7 = false;
     bool hasForceJoinRequestReady = false;
     bool hasRegionPrivate = false;
     bool hasRegionPublic = false;
@@ -77,6 +80,21 @@ bool Parser::client_settings(client::Settings& output) noexcept {
                 return false;
             }
             hasAdmissionXuid = true;
+        } else if (key == "admission_peer_steam_id") {
+            if (hasAdmissionPeerSteamId || !unsigned_integer(candidate.admissionPeerSteamId)) {
+                return false;
+            }
+            hasAdmissionPeerSteamId = true;
+        } else if (key == "admission_peer_machine") {
+            if (hasAdmissionPeerMachine || !unsigned_integer(candidate.admissionPeerMachine)) {
+                return false;
+            }
+            hasAdmissionPeerMachine = true;
+        } else if (key == "admission_a7") {
+            if (hasAdmissionA7 || !unsigned_integer(candidate.admissionA7)) {
+                return false;
+            }
+            hasAdmissionA7 = true;
             hasJoinRosterObserver = true;
         } else if (key == "force_join_request_ready") {
             if (hasForceJoinRequestReady || !boolean(candidate.forceJoinRequestReady)) {

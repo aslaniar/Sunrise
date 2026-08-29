@@ -8,6 +8,8 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
+#include <string_view>
 
 #include "../../../core/logging/log.h"
 #include "../../../core/settings/settings.h"
@@ -50,6 +52,13 @@ constexpr std::uintptr_t kMemberFlagsOffset = 0x3c30;
 constexpr std::uintptr_t kMemberMembershipOffset = 0x3b78;
 /** ADMIT sets flags bits 0,2,3,4 (0x1D); bit 4 is the one the adoption path reads. */
 constexpr std::uint16_t kAdmitFlagBits = 0x1D;
+/** Slot the injection targets: measured free on both machines (p2(97)/p2(98)). */
+constexpr std::uint32_t kInjectSlot = 1;
+/** The kind the one CREATING call carries. kind=10 creates nothing (20.160). */
+constexpr std::uint32_t kCreateKind = 5;
+/** Capacities of the captured a5 string and a6 block. */
+constexpr std::size_t kIdentityCapacity = 0x50;
+constexpr std::size_t kBlockCapacity = 0x40;
 
 /** Peers to walk. The real bound is unknown, so the census stays deliberately small. */
 constexpr std::size_t kPeerScan = 8;
@@ -78,6 +87,15 @@ hooking::detour::Handle g_slotCreate{};
 std::atomic<unsigned> g_slotLines{};
 /** The kind=5 argument dump is worth exactly one occurrence. */
 std::atomic<bool> g_argsDumped{};
+/**
+ * Template captured from the REAL kind=5 call (20.162). The injection substitutes into
+ * this rather than synthesising, confining fabrication to the fields we mean to fabricate.
+ */
+std::array<char, kIdentityCapacity> g_identityTemplate{};
+std::array<std::uint8_t, kBlockCapacity> g_blockTemplate{};
+std::uint32_t g_capturedFlag{};
+std::atomic<bool> g_templateReady{};
+std::atomic<bool> g_injectDone{};
 
 /** @return Machine id currently in a slot, or 0 when unreadable. */
 [[nodiscard]] std::uint64_t slot_machine(std::uint8_t* arena, std::uint32_t index) noexcept {
@@ -215,6 +233,20 @@ std::uint64_t __fastcall observe_slot_create(void* arena,
         // does. a7/a8 are now logged as VALUES and never dereferenced.
         dump_hex("a5", a5, kDumpBytes);
         dump_hex("a6", a6, kDumpBytes);
+        __try {
+            const auto* const id = static_cast<const char*>(a5);
+            for (std::size_t i = 0; i < kIdentityCapacity; ++i) {
+                g_identityTemplate[i] = id[i];
+            }
+            const auto* const blk = static_cast<const std::uint8_t*>(a6);
+            for (std::size_t i = 0; i < kBlockCapacity; ++i) {
+                g_blockTemplate[i] = blk[i];
+            }
+            g_capturedFlag = flag;
+            g_templateReady.store(true, std::memory_order_release);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            g_templateReady.store(false, std::memory_order_release);
+        }
         std::array<char, kLineCapacity> raw{};
         const int rawWritten =
             std::snprintf(raw.data(),
@@ -244,6 +276,36 @@ hooking::detour::Handle g_handle{};
 std::atomic<std::uint64_t> g_lastKey{~0ULL};
 std::atomic<unsigned> g_lines{};
 std::atomic<bool> g_injected{};
+
+/**
+ * Rewrites the decimal steam id inside a captured identity string.
+ * Shape is "steamid:<digits>#<16 hex>" (20.162); only the digits change, so the hex
+ * suffix and everything around it stay exactly as the game wrote them.
+ * @param identity Captured template, edited in place on success.
+ * @param steamId Replacement decimal id.
+ * @return True when the template had the expected shape and the result fits.
+ */
+[[nodiscard]] bool substitute_steam_id(std::array<char, kIdentityCapacity>& identity,
+                                       std::uint64_t steamId) noexcept {
+    if (std::strncmp(identity.data(), "steamid:", 8) != 0) {
+        return false;
+    }
+    const void* const hash = std::memchr(identity.data(), '#', identity.size());
+    if (hash == nullptr) {
+        return false;
+    }
+    std::array<char, kIdentityCapacity> out{};
+    const int written = std::snprintf(out.data(),
+                                      out.size(),
+                                      "steamid:%llu%s",
+                                      static_cast<unsigned long long>(steamId),
+                                      static_cast<const char*>(hash));
+    if (written <= 0 || static_cast<std::size_t>(written) >= out.size()) {
+        return false;
+    }
+    identity = out;
+    return true;
+}
 
 /** @return Byte pointer to netmgr's shared array arena, or null. */
 [[nodiscard]] std::uint8_t* arena_of(void* netmgr) noexcept {
@@ -379,38 +441,57 @@ std::uint64_t __fastcall observe(void* netmgr, void* second, void* third, void* 
                 }
             }
         }
-        // ONE injection per process. A peer that names a machine id but holds no members
-        // is exactly the shape ADMIT would have resolved.
-        if (client.admissionInject && !g_injected.load(std::memory_order_relaxed)) {
-            for (std::size_t index = 0; index < kPeerScan; ++index) {
-                const PeerView& view = views[index];
-                if (!view.ok || view.machineId == 0 || view.memberCount != 0) {
-                    continue;
+        // THE INJECTION (FINDINGS 20.162). Calls the game's OWN slot creator rather than
+        // hand-forging the slot, so every field it writes is correct by construction -
+        // including the flags bit 5 that ADMIT's recorded stores never explained (20.158).
+        // a5/a6 are the template captured from the REAL kind=5 call with only the identity
+        // substituted, so every byte we do not understand stays byte-faithful. a7 is
+        // FABRICATED, and testing whether that suffices is the whole point (p2(63)).
+        if (client.admissionInject && g_templateReady.load(std::memory_order_acquire)
+            && !g_injectDone.load(std::memory_order_relaxed)
+            && client.admissionPeerSteamId != 0 && client.admissionPeerMachine != 0
+            && client.admissionA7 != 0 && g_slotCreate.original != nullptr) {
+            const PeerView target = read_peer(arena, kInjectSlot);
+            // Only into a genuinely free slot. p2(97)/p2(98) measured slot 1 as
+            // probed-and-empty on both machines; refuse anything else.
+            if (target.ok && target.machineId == 0) {
+                g_injectDone.store(true, std::memory_order_relaxed);
+                std::array<char, kIdentityCapacity> identity = g_identityTemplate;
+                const bool built = substitute_steam_id(identity, client.admissionPeerSteamId);
+                std::array<std::uint8_t, kBlockCapacity> block = g_blockTemplate;
+                const std::uint64_t head = client.admissionPeerMachine;
+                for (std::size_t i = 0; i < sizeof head; ++i) {
+                    block[i] = static_cast<std::uint8_t>((head >> (i * 8)) & 0xFF);
                 }
-                const std::int32_t memberIndex =
-                    static_cast<std::int32_t>(client.admissionMemberIndex);
-                const std::uint64_t xuid = client.admissionXuid;
-                if (memberIndex < 0 || xuid == 0) {
-                    break;
+                std::uint64_t created = 0;
+                if (built) {
+                    const auto creator = reinterpret_cast<SlotCreate>(g_slotCreate.original);
+                    created = creator(arena,
+                                      kInjectSlot,
+                                      kCreateKind,
+                                      g_capturedFlag,
+                                      identity.data(),
+                                      block.data(),
+                                      reinterpret_cast<void*>(client.admissionA7),
+                                      reinterpret_cast<void*>(GetTickCount64()));
                 }
-                const bool done = inject_member(arena, index, memberIndex, xuid);
-                g_injected.store(true, std::memory_order_relaxed);
+                const PeerView after = read_peer(arena, kInjectSlot);
                 std::array<char, kLineCapacity> text{};
                 const int written =
                     std::snprintf(text.data(),
                                   text.size(),
-                                  "ev=admission stage=inject result=%s peer=%zu idx=%d "
-                                  "xuid=0x%llX",
-                                  done ? "written" : "refused",
-                                  index,
-                                  memberIndex,
-                                  static_cast<unsigned long long>(xuid));
+                                  "ev=admission stage=inject result=%s slot=%u ret=%llu "
+                                  "machine_now=0x%llX id=%.44s",
+                                  built ? "called" : "id_build_failed",
+                                  static_cast<unsigned>(kInjectSlot),
+                                  static_cast<unsigned long long>(created),
+                                  static_cast<unsigned long long>(after.machineId),
+                                  identity.data());
                 if (written > 0) {
                     core::log::write(core::log::Channel::client,
                                      core::log::Level::info,
                                      {text.data(), static_cast<std::size_t>(written)});
                 }
-                break;
             }
         }
     }

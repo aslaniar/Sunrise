@@ -51,6 +51,29 @@ struct Settings {
     /** Peer xuid the injection publishes. Zero disables the injection outright. */
     std::uint64_t admissionXuid{};
     /**
+     * The PEER's steam id, decimal, as it appears in the identity string the slot
+     * creator is handed (FINDINGS 20.162: a5 is "steamid:<id>#<16 hex>"). The injection
+     * copies the LOCAL string captured at the real kind=5 call and substitutes these
+     * digits, so the shape stays byte-faithful and only the identity changes.
+     */
+    std::uint64_t admissionPeerSteamId{};
+    /**
+     * The PEER's machine id in the SESSION-STRING form (20.153), little-endian as the
+     * bytes appear at the head of a6 - mac DC0FA61D6307F015 -> 0x15F007631DA60FDC,
+     * rig E622D0F738836C84 -> 0x846C8338F7D022E6. Stable across every boot on record,
+     * unlike a7.
+     */
+    std::uint64_t admissionPeerMachine{};
+    /**
+     * The a7 the injection registers as the peer's per-session machine id (lands at
+     * slot+0xC8). 20.162: this value is per-boot, per-machine, and our server has never
+     * seen it, so the first test FABRICATES one. If the roster then names the peer, a
+     * local key suffices; if it does not, the real value must be obtained and this
+     * setting is where it goes. Flagged against p2(63) - fabricated ids in client
+     * enumeration loops have burned this project before.
+     */
+    std::uint64_t admissionA7{};
+    /**
      * Forces the activity session's status 5-to-6 ready check.
      * Two of its five terms are client flags no host message reaches, so the host cannot open it.
      */
