@@ -641,12 +641,63 @@ void release_endpoint(const state::gameplay::Endpoint& endpoint) noexcept {
     }
 }
 
+/**
+ * @param id Group-session message id as it arrived.
+ * @return True when consume() below has an arm for it. Mirrors that dispatch by hand, so
+ *         a new arm must be added here too - the census line is only worth reading if
+ *         `dispatched=0` really means "fell through".
+ */
+[[nodiscard]] bool dispatched_id(std::uint8_t id) noexcept {
+    switch (id) {
+    case static_cast<std::uint8_t>(wire::SessionMessageId::timeSynchronize):
+    case static_cast<std::uint8_t>(wire::SessionMessageId::leaveSession):
+    case static_cast<std::uint8_t>(wire::SessionMessageId::peerEstablish):
+    case static_cast<std::uint8_t>(wire::SessionMessageId::joinComplete):
+    case static_cast<std::uint8_t>(wire::SessionMessageId::joinAbort):
+    case wire::kViewMessageId:
+    case wire::kParameterRequestId:
+    case wire::kPeerPropertiesId:
+    case wire::kPlayerAddId:
+    case wire::kPlayerRemoveId:
+    case wire::kPlayerPropertiesId:
+        return true;
+    default:
+        return false;
+    }
+}
+
 /** Consumes one group-session message. */
 bool consume(const state::gameplay::Endpoint& from,
              std::uint64_t sessionId,
              std::uint8_t id,
              bits::Reader& reader,
              std::uint64_t now) noexcept {
+    // MESSAGE-ID CENSUS (FINDINGS 20.156 / blockers-research #2+#5). The pump dispatches
+    // eleven ids and lets EVERYTHING ELSE fall through to migration::consume, which handles
+    // host-handoff ids only and drops the rest without a word - so we do not know what the
+    // clients actually send us. The load-bearing unknown is the type-0x0A (10) ADMISSION
+    // JOIN: it is absent from SessionMessageId entirely, and whether it reaches this pump
+    // decides the whole admission route (server relay vs DLL-side reserve/admit injection),
+    // which in turn gates the roster AND, on the current hypothesis, the public world swap.
+    // `peerConnect` (11) is in the enum but NOT dispatched here either.
+    // One line per distinct id, so a per-tick id cannot flood the log (the standing
+    // hot-path rule); the counter keeps accumulating so the summary stays honest.
+    {
+        static bool s_idSeen[256]{};
+        static std::uint32_t s_idCount[256]{};
+        ++s_idCount[id];
+        if (!s_idSeen[id]) {
+            s_idSeen[id] = true;
+            report(core::log::Level::info,
+                   "ev=gameplay stage=msg_census id=%u dispatched=%u endpoint=0x%08X:%u "
+                   "session=0x%llX",
+                   static_cast<unsigned>(id),
+                   dispatched_id(id) ? 1U : 0U,
+                   from.address,
+                   static_cast<unsigned>(from.port),
+                   static_cast<unsigned long long>(sessionId));
+        }
+    }
     if (id == static_cast<std::uint8_t>(wire::SessionMessageId::timeSynchronize)) {
         wire::TimeSynchronize probe{};
         if (!wire::read_time_synchronize(reader, probe)) {
@@ -929,7 +980,24 @@ bool consume(const state::gameplay::Endpoint& from,
     }
     // Migration and election bodies are read and recorded. This host never starts a migration and
     // never answers one, but leaving them unread would end the container at the first of them.
-    return migration::consume(id, reader);
+    // The fallthrough, named. An id arriving here is one this host does not dispatch;
+    // migration::consume answers only the host-handoff ids and returns false for the rest,
+    // which is where a client message goes to die silently. One line per distinct id.
+    {
+        const bool consumed = migration::consume(id, reader);
+        static bool s_fellSeen[256]{};
+        if (!s_fellSeen[id]) {
+            s_fellSeen[id] = true;
+            report(core::log::Level::info,
+                   "ev=gameplay stage=msg_unhandled id=%u migration_consumed=%u "
+                   "endpoint=0x%08X:%u",
+                   static_cast<unsigned>(id),
+                   consumed ? 1U : 0U,
+                   from.address,
+                   static_cast<unsigned>(from.port));
+        }
+        return consumed;
+    }
 }
 
 /** Publishes the membership snapshot that completes one peer's join. */
