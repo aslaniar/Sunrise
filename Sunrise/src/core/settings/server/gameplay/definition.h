@@ -115,6 +115,23 @@ struct Settings {
      */
     bool activityRegionSurvivesChurn{true};
     /**
+     * Publishes member protobuf fields 11/12 as 1 (instead of the cleared 0) in every
+     * composed group-session membership snapshot (FINDINGS 20.151). True by default.
+     *
+     * MEASURED DEFECT: the client's world controller waits for per-peer
+     * 'activity setup complete' (the managed-session-start gate, ms-start-gate.md).
+     * The setup-complete flag is DERIVED client-locally (setter 0x1404F3870) from the
+     * wire-fed state ladder (established=10, already satisfied) PLUS member-record flag
+     * bytes @+0xED (reader 0x14177A080) and @+0xEF (reader 0x14177A060) - and this
+     * encoder publishes fields 11/12 (and 8/9) as zero, so no peer ever reads as
+     * setup-complete and the second client's Tower load hangs at a black screen.
+     * Field 8 (idB) is deliberately NOT touched - it is an id, not a flag. The exact
+     * wire-bit -> record-offset mapping is unproven (the client's message-30 bit-reader
+     * is unmapped); this is the measured-best experiment, flippable without a rebuild
+     * (HARD RULES, p2(62)).
+     */
+    bool activityMemberSetupFlags{true};
+    /**
      * Membership bodies this host addresses to the SHARED activity-host session the client
      * joined as its public target (L8b, FINDINGS 20.132). Zero disables the whole path.
      *

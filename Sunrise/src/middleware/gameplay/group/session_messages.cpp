@@ -141,8 +141,8 @@ constexpr std::uint64_t kByteMask = 0xFF;
     if (member.ownsPlayerSlot && !body.write_varint(kMemberPlayerSlot, member.playerSlot)) {
         return false;
     }
-    if (!body.write_varint(kMemberFlagA, kMemberFlagClear)
-        || !body.write_varint(kMemberFlagB, kMemberFlagClear)) {
+    if (!body.write_varint(kMemberFlagA, member.flagA)
+        || !body.write_varint(kMemberFlagB, member.flagB)) {
         return false;
     }
     return writer.write_length_delimited(kRootMember, {storage.data(), body.size()});

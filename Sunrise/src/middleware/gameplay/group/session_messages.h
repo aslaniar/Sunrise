@@ -165,6 +165,11 @@ struct MembershipMember {
     /** True publishes the player slot below. A member with no player publishes none. */
     bool ownsPlayerSlot{};
     std::uint32_t playerSlot{};
+    /** Member flag fields 11/12 (ms-start-gate2.md: the client's managed-session member
+     *  record reads two flag bytes at +0xED/+0xEF, inputs of the per-peer activity-setup-
+     *  complete derivation). Zero is the cleared value this encoder historically wrote. */
+    std::uint64_t flagA{};
+    std::uint64_t flagB{};
 };
 
 /** Player slots one session holds. It is both the table bound and the delta index range. */

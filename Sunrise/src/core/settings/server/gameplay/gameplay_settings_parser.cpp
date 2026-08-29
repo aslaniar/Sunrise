@@ -55,6 +55,7 @@ bool Parser::gameplay_settings(gameplay::Settings& output) noexcept {
     bool hasPublishJoinMachineIds = false;
     bool hasActivityHostRegionBound = false;
     bool hasActivityRegionSurvivesChurn = false;
+    bool hasActivityMemberSetupFlags = false;
     bool hasPublicRowMembershipBodies = false;
     for (;;) {
         std::string_view key;
@@ -131,6 +132,11 @@ bool Parser::gameplay_settings(gameplay::Settings& output) noexcept {
                 return false;
             }
             hasActivityRegionSurvivesChurn = true;
+        } else if (key == "activity_member_setup_flags") {
+            if (hasActivityMemberSetupFlags || !boolean(candidate.activityMemberSetupFlags)) {
+                return false;
+            }
+            hasActivityMemberSetupFlags = true;
         } else if (key == "activity_public_row_membership_bodies") {
             std::uint64_t value = 0;
             if (hasPublicRowMembershipBodies || !unsigned_integer(value)

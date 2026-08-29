@@ -358,6 +358,17 @@ void mark_session_dirty(std::uint64_t sessionId) noexcept {
                                            composition)) {
         return false;
     }
+    // FINDINGS 20.151 (ms-start-gate2): the client derives per-peer activity-setup-
+    // complete from member-record flag bytes its managed-session member record reads
+    // at +0xED/+0xEF - carried by member fields 11/12, which composed snapshots
+    // historically published as the cleared 0. Publish 1 for every member when the
+    // switch is on (session_messages.h documents the caveats).
+    if (core::settings::get().server.gameplay.activityMemberSetupFlags) {
+        for (std::size_t index = 0; index < composition.update.members.size(); ++index) {
+            composition.members[index].flagA = 1;
+            composition.members[index].flagB = 1;
+        }
+    }
 
     std::array<std::byte, kMembershipBodyCapacity> body{};
     bits::Writer writer(body);
