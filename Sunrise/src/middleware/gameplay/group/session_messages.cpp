@@ -140,6 +140,9 @@ constexpr std::size_t kNameKeyPeriod = 31U;
 /** Words the name field can hold. The stored field is 128 B = 64 words including the
  *  terminator, and we stay well inside it. */
 constexpr std::size_t kProfileNameMaxWords = 32U;
+
+/** Chunk 7's two identity words: 64-bit VALUE fields, MSB-first. */
+constexpr std::uint8_t kSoidWidth = 64;
 /** Region A chunks 4 and 5 each read 6 bits and then DEC it, so writing 1 stores 0 (the range
  *  check needs stored+1 <= 0x20). Writing 0 would store 0xFF and fail it. */
 constexpr std::uint8_t kProfileDecByteWidth = 6;
@@ -327,7 +330,10 @@ write_peer_delta(bits::Writer& writer, std::size_t index, const MembershipMember
  * @param writer Open writer positioned right after the profile-present gate bit.
  * @return True when every field fit.
  */
-[[nodiscard]] bool write_profile_block(bits::Writer& writer, std::string_view name) noexcept {
+[[nodiscard]] bool write_profile_block(bits::Writer& writer,
+                                       std::string_view name,
+                                       std::uint64_t accountSoid,
+                                       std::uint64_t characterSoid) noexcept {
     // Header, after the gate bit the caller wrote: one 32-bit word, then the 3-bit field the
     // decoder decrements.
     if (!writer.write(kProfileHeader1, kWordWidth)
@@ -346,8 +352,30 @@ write_peer_delta(bits::Writer& writer, std::size_t index, const MembershipMember
         || !writer.write(kProfileDecByteStoredZero, kProfileDecByteWidth)
         || !writer.write(1U, kFlagWidth)
         || !writer.write(kProfileDecByteStoredZero, kProfileDecByteWidth)
-        || !writer.write(0U, kFlagWidth) || !writer.write(0U, kFlagWidth)
-        || !writer.write(0U, kFlagWidth) || !writer.write(0U, kFlagWidth)) {
+        || !writer.write(0U, kFlagWidth)) {
+        return false;
+    }
+    // Chunk 7 (wire position seven, mask bit 0x020): two 64-bit words copied verbatim to the
+    // stored profile at +0xc0 and +0xc8 - the account SOID then the character SOID. Absent
+    // unless the caller supplied both, which keeps the pre-identity bytes reachable.
+    const bool identity = accountSoid != 0 && characterSoid != 0;
+    if (!writer.write(identity ? 1U : 0U, kFlagWidth)) {
+        return false;
+    }
+    // A VALUE write (most-significant-bit first), NOT bits::write_raw_u64.
+    // p2(124) shipped the raw helper here and the SOIDs landed byte-reversed:
+    // 9EAA300100100100 stored where 000110000130AA9E was wanted. bit_raw.h states the
+    // distinction outright - "raw fields copy bytes and keep engine order; VALUE fields are
+    // most-significant-bit first" - and chunk 7's reader is read_wide(0x40), a 64-bit VALUE
+    // read whose result is stored as a host integer. playerId legitimately uses the raw
+    // helper because ITS reader is a byte-wise raw read; the two conventions coexist in the
+    // same body and the field decides which applies, not the type.
+    if (identity
+        && (!writer.write(accountSoid, kSoidWidth)
+            || !writer.write(characterSoid, kSoidWidth))) {
+        return false;
+    }
+    if (!writer.write(0U, kFlagWidth) || !writer.write(0U, kFlagWidth)) {
         return false;
     }
     // Region B: four presence bits, all clear - body absent.
@@ -406,7 +434,8 @@ write_peer_delta(bits::Writer& writer, std::size_t index, const MembershipMember
     // The gate bit, then the block. A false return leaves the body truncated; the caller
     // refuses the whole message, which is the safe direction.
     return writer.write(1U, kFlagWidth)
-           && write_profile_block(writer, std::string_view{named.data(), length});
+           && write_profile_block(writer, std::string_view{named.data(), length},
+                                  player.accountSoid, player.characterSoid);
 }
 
 } // namespace

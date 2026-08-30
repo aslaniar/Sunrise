@@ -6,6 +6,7 @@
 #include <atomic>
 
 #include "../../../core/settings/settings.h"
+#include "../../../state/runtime/runtime.h"
 #include "../../../middleware/gameplay/descriptor/join_descriptor.h"
 #include "../../../middleware/gameplay/group/member_messages.h"
 #include "../../../middleware/gameplay/group/parameter_messages.h"
@@ -373,6 +374,36 @@ void mark_session_dirty(std::uint64_t sessionId) noexcept {
             }
             composition.members[index].flagA = 1;
             composition.members[index].flagB = 1;
+        }
+    }
+
+    // Region A chunk 7: give each player row a REAL account+character identity, so a peer's
+    // row names somebody. TEST-RIG MAPPING (see the setting's doc): slot picks the account by
+    // order, because no machineId->accountKey association exists yet. Both SOIDs come from
+    // provisioned account state - nothing is fabricated, and an unprovisioned slot stays zero,
+    // which leaves chunk 7 absent for that row rather than publishing a wrong identity.
+    if (core::settings::get().server.profileIdentity) {
+        for (std::size_t index = 0; index < composition.update.players.size(); ++index) {
+            auto& player = composition.players[index];
+            const auto key = static_cast<core::settings::AccountKey>(player.slot);
+            const state::AccountState account = state::account_snapshot(key);
+            if (account.primarySoid == 0) {
+                continue;
+            }
+            std::uint64_t character = 0;
+            for (const auto& entry : account.characters) {
+                if (entry.soid != 0 && (entry.selected || character == 0)) {
+                    character = entry.soid;
+                    if (entry.selected) {
+                        break;
+                    }
+                }
+            }
+            if (character == 0) {
+                continue;
+            }
+            player.accountSoid = account.primarySoid;
+            player.characterSoid = character;
         }
     }
 

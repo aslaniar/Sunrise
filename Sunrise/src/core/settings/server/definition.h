@@ -133,6 +133,20 @@ struct Settings {
      * Only meaningful while publishPlayerProfile is true.
      */
     std::array<char, kProfileNameCapacity> profileName{};
+    /**
+     * Publishes region A chunk 7 - the account and character SOIDs - on every player row.
+     * THE POINT IS DIAGNOSTIC, not cosmetic: p2(123) measured that neither client ever asks
+     * the server for a PEER's character record (13 subscribe_in events, every root the
+     * requester's own). A peer's row currently names nobody, so there is nothing to ask
+     * about. This publishes a real identity and asks whether a client, told who a peer is,
+     * then requests that peer's root. That answer decides whether the character_record
+     * root->account work (20.173) is worth building.
+     * TEST-RIG CAVEAT: no machineId->accountKey association exists in this server, so the
+     * player slot picks the account by ORDER. That is sound on a two-account rig where both
+     * SOIDs are real and distinct, and it is NOT a production mapping - building the real
+     * association is part of the character_record work this experiment gates.
+     */
+    bool profileIdentity{false};
     /** Peer-bearing bodies one shape carries before advancing. Zero takes the default. */
     std::uint64_t membershipSweepBodies{4};
     /** Milliseconds one shape must also hold, so a burst cannot skip shapes. Zero = default. */

@@ -190,6 +190,17 @@ struct MembershipPlayer {
     std::uint32_t addSequence{};
     /** One-bit field the local add takes from its caller. Zero is its cleared value. */
     bool flag{};
+    /**
+     * Region A chunk 7: the account and character SOIDs, published verbatim as two 64-bit
+     * words landing at the client's stored offsets +0xc0 and +0xc8 (FINDINGS 20.179 R2).
+     * The p2(113) harvest shows exactly this pair there for the local player
+     * (0x9EAA300100100100 / ...0101). BOTH ZERO means the chunk is absent, which is the
+     * shape every block carried before identity, so leaving these unset is a full rollback.
+     * This is the field a client needs to know WHICH character a peer is - without it a
+     * peer's row names nobody and no character-record request can be formed for it.
+     */
+    std::uint64_t accountSoid{};
+    std::uint64_t characterSoid{};
 };
 
 /** Complete membership snapshot one host publishes. */
