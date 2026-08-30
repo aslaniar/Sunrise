@@ -37,6 +37,41 @@ constexpr std::size_t kChunkBytes = 64;
 /** Distinct applies worth dumping in full. The counter keeps reporting past this. */
 constexpr unsigned kDumpCap = 8;
 
+/**
+ * SEPARATE BUDGETS PER CALLER CLASS (p2(118), and it cost a boot).
+ * A single shared cap of 8 made this observer blind to the exact event it exists to catch:
+ * the local registry commits fire in a burst during load (t=58188..71062 in p2(118)) and
+ * consumed all eight slots THIRTY-FIVE SECONDS before the wire applies began at t=106490.
+ * The run then reported zero wire fires - which was the instrument going quiet, not the
+ * client. A null result indicts the instrument first (L13); this is that lesson as code.
+ * The WIRE caller now has its own budget that the local path cannot touch, and the one-line
+ * summary is capped far higher than the expensive hex dumps.
+ */
+/**
+ * PER-CLASS BUDGETS, KEYED ON (path, row index) - p2(121), the FOURTH time this session a
+ * cap destroyed the evidence for the question under test.
+ * p2(121) ran the mac for 451 s and the rig for 93 s, because the mac sat in the Tower
+ * while the rig's launch was repaired. The mac spent all 96 of its shared line budget on
+ * its OWN row during those solo minutes and went blind at t=189601; the peer did not
+ * arrive until t=425339. The rig, joining while it still had budget, recorded 21 fires for
+ * the peer's row. So the run proved the claim on one machine and could not see it on the
+ * other - for no reason except run length.
+ * A single budget cannot serve classes whose arrival times differ by minutes. Budget PER
+ * CLASS instead: the local path cannot starve the wire path (already true), and now row
+ * index 0 cannot starve row index 1 either. The FIRST fire for a peer's row is always
+ * recorded no matter how long the client sat alone first.
+ */
+constexpr unsigned kClassCount = 16;          // (wire|local) x row index 0..7
+constexpr unsigned kLineCapPerClass = 24;
+constexpr unsigned kDumpCapPerClass = 4;
+
+/**
+ * The apply's bounds (0x141781800..0x1417834CE, .pdata-verified). A return address inside
+ * it means the WIRE path; the local registry commit returns into 0x1417a6xxx.
+ */
+constexpr unsigned long long kApplyRvaLo = 0x1781800ULL;
+constexpr unsigned long long kApplyRvaHi = 0x17834CEULL;
+
 /** Verified pass-through depth: 4 registers + 16 stack slots, forwarded bit-exact. */
 using HelperFn = std::uint64_t(__fastcall*)(void*, void*, void*, void*,
                                             void*, void*, void*, void*, void*, void*,
@@ -46,6 +81,13 @@ using HelperFn = std::uint64_t(__fastcall*)(void*, void*, void*, void*,
 hooking::detour::Handle g_handle{};
 std::atomic<unsigned> g_calls{};
 std::atomic<unsigned> g_dumped{};
+std::atomic<unsigned> g_classLines[kClassCount]{};
+std::atomic<unsigned> g_classDumps[kClassCount]{};
+
+/** Class key: wire/local in the high bit, the row index (clamped to 0..7) in the low bits. */
+unsigned class_of(bool wire, unsigned rowIndex) noexcept {
+    return (wire ? 8U : 0U) | (rowIndex < 8U ? rowIndex : 7U);
+}
 std::atomic<bool> g_installed{};
 std::uintptr_t g_base{};
 
@@ -115,17 +157,25 @@ std::uint64_t __fastcall observe_helper(void* rcx, void* rdx, void* r8, void* r9
                                         void* s12, void* s13, void* s14,
                                         void* s15) noexcept {
     const unsigned call = g_calls.fetch_add(1, std::memory_order_relaxed) + 1U;
-    if (g_dumped.load(std::memory_order_relaxed) < kDumpCap) {
-        g_dumped.fetch_add(1, std::memory_order_relaxed);
-        const auto ret = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
-        const unsigned long long callerRva =
-            g_base != 0 && ret > g_base ? static_cast<unsigned long long>(ret - g_base) : 0ULL;
+    const auto ret = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
+    const unsigned long long callerRva =
+        g_base != 0 && ret > g_base ? static_cast<unsigned long long>(ret - g_base) : 0ULL;
+    const bool wire = callerRva >= kApplyRvaLo && callerRva <= kApplyRvaHi;
+    const unsigned rowIndex =
+        static_cast<unsigned>(reinterpret_cast<std::uintptr_t>(rdx) & 0xFFFFFFFFULL);
+    const unsigned klass = class_of(wire, rowIndex);
+    const bool dump = g_classDumps[klass].load(std::memory_order_relaxed) < kDumpCapPerClass;
+    if (dump) {
+        g_classDumps[klass].fetch_add(1, std::memory_order_relaxed);
+    }
+    if (g_classLines[klass].load(std::memory_order_relaxed) < kLineCapPerClass) {
+        g_classLines[klass].fetch_add(1, std::memory_order_relaxed);
         std::array<char, 448> text{};
         const int written = std::snprintf(
             text.data(), text.size(),
-            "ev=ingress stage=apply call=%u caller_rva=0x%llX index=%u header1=0x%08X "
+            "ev=ingress stage=apply call=%u path=%s caller_rva=0x%llX index=%u header1=0x%08X "
             "header2=0x%08X mask=0x%llX verify=0x%llX hash=0x%08X regionA=0x%llX tail=0x%llX",
-            call, callerRva,
+            call, wire ? "WIRE" : "local", callerRva,
             static_cast<unsigned>(reinterpret_cast<std::uintptr_t>(rdx) & 0xFFFFFFFFULL),
             static_cast<unsigned>(reinterpret_cast<std::uintptr_t>(r8) & 0xFFFFFFFFULL),
             static_cast<unsigned>(reinterpret_cast<std::uintptr_t>(r9) & 0xFFFFFFFFULL),
@@ -138,6 +188,8 @@ std::uint64_t __fastcall observe_helper(void* rcx, void* rdx, void* r8, void* r9
             core::log::write(core::log::Channel::client, core::log::Level::info,
                              {text.data(), static_cast<std::size_t>(written)});
         }
+    }
+    if (dump) {
         dump_region("regionA", call, a6, kRegionABytes);
         dump_region("tail", call, a9, kTailBytes);
         // Valid ONLY for the wire caller; the line above carries the RVA that says which.

@@ -76,6 +76,24 @@ struct Settings {
      * loop saw gate=0 or another struct. OBSERVATION ONLY. FALSE by default.
      */
     bool decoderTrace{};
+    /**
+     * THE FIRST WRITE DETOUR THIS PROJECT HAS SHIPPED (p2(116)). Every internal detour
+     * before it was read-only; the p2(102)-p2(109) admission poisonings were write
+     * detours done carelessly and they invalidated eight boots by corrupting the mac's
+     * OWN structures (20.170). This one is deliberately shaped so that failure mode is
+     * unreachable: it NEVER writes through a client pointer. The apply 0x141781800 takes
+     * its profile content from a STAGING OBJECT passed in r8 (20.183 R2), and at stage 2
+     * that pointer is read from session slot [+0x1af60], which no readable code writes
+     * (20.185 R2) - the values observed were TLS tick counts, not addresses (20.184 R2).
+     * Writing through them would be a wild write to an arbitrary address. Instead the
+     * detour SUBSTITUTES a buffer we own, populated with the fields the apply reads, and
+     * hands that to the original as r8. The incoming pointer is logged and discarded.
+     * Armed only when the decoded update actually carries a player row, so the
+     * members-only applies keep their original argument and their original behaviour.
+     * FALSE by default; flipping it needs no rebuild. Requires decoderTrace (the hook
+     * this rides on). OBSERVATION+WRITE - read the boot brief before arming.
+     */
+    bool stagingPopulate{};
 
     /** Member-record index the injection writes. Must be unused - the census names one. */
     std::uint32_t admissionMemberIndex{};

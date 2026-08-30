@@ -121,6 +121,21 @@ constexpr std::uint8_t kProfileDecByteWidth = 6;
 /** See kProfileDecByteWidth. */
 constexpr std::uint64_t kProfileDecByteStoredZero = 1;
 /** Tail word [rdi+0x00], replayed from the p2(113) harvest. */
+/**
+ * Region B carries FOUR 1-bit presence flags, not one (the reader 0x1416D3C30, read to its
+ * `mov al,1` return; the wrapper 0x1416D3DD0 reads no bits, which is what made the earlier
+ * one-bit reading look right). Flag 1 gates an obfuscated name, flags 2/3 a 6-bit field
+ * each, flag 4 a 2-bit then a 6-bit field. All four clear = an empty region B, which is
+ * what a minimal block wants.
+ * p2(116) proved the one-bit form is what breaks us: the client consumed our single bit as
+ * flag 1, then ate the first three bits of the 104-bit tail as flags 2-4, and every field
+ * after region B was read three bits early. The tail's zeros survived the shift but the
+ * trailing 32-bit state hash was read past the body's bit count, the reader's error flag
+ * set, and the decoder returned FALSE (20.188 R1: ret=0x0 on the player-bearing body,
+ * ret=0x1 on the members-only one in the same millisecond).
+ */
+constexpr std::uint8_t kProfileRegionBFlags = 4;
+
 constexpr std::uint64_t kProfileTailWord0 = 0;
 /** Tail word [rdi+0x04], replayed from the p2(113) harvest. */
 constexpr std::uint64_t kProfileTailWord1 = 0;
@@ -272,10 +287,15 @@ write_peer_delta(bits::Writer& writer, std::size_t index, const MembershipMember
         || !writer.write(0U, kFlagWidth) || !writer.write(0U, kFlagWidth)) {
         return false;
     }
-    // Region B: one presence bit, body absent.
+    // Region B: four presence bits, all clear - body absent.
     // Tail: fixed and unconditional - three 32-bit words, a 5-bit field whose 0x10 bit stays
     // clear, a 2-bit field, and one flag. 104 bits.
-    return writer.write(0U, kFlagWidth) && writer.write(kProfileTailWord0, kWordWidth)
+    for (std::uint8_t flag = 0; flag < kProfileRegionBFlags; ++flag) {
+        if (!writer.write(0U, kFlagWidth)) {
+            return false;
+        }
+    }
+    return writer.write(kProfileTailWord0, kWordWidth)
            && writer.write(kProfileTailWord1, kWordWidth)
            && writer.write(kProfileTailWord2, kWordWidth)
            && writer.write(kProfileTailField3, kProfileTailField3Width)

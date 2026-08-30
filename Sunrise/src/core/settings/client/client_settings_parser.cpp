@@ -17,6 +17,7 @@ bool Parser::client_settings(client::Settings& output) noexcept {
     bool hasProfileHarvest = false;
     bool hasProfileIngress = false;
     bool hasDecoderTrace = false;
+    bool hasStagingPopulate = false;
     bool hasAdmissionMemberIndex = false;
     bool hasAdmissionXuid = false;
     bool hasAdmissionPeerSteamId = false;
@@ -75,6 +76,11 @@ bool Parser::client_settings(client::Settings& output) noexcept {
                 return false;
             }
             hasDecoderTrace = true;
+        } else if (key == "staging_populate") {
+            if (hasStagingPopulate || !boolean(candidate.stagingPopulate)) {
+                return false;
+            }
+            hasStagingPopulate = true;
         } else if (key == "profile_harvest") {
             if (hasProfileHarvest || !boolean(candidate.profileHarvest)) {
                 return false;
