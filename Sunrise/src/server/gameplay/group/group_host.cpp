@@ -414,19 +414,22 @@ void mark_session_dirty(std::uint64_t sessionId) noexcept {
                                        composition.update,
                                        core::settings::get().server.publishPlayerProfile,
                                        std::string_view{
-                                           core::settings::get().server.profileName.data()})
+                                           core::settings::get().server.profileName.data()},
+                                       core::settings::get().server.sessionStateClientBase)
         || !writer.finish(size)) {
         return false;
     }
     // The peer logs the hash it wanted, so ours has to be logged next to it to read a mismatch.
     report(core::log::Level::info,
            "ev=gameplay stage=membership result=built revision=%u members=%zu players=%zu "
-           "hash=0x%08X peer=%u",
+           "hash=0x%08X peer=%u client_base=%u",
            composition.update.revision,
            composition.update.members.size(),
            composition.update.players.size(),
-           wire::session_state_hash(composition.update),
-           record.endpoint.port);
+           wire::session_state_hash(composition.update,
+                                    core::settings::get().server.sessionStateClientBase),
+           record.endpoint.port,
+           core::settings::get().server.sessionStateClientBase ? 1U : 0U);
     const bool queued = peer::enqueue_reliable(
         record.sessionId,
         record.endpoint,

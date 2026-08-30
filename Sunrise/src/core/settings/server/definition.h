@@ -159,6 +159,18 @@ struct Settings {
      * account store does not carry yet.
      */
     std::uint32_t profilePower{0};
+    /**
+     * Hashes the membership state the way the CLIENT lays it out, not the way we do:
+     * the client's apply pins the player-table header 8 bytes above our model
+     * (l9-profile-layout ADDENDUM - table@15200 + 32x424 = 28768 exactly, where our
+     * base leaves 8 bytes of slack). Observed live 2026-08-30: our hash over our own
+     * base disagrees with the client's, and the client rejects the body
+     * ("session membership checksum failed") - chronically every boot, escalating to
+     * "no membership information, forcing disconnect" when membership churns, which
+     * is the black-screen-at-peer-arrival mechanism. FALSE (default) preserves the
+     * historical bytes; TRUE publishes the client-consistent hash.
+     */
+    bool sessionStateClientBase{false};
     /** Peer-bearing bodies one shape carries before advancing. Zero takes the default. */
     std::uint64_t membershipSweepBodies{4};
     /** Milliseconds one shape must also hold, so a burst cannot skip shapes. Zero = default. */

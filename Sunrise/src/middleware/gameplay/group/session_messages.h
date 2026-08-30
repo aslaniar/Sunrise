@@ -234,6 +234,7 @@ struct MembershipUpdate {
 [[nodiscard]] bool write_membership_update(encoding::bits::Writer& writer,
                                            const MembershipUpdate& body,
                                            bool publishProfile,
-                                           std::string_view profileName) noexcept;
+                                           std::string_view profileName,
+                                           bool clientStateBase) noexcept;
 
 } // namespace sunrise::middleware::gameplay::group

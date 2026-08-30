@@ -90,6 +90,7 @@ bool Parser::server_settings(server::Settings& output) noexcept {
     bool hasProfileName = false;
     bool hasProfileIdentity = false;
     bool hasProfilePower = false;
+    bool hasSessionStateClientBase = false;
     bool hasConfigGuid = false;
     bool hasClientLogPath = false;
     bool hasPackagesDir = false;
@@ -154,6 +155,11 @@ bool Parser::server_settings(server::Settings& output) noexcept {
                 return false;
             }
             hasProfileIdentity = true;
+        } else if (key == "session_state_client_base") {
+            if (hasSessionStateClientBase || !boolean(output.sessionStateClientBase)) {
+                return false;
+            }
+            hasSessionStateClientBase = true;
         } else if (key == "profile_power") {
             // Region A chunk 8's float, authored as an integer light level. Zero (the
             // default) keeps the chunk absent, which reproduces the pre-power bytes.

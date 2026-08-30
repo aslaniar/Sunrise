@@ -63,6 +63,16 @@ constexpr std::size_t kPeerTimestampOffset = 16;
 
 /** Live player count. */
 constexpr std::size_t kPlayerCountOffset = 15184;
+/**
+ * The client's apply pins its player-table header 8 bytes ABOVE our model
+ * (count@0x3b58/mask@0x3b5c/table@0x3b60 vs our 0x3b50/54/58 - l9-profile-layout
+ * ADDENDUM). With the shift the layout is also self-consistent: 15200 + 32x424
+ * = 28768 = kSessionStateSize exactly, where our base leaves 8 bytes of slack.
+ * The hash mismatch this shift causes is OBSERVED (2026-08-30: membership
+ * checksum rejections escalating to force-disconnect at peer arrival), which is
+ * the addendum's named re-open condition.
+ */
+constexpr std::size_t kPlayerBaseShift = 8;
 /** Occupied player-slot mask. */
 constexpr std::size_t kPlayerMaskOffset = 15188;
 /** First player entry. */
@@ -121,7 +131,8 @@ void write_integer(SessionState& output,
 } // namespace
 
 /** Fills a replica of the session state a peer holds after applying one complete snapshot. */
-void build_session_state(const MembershipUpdate& body, SessionState& output) noexcept {
+void build_session_state(const MembershipUpdate& body, SessionState& output,
+                         const bool clientBase) noexcept {
     output = {};
     const std::uint64_t count = static_cast<std::uint64_t>(body.members.size());
     // Members occupy indices 0 upward, so the mask follows from the count. The encoder derives
@@ -177,9 +188,11 @@ void build_session_state(const MembershipUpdate& body, SessionState& output) noe
     }
 
     std::uint64_t playerMask = 0;
+    const std::size_t baseShift = clientBase ? kPlayerBaseShift : 0U;
     for (const MembershipPlayer& player : body.players) {
         playerMask |= std::uint64_t{1} << player.slot;
-        const std::size_t entry = kPlayerTableOffset + kPlayerStride * player.slot;
+        const std::size_t entry =
+            kPlayerTableOffset + baseShift + kPlayerStride * player.slot;
         write_integer(output, entry + kPlayerIdOffset, player.playerId, sizeof(std::uint64_t));
         write_integer(
             output, entry + kPlayerMemberOffset, player.memberIndex, sizeof(std::uint32_t));
@@ -193,15 +206,18 @@ void build_session_state(const MembershipUpdate& body, SessionState& output) noe
         write_integer(
             output, entry + kPlayerClearedSecondOffset, kPlayerCleared, sizeof(std::uint32_t));
     }
-    write_integer(output, kPlayerCountOffset, body.players.size(), sizeof(std::uint32_t));
-    write_integer(output, kPlayerMaskOffset, playerMask, sizeof(std::uint32_t));
+    write_integer(output,
+                  kPlayerCountOffset + baseShift,
+                  body.players.size(),
+                  sizeof(std::uint32_t));
+    write_integer(output, kPlayerMaskOffset + baseShift, playerMask, sizeof(std::uint32_t));
 }
 
 /** Computes the state hash a peer will expect for one complete snapshot. */
-std::uint32_t session_state_hash(const MembershipUpdate& body) noexcept {
+std::uint32_t session_state_hash(const MembershipUpdate& body, const bool clientBase) noexcept {
     // The replica is 28 KiB, too large for a stack frame on a game thread.
     static thread_local SessionState state{};
-    build_session_state(body, state);
+    build_session_state(body, state, clientBase);
     return crypto::lookup3::hash_bytes(state, kHashInitial);
 }
 

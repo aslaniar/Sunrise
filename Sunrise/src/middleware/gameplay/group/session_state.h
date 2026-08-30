@@ -20,13 +20,20 @@ using SessionState = std::array<std::byte, kSessionStateSize>;
  * @param body Snapshot the peer will apply.
  * @param output Receives the replica, fully overwritten.
  */
-void build_session_state(const MembershipUpdate& body, SessionState& output) noexcept;
+void build_session_state(const MembershipUpdate& body, SessionState& output,
+                         bool clientBase) noexcept;
 
 /**
  * Computes the state hash a peer will expect for one complete snapshot.
  * @param body Snapshot the peer will apply.
+ * @param clientBase Hash the CLIENT's layout, not ours: the client's apply reads the
+ *                   player-table header 8 bytes above our model (l9-profile-layout
+ *                   ADDENDUM), and a hash over OUR base disagrees with the client's
+ *                   own - observed live 2026-08-30 as membership checksum rejections
+ *                   escalating to session force-disconnect at peer arrival.
  * @return The hash to publish in the message tail.
  */
-[[nodiscard]] std::uint32_t session_state_hash(const MembershipUpdate& body) noexcept;
+[[nodiscard]] std::uint32_t session_state_hash(const MembershipUpdate& body,
+                                               bool clientBase) noexcept;
 
 } // namespace sunrise::middleware::gameplay::group
