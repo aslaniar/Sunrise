@@ -115,6 +115,31 @@ constexpr std::uint64_t kProfileHeader2Stored = 1;
 /** Region A chunk 1 is the name: 16-bit words until a zero word. One zero word IS the
  *  terminator, and the name scan needs that zero word to return true. */
 constexpr std::uint8_t kProfileNameWidth = 16;
+
+/**
+ * THE NAME OBFUSCATION, WRITER SIDE (FINDINGS 20.179 RESULT 1, from the reader's
+ * deobfuscation loop at 0x1416D3460):
+ *     plain[i] = key16(i) ^ ((wire[i] * 0x7b4f) & 0xFFFF)
+ *     key16(0) = 0,  key16(i>0) = rotl32(0xC245B0C4, i mod 31) & 0xFFFF
+ * so the writer inverts the multiply: wire[i] = ((plain[i] ^ key16(i)) * inv) & 0xFFFF.
+ * 0x7b4f is odd, so it is a unit mod 2^16 and the inverse exists. The static_assert below
+ * is the guard - a mistyped inverse would silently publish garbage names.
+ * NOTE the index-0 special case is NOT a consequence of the rotation: at i=31 the rotation
+ * is by ZERO and key16(31) = 0xB0C4, not 0. Names 31+ words long depend on that.
+ * Oracle: RE_scripts/name_codec.py --selftest (10/10), same constants, round-trips.
+ */
+constexpr std::uint16_t kNameMultiplier = 0x7B4FU;
+constexpr std::uint16_t kNameMultiplierInverse = 0xBBAFU;
+static_assert((kNameMultiplier * kNameMultiplierInverse) & 0xFFFFU,
+              "the name multiplier inverse must exist");
+static_assert(((kNameMultiplier * kNameMultiplierInverse) & 0xFFFFU) == 1U,
+              "wire[i] = (plain[i] ^ key16(i)) * inverse requires a true modular inverse");
+constexpr std::uint32_t kNameKeySeed = 0xC245B0C4U;
+constexpr std::size_t kNameKeyPeriod = 31U;
+
+/** Words the name field can hold. The stored field is 128 B = 64 words including the
+ *  terminator, and we stay well inside it. */
+constexpr std::size_t kProfileNameMaxWords = 32U;
 /** Region A chunks 4 and 5 each read 6 bits and then DEC it, so writing 1 stores 0 (the range
  *  check needs stored+1 <= 0x20). Writing 0 would store 0xFF and fail it. */
 constexpr std::uint8_t kProfileDecByteWidth = 6;
@@ -255,8 +280,46 @@ write_peer_delta(bits::Writer& writer, std::size_t index, const MembershipMember
            && writer.write(kEntryFieldAbsent, kFlagWidth);
 }
 
+/** The per-word key the reader XORs in. Index 0 is a special case, not a rotation. */
+[[nodiscard]] std::uint16_t name_key16(std::size_t index) noexcept {
+    if (index == 0) {
+        return 0U;
+    }
+    const auto rotation = static_cast<unsigned>(index % kNameKeyPeriod);
+    const std::uint32_t rotated =
+        rotation == 0U ? kNameKeySeed
+                       : ((kNameKeySeed << rotation) | (kNameKeySeed >> (32U - rotation)));
+    return static_cast<std::uint16_t>(rotated & 0xFFFFU);
+}
+
 /**
- * Writes the decoder-correct MINIMAL profile block (FINDINGS 20.177 RESULT 5): an empty
+ * Writes region A's chunk 1: the presence flag, the obfuscated name words, then the ZERO
+ * WIRE WORD that terminates the reader's walk. An empty name writes just the terminator,
+ * which is the shape every block carried before names existed - so an unset setting
+ * reproduces the previous bytes exactly.
+ * @param writer Open writer positioned at chunk 1's presence flag.
+ * @param name Plain text to publish; truncated at kProfileNameMaxWords.
+ * @return True when every field fit.
+ */
+[[nodiscard]] bool write_profile_name(bits::Writer& writer, std::string_view name) noexcept {
+    if (!writer.write(1U, kFlagWidth)) {
+        return false;
+    }
+    const std::size_t words = name.size() < kProfileNameMaxWords ? name.size()
+                                                                 : kProfileNameMaxWords;
+    for (std::size_t index = 0; index < words; ++index) {
+        const auto plain = static_cast<std::uint16_t>(static_cast<unsigned char>(name[index]));
+        const auto obfuscated = static_cast<std::uint16_t>(
+            ((plain ^ name_key16(index)) * kNameMultiplierInverse) & 0xFFFFU);
+        if (!writer.write(obfuscated, kProfileNameWidth)) {
+            return false;
+        }
+    }
+    return writer.write(0U, kProfileNameWidth);
+}
+
+/**
+ * Writes the decoder-correct profile block (FINDINGS 20.177 RESULT 5): an empty
  * profile whose shape alone forces all four of region A's exit conditions true by
  * construction - chunk 6 absent keeps r15b at its entry value 1, chunk 1's single zero word
  * satisfies the name terminator, and chunks 4/5 store 0, passing both range checks. It
@@ -264,7 +327,7 @@ write_peer_delta(bits::Writer& writer, std::size_t index, const MembershipMember
  * @param writer Open writer positioned right after the profile-present gate bit.
  * @return True when every field fit.
  */
-[[nodiscard]] bool write_minimal_profile(bits::Writer& writer) noexcept {
+[[nodiscard]] bool write_profile_block(bits::Writer& writer, std::string_view name) noexcept {
     // Header, after the gate bit the caller wrote: one 32-bit word, then the 3-bit field the
     // decoder decrements.
     if (!writer.write(kProfileHeader1, kWordWidth)
@@ -277,7 +340,7 @@ write_peer_delta(bits::Writer& writer, std::size_t index, const MembershipMember
     //   #1 0x001 name (one zero word)  #2 0x002 absent  #3 0x004 absent
     //   #4 0x008 dec-byte              #5 0x100 dec-byte (still wire position five)
     //   #6 0x010 absent                #7 0x020 absent   #8 0x040 absent  #9 0x080 absent
-    if (!writer.write(1U, kFlagWidth) || !writer.write(0U, kProfileNameWidth)
+    if (!write_profile_name(writer, name)
         || !writer.write(0U, kFlagWidth) || !writer.write(0U, kFlagWidth)
         || !writer.write(1U, kFlagWidth)
         || !writer.write(kProfileDecByteStoredZero, kProfileDecByteWidth)
@@ -313,7 +376,8 @@ write_peer_delta(bits::Writer& writer, std::size_t index, const MembershipMember
  */
 [[nodiscard]] bool write_player_delta(bits::Writer& writer,
                                       const MembershipPlayer& player,
-                                      bool publishProfile) noexcept {
+                                      bool publishProfile,
+                                      std::string_view profileName) noexcept {
     if (!writer.write(player.slot, kPlayerIndexWidth) || !writer.write(kDeltaEntryFull, kFlagWidth)
         || !writer.write(1U, kFlagWidth) || !bits::write_raw_u64(writer, player.playerId)
         || !writer.write(player.memberIndex, kPlayerMemberWidth)
@@ -325,9 +389,24 @@ write_peer_delta(bits::Writer& writer, std::size_t index, const MembershipMember
     if (!publishProfile) {
         return writer.write(kPlayerProfileAbsent, kFlagWidth);
     }
+    // Each row gets a DISTINCT name - the configured text with the player's slot appended -
+    // so a client applying two rows can be told which row it applied. Without that, both
+    // guardians would carry the same string and a peer's row would be indistinguishable
+    // from the local one in the logs. An empty setting publishes the empty name, which
+    // reproduces the pre-name bytes exactly.
+    std::array<char, kProfileNameMaxWords + 1U> named{};
+    std::size_t length = 0;
+    for (; length < profileName.size() && length + 2U < named.size(); ++length) {
+        named[length] = profileName[length];
+    }
+    if (length != 0 && length + 1U < named.size()) {
+        named[length] = static_cast<char>('0' + static_cast<int>(player.slot % 10U));
+        ++length;
+    }
     // The gate bit, then the block. A false return leaves the body truncated; the caller
     // refuses the whole message, which is the safe direction.
-    return writer.write(1U, kFlagWidth) && write_minimal_profile(writer);
+    return writer.write(1U, kFlagWidth)
+           && write_profile_block(writer, std::string_view{named.data(), length});
 }
 
 } // namespace
@@ -429,12 +508,14 @@ bool write_time_synchronize(bits::Writer& writer, const TimeSynchronize& body) n
 }
 
 /** Writes a complete-snapshot membership update.
- *  @param publishProfile When true, every player row carries the minimal profile block
+ *  @param publishProfile When true, every player row carries the profile block
+ *  @param profileName Plain name text to publish; the player's slot digit is appended
  *                        (FINDINGS 20.177 RESULT 5) behind its set gate bit.
  *  @return True when the whole body fit and the revision and member count are encodable. */
 bool write_membership_update(bits::Writer& writer,
                              const MembershipUpdate& body,
-                             bool publishProfile) noexcept {
+                             bool publishProfile,
+                             std::string_view profileName) noexcept {
     // The consumer refuses the message unless the base revision is below the message revision,
     // and a complete snapshot always publishes base revision 0.
     if (body.revision == 0 || body.members.size() > kMemberCapacity
@@ -467,7 +548,7 @@ bool write_membership_update(bits::Writer& writer,
         }
     }
     for (const MembershipPlayer& player : body.players) {
-        if (!write_player_delta(writer, player, publishProfile)) {
+        if (!write_player_delta(writer, player, publishProfile, profileName)) {
             return false;
         }
     }

@@ -87,6 +87,7 @@ bool Parser::server_settings(server::Settings& output) noexcept {
     bool hasBindAddress = false;
     bool hasRelayAddress = false;
     bool hasBootstrapToken = false;
+    bool hasProfileName = false;
     bool hasConfigGuid = false;
     bool hasClientLogPath = false;
     bool hasPackagesDir = false;
@@ -146,6 +147,18 @@ bool Parser::server_settings(server::Settings& output) noexcept {
                 return false;
             }
             hasRelayAddress = true;
+        } else if (key == "profile_name") {
+            std::string_view value;
+            if (hasProfileName || !string(value)
+                || value.size() >= server::kProfileNameCapacity) {
+                return false;
+            }
+            if (value.empty()) {
+                output.profileName = {};
+            } else if (!decode_text(value, output.profileName)) {
+                return false;
+            }
+            hasProfileName = true;
         } else if (key == "bootstrap_token") {
             std::string_view value;
             if (hasBootstrapToken || !string(value)

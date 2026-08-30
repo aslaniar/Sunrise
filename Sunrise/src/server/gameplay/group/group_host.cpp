@@ -381,7 +381,9 @@ void mark_session_dirty(std::uint64_t sessionId) noexcept {
     std::size_t size = 0;
     if (!wire::write_membership_update(writer,
                                        composition.update,
-                                       core::settings::get().server.publishPlayerProfile)
+                                       core::settings::get().server.publishPlayerProfile,
+                                       std::string_view{
+                                           core::settings::get().server.profileName.data()})
         || !writer.finish(size)) {
         return false;
     }

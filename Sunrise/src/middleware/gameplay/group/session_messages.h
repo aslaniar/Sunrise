@@ -214,13 +214,15 @@ struct MembershipUpdate {
  * The trailing hash covers the state it will hold after applying; `session_state.h` builds it.
  * @param writer Writer positioned at the body.
  * @param body Snapshot to publish.
- * @param publishProfile When true, every player row carries the minimal profile block
+ * @param publishProfile When true, every player row carries the profile block
+ * @param profileName Plain name text to publish; the player's slot digit is appended
  *                       (FINDINGS 20.177 RESULT 5) behind its set gate bit instead of the
  *                       absent flag. Server setting `publish_player_profile`, default false.
  * @return True when the whole body fit and the revision and member count are encodable.
  */
 [[nodiscard]] bool write_membership_update(encoding::bits::Writer& writer,
                                            const MembershipUpdate& body,
-                                           bool publishProfile) noexcept;
+                                           bool publishProfile,
+                                           std::string_view profileName) noexcept;
 
 } // namespace sunrise::middleware::gameplay::group

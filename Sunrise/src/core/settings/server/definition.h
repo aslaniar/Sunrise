@@ -16,6 +16,9 @@ inline constexpr std::uint16_t kDefaultBapPort = 30974;
 /** The Client rewrites every external URL onto the HTTPS default port. */
 inline constexpr std::uint16_t kDefaultHttpsPort = 443;
 /** A 16-byte bootstrap token is configured as exactly 32 hex characters plus a null. */
+/** Name text capacity. The wire field holds 64 words; we stay well inside it. */
+constexpr std::size_t kProfileNameCapacity = 32;
+
 inline constexpr std::size_t kBootstrapTokenCapacity = 33;
 /** The served ContentConfig id matches the Client token size: 36 bytes plus a null. */
 inline constexpr std::size_t kConfigGuidCapacity = 37;
@@ -121,6 +124,15 @@ struct Settings {
      * or appearance content. Default false; flip at the boot with no rebuild.
      */
     bool publishPlayerProfile{false};
+    /**
+     * Plain text published as each player row's profile NAME (region A chunk 1). The
+     * player's slot digit is appended, so the two rows of a paired session carry distinct
+     * strings and a client's log says WHICH row it applied. EMPTY (the default) publishes
+     * the empty name, which reproduces the pre-name bytes exactly - so this setting is
+     * inert until it is set, and clearing it is a full rollback with no rebuild.
+     * Only meaningful while publishPlayerProfile is true.
+     */
+    std::array<char, kProfileNameCapacity> profileName{};
     /** Peer-bearing bodies one shape carries before advancing. Zero takes the default. */
     std::uint64_t membershipSweepBodies{4};
     /** Milliseconds one shape must also hold, so a burst cannot skip shapes. Zero = default. */
