@@ -147,6 +147,18 @@ struct Settings {
      * association is part of the character_record work this experiment gates.
      */
     bool profileIdentity{false};
+    /**
+     * The POWER value published in region A chunk 8 of every player row's profile
+     * block (FINDINGS 20.202: the stored 13-byte chunk is a float - 1060.0f on both
+     * reference accounts - followed by eight 0xFF sentinels and a zero). Zero, the
+     * default, leaves chunk 8 ABSENT, which reproduces the pre-power bytes exactly;
+     * any other value is the light level to publish. The chunk's WIRE form is
+     * derived separately (the only schema-table-driven chunk, 20.179 R2) - see the
+     * write side of session_messages.cpp for the derivation status. GLOBAL, like
+     * profile_name: one value on every row. Per-account power would need a field the
+     * account store does not carry yet.
+     */
+    std::uint32_t profilePower{0};
     /** Peer-bearing bodies one shape carries before advancing. Zero takes the default. */
     std::uint64_t membershipSweepBodies{4};
     /** Milliseconds one shape must also hold, so a burst cannot skip shapes. Zero = default. */

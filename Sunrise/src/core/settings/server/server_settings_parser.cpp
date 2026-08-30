@@ -89,6 +89,7 @@ bool Parser::server_settings(server::Settings& output) noexcept {
     bool hasBootstrapToken = false;
     bool hasProfileName = false;
     bool hasProfileIdentity = false;
+    bool hasProfilePower = false;
     bool hasConfigGuid = false;
     bool hasClientLogPath = false;
     bool hasPackagesDir = false;
@@ -153,6 +154,15 @@ bool Parser::server_settings(server::Settings& output) noexcept {
                 return false;
             }
             hasProfileIdentity = true;
+        } else if (key == "profile_power") {
+            // Region A chunk 8's float, authored as an integer light level. Zero (the
+            // default) keeps the chunk absent, which reproduces the pre-power bytes.
+            std::uint64_t value = 0;
+            if (hasProfilePower || !unsigned_integer(value) || value > 0xFFFFFFFFULL) {
+                return false;
+            }
+            output.profilePower = static_cast<std::uint32_t>(value);
+            hasProfilePower = true;
         } else if (key == "profile_name") {
             std::string_view value;
             if (hasProfileName || !string(value)
