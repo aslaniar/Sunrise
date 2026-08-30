@@ -34,6 +34,50 @@ constexpr std::size_t kTailBytes = 20;
 constexpr std::size_t kRegionBFromA = 0xE8;
 /** Bytes per emitted line; keeps every line well under core::log::kLineCapacity. */
 constexpr std::size_t kChunkBytes = 64;
+
+/**
+ * THE ENTRY MAP (p2(126)). The helper's FIRST argument has never been logged, and it is the
+ * one that answers where a peer's record actually lives. Two things fall out of it directly:
+ *   - rcx for row index 0 vs index 1: if they differ by exactly 0x1a8 then rcx IS the
+ *     per-player entry pointer and the array stride is confirmed from memory rather than
+ *     from arithmetic on second-hand offsets (which did NOT reconcile: 0x3c00 vs 0x3c68 vs
+ *     an implied 0x3b58 base each imply a different, mutually contradictory layout).
+ *   - a dump forward from rcx, read against LANDMARKS WE OURSELVES WROTE - "SUNRISE0"/
+ *     "SUNRISE1" as UTF-16LE and the account/character SOIDs - locates region A, region B
+ *     and the tail inside the entry by inspection instead of by derivation.
+ * 0x200 covers the whole 0x1a8 stride with room to see what follows it.
+ */
+constexpr std::size_t kEntryDumpBytes = 0x200;
+
+/**
+ * THE LANDMARK SCAN (p2(127)) - stop guessing the entry base, FIND it.
+ * p2(126) established that the helper's first argument is the SESSION OBJECT, identical for
+ * row 0 and row 1 (0x4631FA8 on the mac, the same pointer the apply hook logs as `reader`),
+ * so the helper indexes players internally and no argument hands us an entry pointer.
+ * Three disassembly-derived candidate bases (0x3b58 / 0x3c00 / 0x3c68) contradict each
+ * other, and one of them makes region B overrun the 0x1a8 stride - so more arithmetic on
+ * second-hand offsets is exactly the wrong move (it is how the 0x4240/0x4280 row base went
+ * wrong for two sessions).
+ * Instead: the server publishes a name WE CHOSE, so the client's memory is self-labelling.
+ * Scan the session object for the UTF-16LE bytes of "SUNRISE" and report every offset. The
+ * first hit locates region A absolutely; the DELTA between hits is the per-player stride,
+ * measured rather than derived. If the stride is 0x1a8 the gather function's array and the
+ * profile's array are the same one, which is the whole question.
+ *
+ * p2(127) UPDATE - TWO CORRECTIONS, both mine:
+ *  1. The scan ran BEFORE the pass-through call, so it could only ever see what a PREVIOUS
+ *     call left behind. That alone plausibly explains 23 of 24 scans reporting none. It now
+ *     runs AFTER the original writes, which is what "does the profile persist" requires.
+ *  2. The window was 0x10000. The single hit landed at +0x3b80, well inside it, but one hit
+ *     cannot show whether a SECOND row is stored further out - and the spacing between rows
+ *     is the measurement this lane wants. Widened to 0x40000.
+ * A fault ends the scan and reports the hits found so far plus <fault>; offsets printed
+ * before it remain valid.
+ */
+constexpr std::size_t kScanBytes = 0x40000;
+constexpr unsigned kScanHitCap = 8;
+constexpr unsigned char kNamePattern[] = {
+    0x53, 0x00, 0x55, 0x00, 0x4E, 0x00, 0x52, 0x00, 0x49, 0x00, 0x53, 0x00, 0x45, 0x00};
 /** Distinct applies worth dumping in full. The counter keeps reporting past this. */
 constexpr unsigned kDumpCap = 8;
 
@@ -145,6 +189,59 @@ void dump_region(const char* tag,
 }
 
 /**
+ * Scans the session object for the published name's UTF-16LE bytes and reports each offset.
+ * SEH-guarded byte by byte through a bounded window; a fault ends the scan rather than the
+ * process. Offsets are what matter - their spacing IS the per-player stride.
+ */
+void scan_landmarks(unsigned call, const void* base) noexcept {
+    if (base == nullptr) {
+        return;
+    }
+    std::array<char, core::log::kLineCapacity> text{};
+    int written = std::snprintf(text.data(), text.size(),
+                                "ev=ingress stage=scan call=%u base=0x%llX pattern=SUNRISE hits=",
+                                call,
+                                static_cast<unsigned long long>(
+                                    reinterpret_cast<std::uintptr_t>(base)));
+    unsigned hits = 0;
+    std::size_t previous = 0;
+    __try {
+        const auto* const bytes = static_cast<const unsigned char*>(base);
+        for (std::size_t offset = 0;
+             offset + sizeof kNamePattern <= kScanBytes && hits < kScanHitCap;
+             ++offset) {
+            bool match = true;
+            for (std::size_t i = 0; i < sizeof kNamePattern; ++i) {
+                if (bytes[offset + i] != kNamePattern[i]) {
+                    match = false;
+                    break;
+                }
+            }
+            if (!match) {
+                continue;
+            }
+            written += std::snprintf(text.data() + written,
+                                     text.size() - static_cast<std::size_t>(written),
+                                     hits == 0 ? "0x%zx" : ",0x%zx(+0x%zx)",
+                                     offset, offset - previous);
+            previous = offset;
+            ++hits;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        written += std::snprintf(text.data() + written,
+                                 text.size() - static_cast<std::size_t>(written), "<fault>");
+    }
+    if (hits == 0) {
+        written += std::snprintf(text.data() + written,
+                                 text.size() - static_cast<std::size_t>(written), "none");
+    }
+    if (written > 0) {
+        core::log::write(core::log::Channel::client, core::log::Level::info,
+                         {text.data(), static_cast<std::size_t>(written)});
+    }
+}
+
+/**
  * The pass-through observer. Reads arguments and the return address only.
  * The caller RVA (LESSONS 18c) separates the WIRE apply (returns into 0x141782xxx)
  * from the local registry commit (returns into 0x1417a6xxx) - region B's
@@ -173,9 +270,10 @@ std::uint64_t __fastcall observe_helper(void* rcx, void* rdx, void* r8, void* r9
         std::array<char, 448> text{};
         const int written = std::snprintf(
             text.data(), text.size(),
-            "ev=ingress stage=apply call=%u path=%s caller_rva=0x%llX index=%u header1=0x%08X "
+            "ev=ingress stage=apply call=%u path=%s caller_rva=0x%llX dest=0x%llX index=%u header1=0x%08X "
             "header2=0x%08X mask=0x%llX verify=0x%llX hash=0x%08X regionA=0x%llX tail=0x%llX",
             call, wire ? "WIRE" : "local", callerRva,
+            static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(rcx)),
             static_cast<unsigned>(reinterpret_cast<std::uintptr_t>(rdx) & 0xFFFFFFFFULL),
             static_cast<unsigned>(reinterpret_cast<std::uintptr_t>(r8) & 0xFFFFFFFFULL),
             static_cast<unsigned>(reinterpret_cast<std::uintptr_t>(r9) & 0xFFFFFFFFULL),
@@ -190,6 +288,7 @@ std::uint64_t __fastcall observe_helper(void* rcx, void* rdx, void* r8, void* r9
         }
     }
     if (dump) {
+        // The destination entry itself, read against the names and SOIDs we published.
         dump_region("regionA", call, a6, kRegionABytes);
         dump_region("tail", call, a9, kTailBytes);
         // Valid ONLY for the wire caller; the line above carries the RVA that says which.
@@ -200,8 +299,15 @@ std::uint64_t __fastcall observe_helper(void* rcx, void* rdx, void* r8, void* r9
         }
     }
     const auto original = reinterpret_cast<HelperFn>(g_handle.original);
-    return original(rcx, rdx, r8, r9, a5, a6, a7, a8, a9, s5, s6, s7, s8, s9, s10,
-                    s11, s12, s13, s14, s15);
+    const std::uint64_t result = original(rcx, rdx, r8, r9, a5, a6, a7, a8, a9, s5, s6, s7,
+                                          s8, s9, s10, s11, s12, s13, s14, s15);
+    // AFTER the write. The regions dumped above are the helper's INPUT, valid at entry; the
+    // destination state is only meaningful once the original has actually run.
+    if (dump) {
+        dump_region("entry", call, rcx, kEntryDumpBytes);
+        scan_landmarks(call, rcx);
+    }
+    return result;
 }
 
 bool fail_install(const char* reason) noexcept {
