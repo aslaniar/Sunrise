@@ -28,6 +28,7 @@
 #include "../hooks/profile_harvest/profile_harvest_observer.h"
 #include "../hooks/profile_ingress/profile_ingress_observer.h"
 #include "../hooks/decoder_trace/decoder_trace_observer.h"
+#include "../hooks/world_trace/world_trace_observer.h"
 #include "../hooks/phase_probe/phase_probe_observer.h"
 #include "../hooks/item_gate/item_gate_observer.h"
 #include "../hooks/handle_message/handle_message_observer.h"
@@ -257,6 +258,13 @@ void clear_game_targets() noexcept {
     // 0x14173BFC0 and the apply 0x141781800 entries to name the failing layer. Read-only,
     // pass-through, capped, gated by client.decoder_trace (DEFAULT FALSE).
     (void)hooks::decoder_trace::install();
+    // (world_trace, p2(129)): the peer-visibility entity front's instruments. The
+    // manifest emitter 0x1417607B0 (live chunk-2 identity column), the entity
+    // create/decode 0x141718080 (its return value is the decode verdict), and a
+    // one-shot schema-registry dump (player archetype 0x80806AC0 + chunk-8 power
+    // key). Read-only, pass-through, capped, gated by client.world_trace
+    // (DEFAULT FALSE).
+    (void)hooks::world_trace::install();
     // The weapon/armor validation-chain observers (item_gate, FINDINGS 14.23): log-only
     // research instrumentation for the two-bugs front, which CLOSED at 15.9. Left
     // uninstalled by default (2026-08-22) - the "cool path" note above was wrong: it

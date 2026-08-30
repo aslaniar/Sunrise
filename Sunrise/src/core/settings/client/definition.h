@@ -94,6 +94,18 @@ struct Settings {
      * this rides on). OBSERVATION+WRITE - read the boot brief before arming.
      */
     bool stagingPopulate{};
+    /**
+     * THE PEER-VISIBILITY ENTITY FRONT'S INSTRUMENTS (p2(129)). Three read-only
+     * observers in one hook unit: the roster-change manifest emitter 0x1417607B0
+     * (the live chunk-2 identity column the client assembles - hunt item 1), the
+     * entity create/decode path 0x141718080 whose RETURN VALUE is the decode
+     * verdict the world-population front lacked (0 ok / 1,2 codec-body fail /
+     * 3 mask fail), and a one-shot schema-registry dump (the live player-archetype
+     * tree 0x80806AC0 + the chunk-8 power key - both runtime-built, neither
+     * statically dumpable). OBSERVATION ONLY, every read SEH-guarded, capped.
+     * FALSE by default.
+     */
+    bool worldTrace{};
 
     /** Member-record index the injection writes. Must be unused - the census names one. */
     std::uint32_t admissionMemberIndex{};
