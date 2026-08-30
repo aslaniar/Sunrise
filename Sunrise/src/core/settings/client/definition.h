@@ -106,6 +106,17 @@ struct Settings {
      * FALSE by default.
      */
     bool worldTrace{};
+    /**
+     * THE CHECKSUM HUNT (p2(130)). Detours the client's membership checksum
+     * verifier 0x141772100 (.pdata start) - the function that copies the client's
+     * 28,768-byte replica from holder+8 and hashes it (lookup3, init 0xDEAE2F4E).
+     * Logs our own hash of the captured bytes (pairs with the client's printed
+     * "checksum failed" line, validating the capture) and fully dumps the replica
+     * on the first two calls. The desk-side diff against build_session_state names
+     * every differing region, which turns the state-hash disagreement into an
+     * exact fix. OBSERVATION ONLY. FALSE by default.
+     */
+    bool stateDiff{};
 
     /** Member-record index the injection writes. Must be unused - the census names one. */
     std::uint32_t admissionMemberIndex{};

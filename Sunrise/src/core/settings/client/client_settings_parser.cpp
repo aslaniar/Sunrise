@@ -19,6 +19,7 @@ bool Parser::client_settings(client::Settings& output) noexcept {
     bool hasDecoderTrace = false;
     bool hasStagingPopulate = false;
     bool hasWorldTrace = false;
+    bool hasStateDiff = false;
     bool hasAdmissionMemberIndex = false;
     bool hasAdmissionXuid = false;
     bool hasAdmissionPeerSteamId = false;
@@ -77,6 +78,11 @@ bool Parser::client_settings(client::Settings& output) noexcept {
                 return false;
             }
             hasDecoderTrace = true;
+        } else if (key == "state_diff") {
+            if (hasStateDiff || !boolean(candidate.stateDiff)) {
+                return false;
+            }
+            hasStateDiff = true;
         } else if (key == "world_trace") {
             if (hasWorldTrace || !boolean(candidate.worldTrace)) {
                 return false;
