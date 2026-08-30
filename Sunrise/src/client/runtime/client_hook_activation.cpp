@@ -27,6 +27,7 @@
 #include "../hooks/nat_probe/nat_probe_observer.h"
 #include "../hooks/profile_harvest/profile_harvest_observer.h"
 #include "../hooks/profile_ingress/profile_ingress_observer.h"
+#include "../hooks/decoder_trace/decoder_trace_observer.h"
 #include "../hooks/phase_probe/phase_probe_observer.h"
 #include "../hooks/item_gate/item_gate_observer.h"
 #include "../hooks/handle_message/handle_message_observer.h"
@@ -251,6 +252,11 @@ void clear_game_targets() noexcept {
     // client.profile_ingress (DEFAULT FALSE). NOTE: 0x1417AF2D0 (region B) is NOT hooked -
     // pdata_bounds proves it is not a function start.
     (void)hooks::profile_ingress::install();
+    // (decoder_trace, FINDINGS 20.182 R3): the p2(115) WEDGE BISECTION. The flag-on
+    // membership body is delivered and acked but never applied; this traces the decoder
+    // 0x14173BFC0 and the apply 0x141781800 entries to name the failing layer. Read-only,
+    // pass-through, capped, gated by client.decoder_trace (DEFAULT FALSE).
+    (void)hooks::decoder_trace::install();
     // The weapon/armor validation-chain observers (item_gate, FINDINGS 14.23): log-only
     // research instrumentation for the two-bugs front, which CLOSED at 15.9. Left
     // uninstalled by default (2026-08-22) - the "cool path" note above was wrong: it

@@ -379,6 +379,10 @@ bool send_payload(const state::gameplay::Endpoint& to,
                   std::span<const std::byte> payload) noexcept {
     Association* association = find_sending(to);
     if (association == nullptr) {
+        // INSTRUMENT (p2-115 wedge): a miss here silently refuses every established send.
+        report(core::log::Level::debug,
+               "ev=gameplay stage=dtls result=miss step=send to_port=%u",
+               static_cast<unsigned>(to.port));
         return false;
     }
     std::array<std::byte, middleware::gameplay::dtls::kRecordCapacity> datagram{};

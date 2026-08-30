@@ -65,6 +65,17 @@ struct Settings {
      * never located). OBSERVATION ONLY. FALSE by default, like every internal detour.
      */
     bool profileIngress{};
+    /**
+     * The p2(115) WEDGE BISECTION (FINDINGS 20.178-20.182): the flag-on membership body
+     * is delivered and acked but never applied - the row never materializes and the
+     * profile helper never fires. This traces the two points between delivery and the
+     * helper: the wire->delta DECODER 0x14173BFC0 (id-30 handler +0x28) and the APPLY
+     * 0x141781800. Entry-log only, pass-through, capped. The three log shapes bisect:
+     * decoder silent = dispatch refuses; decoder logged + apply silent = the decode or
+     * the pipeline between them fails; both logged with helper silent = the apply's row
+     * loop saw gate=0 or another struct. OBSERVATION ONLY. FALSE by default.
+     */
+    bool decoderTrace{};
 
     /** Member-record index the injection writes. Must be unused - the census names one. */
     std::uint32_t admissionMemberIndex{};

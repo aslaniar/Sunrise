@@ -1019,6 +1019,21 @@ void service(std::uint64_t now) noexcept {
         const bool due = peer.acknowledgementOwed || resendDue || keepaliveDue;
         const bool keepaliveOnly = keepaliveDue && !peer.acknowledgementOwed && !resendDue;
         if (peer.stage == gp::PeerStage::absent || !due) {
+            // INSTRUMENT (p2-115 wedge): the client's packets are consumed but nothing is sent
+            // back, so this branch is where the send is being skipped. Log the skip whenever the
+            // queue holds fragments or an ack is owed - the two states that must produce a send.
+            if (peer.stage != gp::PeerStage::absent
+                && (peer.outbound.count != 0 || peer.acknowledgementOwed)) {
+                report(core::log::Level::debug,
+                       "ev=gameplay stage=svc result=skip count=%zu stage=%d owed=%d "
+                       "ready=%d lastSend=%llu now=%llu",
+                       peer.outbound.count,
+                       static_cast<int>(peer.stage),
+                       peer.acknowledgementOwed ? 1 : 0,
+                       peer.applicationReady ? 1 : 0,
+                       static_cast<unsigned long long>(peer.lastSend),
+                       static_cast<unsigned long long>(now));
+            }
             continue;
         }
         peer.acknowledgementOwed = false;
