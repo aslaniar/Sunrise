@@ -371,7 +371,6 @@ DWORD WINAPI watchdog_main(LPVOID) noexcept {
     std::uint64_t selfTestLaunchedAt = 0;
     bool selfTestPending = false;
     unsigned selfTestSeq = 0;
-    unsigned lastVersion = 0;
     std::uint64_t drainedSeq = 0;
     std::uint32_t prevHits[4] = {0, 0, 0, 0};
 
@@ -447,13 +446,12 @@ DWORD WINAPI watchdog_main(LPVOID) noexcept {
             }
         }
 
-        // 3. Re-apply DRs on (re)arm; otherwise re-verify when coverage is incomplete.
-        const unsigned version = g_version.load(std::memory_order_relaxed);
-        const bool force = (version != lastVersion);
-        lastVersion = version;
-        if (force || g_lastCovered.load(std::memory_order_relaxed) == 0U) {
-            sweep_threads(expected_context());
-        }
+        // 3. Re-apply DRs EVERY sweep. The fast path is a no-suspend context compare,
+        //    so the per-thread cost is one GetThreadContext - and this is what arms
+        //    freshly spawned threads (the self-test thread and any real writer thread
+        //    created after boot). Sweeping only on re-arm was the p2-158 solo-canary
+        //    selftest FAIL: threads born after the first sweep were never watched.
+        sweep_threads(expected_context());
 
         // 4. Shadow diff: a watched byte that moved WITHOUT a captured hit is a thread
         //    coverage gap and must never read as "no writer" (the ABSENCE NEGATIVE).
