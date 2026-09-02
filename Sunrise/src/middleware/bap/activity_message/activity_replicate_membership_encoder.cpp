@@ -46,7 +46,7 @@ bool encode_replicate_membership(const MembershipSnapshot& snapshot,
     const bool encoded = writer.write(1, 1) && writer.write(snapshot.revision, 32)
                          && writer.write(snapshot.epoch, 32)
                          && write_member_table(writer, snapshot.identity, snapshot.peer,
-                                               snapshot.peerPresent)
+                                               snapshot.peerPresent, snapshot.peerRowFlags)
                          && writer.write(1, 1) && write_region_block(writer, snapshot)
                          && writer.write(1, 1) && writer.write(first, 32) && writer.write(1, 1)
                          && writer.write(second, 32) && writer.write(1, 1)

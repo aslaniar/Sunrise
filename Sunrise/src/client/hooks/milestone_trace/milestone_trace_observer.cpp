@@ -589,8 +589,39 @@ std::array<std::atomic<bool>, kTargets.size()> g_hasProbe{};
  */
 constexpr unsigned kTrackProbeCap = 240;
 std::array<std::atomic<unsigned>, kTargets.size()> g_trackEmits{};
-/** One-shot source-image dumps per boot (pubrest): the first restore only. */
+/**
+ * Source-image dumps per boot (pubrest). TWO shots, not one (p2-160).
+ *
+ * The one-shot version fired on the FIRST restore, and restores run from the moment the
+ * client joins - long before any peer does. It therefore captured a SOLO-state image every
+ * time and could never have captured the state the front actually asks about. That is the
+ * 09-01 postmortem's failure exactly: a probe that logs the answer and not the question.
+ *
+ * Shot 0 is the solo baseline (first restore, whatever its shape). Shot 1 is the first
+ * restore whose source image carries a GENUINE peer in record 1. The DIFF of the two is
+ * the body-to-image byte map the femu lane (20.257) was blocked trying to emulate, and it
+ * reads directly whether anything a peer row carries lands at +0x38.
+ */
 std::atomic<unsigned> g_pubrestDumped{0};
+/** Shot 1: set once the peer-bearing source image has been dumped. */
+std::atomic<unsigned> g_pubrestPeerDumped{0};
+/**
+ * The LOCAL identity, learned from the solo baseline's record 0, and the anchor the peer
+ * shot is gated on.
+ *
+ * MEASURED (p2-160 attempt 2): `rec8_1 != rec8_0` is NOT a peer test. The hook saw
+ * rec8_0 = 0x1A82CB013E294F94 with rec8_1 = 0x88CB5281391A82CB - record 1 holding the LOCAL
+ * identity and record 0 holding a byte-shifted view of it (note 1A82CB is a substring of the
+ * local key's low half). It passed the != test, it passed the two-observation stability gate
+ * because it is stable and repeatable rather than a one-off tear, and it consumed the peer
+ * shot BEFORE the second machine had even joined. attempt 1's pgate had already shown the
+ * same shape from the other side: `i=1 self=1`, the local player sitting in slot 1.
+ *
+ * So the peer shot now requires the image to be ANCHORED: record 0 must equal the identity
+ * the solo baseline recorded, and record 1 must be a different populated identity. A shifted
+ * or re-ordered view fails the anchor instead of consuming the shot.
+ */
+std::atomic<std::uint64_t> g_pubrestLocalIdentity{0};
 /** Per-phase novelty state for pubrest (enter and leave tracked independently). */
 std::array<std::atomic<std::uint64_t>, kTargets.size()> g_pubrestLastEnter{};
 std::array<std::atomic<std::uint64_t>, kTargets.size()> g_pubrestLastLeave{};
@@ -1066,6 +1097,17 @@ void emit_ptable(std::size_t index, const char* fn, std::uint64_t call,
     }
     // Per PRESENT participant (a set bit in maskB, which is what cond 1 iterates), report
     // the two remaining per-record conditions and say in words which one fails.
+    // THE GATE POKE (p2-161), settings-gated, default off. Self's +0x00 is read first so
+    // bit 1 can give the peer the same value: 20.258 R6 found it is the ONLY byte set on a
+    // rendering record and zero on a non-rendering one, in 10,944 bytes.
+    const std::uint32_t poke = core::settings::get().client.gatePoke;
+    std::uint8_t selfState = 0;
+    if (poke != 0U && selfIdx >= 0) {
+        (void)gate_wwatch::safe_byte(
+            reinterpret_cast<const void*>(table + static_cast<std::uintptr_t>(selfIdx)
+                                          * kRecStride),
+            &selfState);
+    }
     for (unsigned i = 0; i < kMaxParticipants; ++i) {
         if (((maskB >> i) & 1U) == 0U) {
             continue;
@@ -1077,6 +1119,14 @@ void emit_ptable(std::size_t index, const char* fn, std::uint64_t call,
         const auto rec8 =
             *reinterpret_cast<const std::uint64_t*>(table + i * kRecStride + 8U);
         const bool isSelf = (selfIdx == static_cast<int>(i));
+        // THE ANCHOR, published for pubrest (p2-160 attempt 3). Taking it from the solo
+        // baseline instead deadlocks: if a peer is already present when this client joins,
+        // no solo image ever appears, so no baseline fires, so no anchor exists, so the
+        // peer shot can never fire either. pgate walks the LIVE table and knows which
+        // record is self authoritatively, which is the right place to learn it.
+        if (isSelf && rec8 != 0U) {
+            g_pubrestLocalIdentity.store(rec8, std::memory_order_relaxed);
+        }
         const bool condA = ((maskA >> i) & 1U) != 0U;   // cond 3
         const bool condN = nextByte == 0U;              // cond 4 (0x1404DF600 false)
         const bool condG = ((gateByte >> 4) & 1U) != 0U;// cond 5 (0x1404DD470 true)
@@ -1092,6 +1142,54 @@ void emit_ptable(std::size_t index, const char* fn, std::uint64_t call,
             static_cast<unsigned long long>(rec8), condA ? 1U : 0U,
             gateByte, condG ? 1U : 0U, nextByte, verdict);
         if (w > 0) { emit(t.data(), static_cast<std::size_t>(w)); }
+
+        // --- THE POKE. Behaviour, and the only write this DLL makes into game memory. ---
+        // Applied AFTER the verdict line so the log always records the state as FOUND, then
+        // separately what was forced: a probe that overwrites the thing it reports would
+        // make the boot unreadable.
+        // Re-applied every walk on purpose - the table is bulk-restored from the staging
+        // image (20.254), which would erase a one-shot poke within a tick or two.
+        if (poke != 0U && !isSelf) {
+            const auto recBase = table + i * kRecStride;
+            bool didGate = false;
+            bool didState = false;
+            std::uint8_t newGate = gateByte;
+            std::uint8_t newState = 0;
+            if ((poke & 1U) != 0U && !condG) {
+                newGate = static_cast<std::uint8_t>(gateByte | 0x10U);
+                didGate = gate_wwatch::safe_store(
+                    reinterpret_cast<void*>(recBase + kRecGateByte), newGate);
+            }
+            if ((poke & 2U) != 0U && selfState != 0U) {
+                std::uint8_t cur = 0;
+                if (gate_wwatch::safe_byte(reinterpret_cast<const void*>(recBase), &cur)
+                    && cur != selfState) {
+                    newState = selfState;
+                    didState = gate_wwatch::safe_store(
+                        reinterpret_cast<void*>(recBase), selfState);
+                }
+            }
+            if (didGate || didState) {
+                // Novelty-gated on (record, what was written) so a per-tick re-poke costs
+                // one line, while any CHANGE in what we are forcing is visible.
+                const std::uint64_t sig = (static_cast<std::uint64_t>(i) << 32)
+                                          ^ (static_cast<std::uint64_t>(newGate) << 8)
+                                          ^ newState ^ (didGate ? 0x100ULL : 0ULL)
+                                          ^ (didState ? 0x200ULL : 0ULL);
+                if (probe_changed(index, sig)) {
+                    std::array<char, 256> pt{};
+                    const int pw = std::snprintf(pt.data(), pt.size(),
+                        "ev=mtrace stage=gatepoke fn=%s call=%llu i=%u rec8=0x%llX "
+                        "mask=0x%X f38_was=0x%02X f38_now=0x%02X gate_ok=%u "
+                        "state_self=0x%02X state_ok=%u",
+                        fn, static_cast<unsigned long long>(call), i,
+                        static_cast<unsigned long long>(rec8), poke,
+                        gateByte, newGate, didGate ? 1U : 0U,
+                        selfState, didState ? 1U : 0U);
+                    if (pw > 0) { emit(pt.data(), static_cast<std::size_t>(pw)); }
+                }
+            }
+        }
     }
 }
 
@@ -1124,26 +1222,40 @@ void emit_pubrest(std::size_t index, const char* fn, const char* when, std::uint
     // Source-side gate bytes (arg3 is the source in both directions) and DEST-side gate
     // bytes (arg1+0x80) - the enter/leave delta of the dest tuple is the "did this call
     // change the dest" measurement. 0xFF = read failed (never a real gate value).
-    std::uint8_t f38[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+    // EIGHT records, not two (p2-160 attempt 3). Reading only records 0 and 1 assumes the
+    // peer lands in slot 1. Nothing guarantees that - the live table has put the LOCAL
+    // player in slot 1 (pgate: `i=1 self=1`), so a peer can equally sit at 2 or beyond, and
+    // with a 2-record window it would have been invisible and the peer shot would never
+    // have fired. Records past the image are best-effort: their failure must not clear
+    // srcOk, which is a statement about record 0 only.
+    constexpr unsigned kImgRecords = 8;
+    std::uint8_t f38[kImgRecords];
     std::uint8_t f38d[4] = {0xFF, 0xFF, 0xFF, 0xFF};
-    std::uint64_t rec8[2] = {0, 0};
+    std::uint64_t rec8[kImgRecords];
+    for (unsigned i = 0; i < kImgRecords; ++i) {
+        f38[i] = 0xFFU;
+        rec8[i] = 0U;
+    }
     bool srcOk = false;
     if (arg3 >= 0x1000U) {
-        srcOk = true;
-        for (unsigned i = 0; i < 4; ++i) {
-            if (!gate_wwatch::safe_byte(
-                    reinterpret_cast<const void*>(arg3 + 0x38U + i * 0x2AC0U), &f38[i])) {
+        // srcOk == record 0 is readable. That is the minimum for the image to mean anything.
+        std::uint8_t gate0 = 0xFFU;
+        const bool gate0Ok = gate_wwatch::safe_byte(
+            reinterpret_cast<const void*>(arg3 + 0x38U), &gate0);
+        f38[0] = gate0Ok ? gate0 : 0xFFU;
+        srcOk = gate0Ok
+                && gate_wwatch::safe_read(reinterpret_cast<const void*>(arg3 + 8U),
+                                          &rec8[0], sizeof(rec8[0]));
+        for (unsigned i = 1; i < kImgRecords; ++i) {
+            const auto base = arg3 + i * 0x2AC0U;
+            if (!gate_wwatch::safe_byte(reinterpret_cast<const void*>(base + 0x38U),
+                                        &f38[i])) {
                 f38[i] = 0xFFU;
-                srcOk = false;
             }
-        }
-        if (!gate_wwatch::safe_read(reinterpret_cast<const void*>(arg3 + 8U),
-                                    &rec8[0], sizeof(rec8[0]))) {
-            srcOk = false;
-        }
-        if (!gate_wwatch::safe_read(reinterpret_cast<const void*>(arg3 + 0x2AC0U + 8U),
-                                    &rec8[1], sizeof(rec8[1]))) {
-            srcOk = false;
+            if (!gate_wwatch::safe_read(reinterpret_cast<const void*>(base + 8U),
+                                        &rec8[i], sizeof(rec8[i]))) {
+                rec8[i] = 0U;
+            }
         }
     }
     for (unsigned i = 0; i < 4; ++i) {
@@ -1152,12 +1264,38 @@ void emit_pubrest(std::size_t index, const char* fn, const char* when, std::uint
             f38d[i] = 0xFFU;
         }
     }
+    // The anchor, and the peer search over every scanned record.
+    const std::uint64_t anchorId = g_pubrestLocalIdentity.load(std::memory_order_relaxed);
+    const bool anchored = anchorId != 0U && rec8[0] == anchorId;
+    int peerIdx = -1;
+    if (anchored) {
+        for (unsigned i = 1; i < kImgRecords; ++i) {
+            if (rec8[i] != 0U && rec8[i] != anchorId) {
+                peerIdx = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+
+    // A genuine peer image is ANCHORED - record 0 is this machine's own identity, as pgate
+    // reports it from the live table - and some later record holds a different populated
+    // identity. `rec8_1 != rec8_0` is NOT a peer test and cost a boot: attempt 2 saw
+    // rec8_0 = 0x1A82CB013E294F94 (a byte-shifted view of the local key) with the LOCAL
+    // identity in rec8_1, which satisfies !=, is stable and repeatable rather than a
+    // one-off tear, and consumed the peer shot before the second machine had joined.
+    const bool peerInImage = srcOk && anchored && peerIdx > 0;
 
     // Per-phase novelty (adversarial review #2): enter and leave each collapse repeats
     // of an identical call independently, so a hot stable path costs two lines total
     // while any arg/gate-byte change emits.
+    //
+    // peerInImage is IN the fingerprint. Without it the solo->peer transition is invisible
+    // here: the restore's caller, args and gate bytes are all unchanged when a peer joins
+    // (every f38 stays 0x00 - 907/907 samples in p2-150), so the one call this boot exists
+    // to see would have collapsed into the solo path's already-emitted line.
     const std::uint64_t fingerprint =
         callerRva ^ arg1 ^ arg3 ^ (restore ? 0x8000000000000000ULL : 0ULL)
+        ^ (peerInImage ? 0x4000000000000000ULL : 0ULL)
         ^ static_cast<std::uint64_t>(f38[0]) ^ (static_cast<std::uint64_t>(f38[1]) << 8)
         ^ (static_cast<std::uint64_t>(f38[2]) << 16) ^ (static_cast<std::uint64_t>(f38[3]) << 24)
         ^ static_cast<std::uint64_t>(f38d[0]) ^ (static_cast<std::uint64_t>(f38d[1]) << 8)
@@ -1165,59 +1303,157 @@ void emit_pubrest(std::size_t index, const char* fn, const char* when, std::uint
     auto& lastSeen = isEnter ? g_pubrestLastEnter[index] : g_pubrestLastLeave[index];
     const std::uint64_t prev = lastSeen.load(std::memory_order_relaxed);
     const bool first = !g_pubrestSeen[index].load(std::memory_order_relaxed);
-    if (!first && prev == fingerprint) {
-        return;
-    }
+    // Suppression now skips the LINE ONLY - it must never skip the image dump below.
+    // The old `return` here put the dump behind the novelty gate, so a peer-bearing
+    // restore that repeated an already-seen fingerprint could be dropped before the
+    // dump was ever considered. A budget that silences the summary must not also
+    // silence the artifact the boot is for.
+    const bool suppressed = !first && prev == fingerprint;
     lastSeen.store(fingerprint, std::memory_order_relaxed);
     g_pubrestSeen[index].store(true, std::memory_order_relaxed);
 
-    {
-        std::array<char, 480> t{};
+    if (!suppressed) {
+        std::array<char, 640> t{};
         const int w = std::snprintf(t.data(), t.size(),
             "ev=mtrace stage=pubrest fn=%s when=%s call=%llu caller_rva=0x%llX role=%s "
             "arg1=0x%llX image_id=0x%llX src=0x%llX staging=0x%llX src_ok=%u "
-            "f38src_0..3=%02x,%02x,%02x,%02x f38dest_0..3=%02x,%02x,%02x,%02x "
-            "rec8_0=0x%llX rec8_1=0x%llX",
+            "f38src_0..7=%02x,%02x,%02x,%02x,%02x,%02x,%02x,%02x "
+            "f38dest_0..3=%02x,%02x,%02x,%02x anchored=%u peer_idx=%d "
+            "rec8_0=0x%llX rec8_1=0x%llX rec8_2=0x%llX rec8_3=0x%llX",
             fn, when, static_cast<unsigned long long>(call),
             static_cast<unsigned long long>(callerRva), role,
             static_cast<unsigned long long>(arg1),
             reinterpret_cast<unsigned long long>(rdx),
             static_cast<unsigned long long>(arg3),
             static_cast<unsigned long long>(staging), srcOk ? 1U : 0U,
-            f38[0], f38[1], f38[2], f38[3], f38d[0], f38d[1], f38d[2], f38d[3],
+            f38[0], f38[1], f38[2], f38[3], f38[4], f38[5], f38[6], f38[7],
+            f38d[0], f38d[1], f38d[2], f38d[3], anchored ? 1U : 0U, peerIdx,
             static_cast<unsigned long long>(rec8[0]),
-            static_cast<unsigned long long>(rec8[1]));
+            static_cast<unsigned long long>(rec8[1]),
+            static_cast<unsigned long long>(rec8[2]),
+            static_cast<unsigned long long>(rec8[3]));
         if (w > 0) {
             emit(t.data(), static_cast<std::size_t>(w));
         }
     }
-    // ONE-SHOT full source-image hexdump, first RESTORE's enter only (adversarial review
-    // #6: enter+leave would double-burn the cap; ~1,427 lines of 0x100 each, chunk reads
-    // are one SEH-guarded 256-byte copy per line, not per byte).
-    if (restore && isEnter && srcOk && !g_pubrestDumped.load(std::memory_order_relaxed)) {
-        g_pubrestDumped.store(1U, std::memory_order_relaxed);
-        constexpr std::uintptr_t kImageBytes = 0x59260U;
-        constexpr std::uintptr_t kChunk = 0x100U;
-        std::array<std::uint8_t, kChunk> chunk{};
-        for (std::uintptr_t off = 0; off < kImageBytes; off += kChunk) {
-            if (!gate_wwatch::safe_read(reinterpret_cast<const void*>(arg3 + off),
-                                        chunk.data(), chunk.size())) {
-                break;  // unreadable region: stop the dump here, honestly
+    // TWO-SHOT full source-image hexdump, enter only (adversarial review #6: enter+leave
+    // would double-burn the cap; ~1,427 lines of 0x100 each per shot, chunk reads are one
+    // SEH-guarded 256-byte copy per line, not per byte).
+    //
+    // NOT gated on role (p2-160, measured): the gate used to require role==restore, and in
+    // a full paired dwell NOTHING ever classified as one - 24 calls, 24 x role=unknown,
+    // 0 dumps. It could not have been otherwise: the restore is obfuscated-direct and
+    // BYPASSES 0x1403CB340, which is the function this hook detours, so a restore never
+    // arrives here by construction. What DOES arrive is the publish side, and that is where
+    // the wanted image lives - 8 of those 24 calls carried a genuine peer in their source
+    // image (rec8_1 = the other machine's identity) at caller_rva 0x16E62AD, inside the
+    // message-driven publish 0x1416E6250 of 20.255.
+    //
+    // The dump is therefore gated on what it actually needs - a READABLE SOURCE IMAGE of a
+    // known shape - and not on a role classification that answers a different question.
+    //
+    // A GENUINE peer in the source image is `record 1 populated AND not the local
+    // identity`. Record 1 holding rec8_0's value is NOT a peer: p2-150's pgate saw the
+    // local identity sitting in slot 1 while the table was in its one-member state, so
+    // `rec8_1 != 0` alone would fire shot 1 on a solo image and waste the boot.
+    //
+    // rec8_0 != 0 is required for BOTH shots: an image whose record 0 carries no identity
+    // is not a membership image at all. p2-160's first pubrest call had rec8_0 = rec8_1 = 0
+    // (src was the participant table before anything populated it), and taking THAT as the
+    // solo baseline would diff two unrelated objects and read the difference as meaning.
+    // The baseline must be the same KIND of thing as the peer image; the headers carry
+    // src= and caller_rva= on both shots so the analysis can confirm it rather than assume.
+    if (isEnter && srcOk && rec8[0] != 0U) {
+        // THE STABILITY GATE IS GONE, and both shots are gated on the ANCHOR instead.
+        // Replaying the shipped logic over attempts 1 and 2 killed it twice over:
+        //   - a single shared slot let an interleaved peer image break the baseline's
+        //     streak, so the BASELINE stopped firing on attempt 1's own recorded lines;
+        //   - it spends margin where margin is scarcest - the peer window is ~6 bodies and
+        //     attempt 1 saw the genuine tuple three times, so demanding a second sighting
+        //     risks losing a short pairing outright.
+        // The anchor is strictly stronger and needs only one sighting: it rejects BOTH bad
+        // images seen so far - attempt 1's one-off tear and attempt 2's stable shifted view
+        // - because neither carries this machine's identity in record 0.
+        // The shot a call can satisfy is decided by the image's OWN shape, never by which
+        // flag happens to be unclaimed: that keeps shot 0 a genuine solo image and shot 1
+        // a genuine peer image, so their diff means what the contract says it means. If a
+        // peer is present from the first restore onward, shot 0 simply never fires - an
+        // honest gap, not a mislabelled dump.
+        // ANCHOR: the peer shot fires only on an image whose record 0 IS the local identity
+        // (learned from the solo baseline, below). Until the baseline has run there is no
+        // anchor and no peer dump - which is also the natural order, the solo image being
+        // the one that exists first.
+        // BOTH shots require the anchor. Without it on the baseline, attempt 2's shifted
+        // image (record 0 = 0x1A82CB013E294F94, not this machine) qualifies as "not a peer"
+        // and becomes the baseline - and then the diff compares a garbage image against a
+        // real one and every difference reads as meaning.
+        const bool wantPeer =
+            peerInImage && g_pubrestPeerDumped.load(std::memory_order_relaxed) == 0U;
+        const bool wantBaseline = anchored && !peerInImage
+                                  && g_pubrestDumped.load(std::memory_order_relaxed) == 0U;
+        if (wantBaseline || wantPeer) {
+            // Shot index names WHICH image a line belongs to, so the offline diff can
+            // separate the two dumps; the old line hardcoded idx=0.
+            const unsigned shot = wantPeer ? 1U : 0U;
+            if (wantPeer) {
+                g_pubrestPeerDumped.store(1U, std::memory_order_relaxed);
+            } else {
+                g_pubrestDumped.store(1U, std::memory_order_relaxed);
             }
-            std::array<char, 1024> t{};
-            int w = std::snprintf(t.data(), t.size(),
-                "ev=mtrace stage=pubrestimg idx=0 src=0x%llX off=0x%llX hex=",
-                static_cast<unsigned long long>(arg3),
-                static_cast<unsigned long long>(off));
-            for (std::size_t b = 0; w > 0 && b < chunk.size(); ++b) {
-                w += std::snprintf(t.data() + w, t.size() - static_cast<std::size_t>(w),
-                                   "%02x", chunk[b]);
+            // Self-describing header (U14): a hexdump with no provenance cannot be
+            // attributed to a shape after the fact.
+            {
+                std::array<char, 320> h{};
+                const int hw = std::snprintf(h.data(), h.size(),
+                    "ev=mtrace stage=pubrestimg result=begin idx=%u peer=%u role=%s "
+                    "src=0x%llX call=%llu caller_rva=0x%llX rec8_0=0x%llX rec8_1=0x%llX "
+                    "f38src_0..3=%02x,%02x,%02x,%02x",
+                    shot, peerInImage ? 1U : 0U, role,
+                    static_cast<unsigned long long>(arg3),
+                    static_cast<unsigned long long>(call),
+                    static_cast<unsigned long long>(callerRva),
+                    static_cast<unsigned long long>(rec8[0]),
+                    static_cast<unsigned long long>(rec8[1]),
+                    f38[0], f38[1], f38[2], f38[3]);
+                if (hw > 0) {
+                    emit(h.data(), static_cast<std::size_t>(hw));
+                }
             }
-            if (w > 0) {
-                emit(t.data(), static_cast<std::size_t>(w));
+            constexpr std::uintptr_t kImageBytes = 0x59260U;
+            constexpr std::uintptr_t kChunk = 0x100U;
+            std::array<std::uint8_t, kChunk> chunk{};
+            std::uintptr_t done = 0;
+            for (std::uintptr_t off = 0; off < kImageBytes; off += kChunk) {
+                if (!gate_wwatch::safe_read(reinterpret_cast<const void*>(arg3 + off),
+                                            chunk.data(), chunk.size())) {
+                    break;  // unreadable region: stop the dump here, honestly
+                }
+                std::array<char, 1024> t{};
+                int w = std::snprintf(t.data(), t.size(),
+                    "ev=mtrace stage=pubrestimg idx=%u src=0x%llX off=0x%llX hex=",
+                    shot,
+                    static_cast<unsigned long long>(arg3),
+                    static_cast<unsigned long long>(off));
+                for (std::size_t b = 0; w > 0 && b < chunk.size(); ++b) {
+                    w += std::snprintf(t.data() + w, t.size() - static_cast<std::size_t>(w),
+                                       "%02x", chunk[b]);
+                }
+                if (w > 0) {
+                    emit(t.data(), static_cast<std::size_t>(w));
+                }
+                done = (off + kChunk > kImageBytes) ? kImageBytes : off + kChunk;
+            }
+            // `bytes=` is the honest coverage figure: a short dump must not be read as a
+            // full image that happens to end early.
+            std::array<char, 160> d{};
+            const int dw = std::snprintf(d.data(), d.size(),
+                "ev=mtrace stage=pubrestimg result=done idx=%u peer=%u bytes=0x%llX",
+                shot, peerInImage ? 1U : 0U,
+                static_cast<unsigned long long>(done));
+            if (dw > 0) {
+                emit(d.data(), static_cast<std::size_t>(dw));
             }
         }
-        emit("ev=mtrace stage=pubrestimg result=done", 38);
     }
 }
 

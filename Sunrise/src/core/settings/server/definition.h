@@ -125,6 +125,29 @@ struct Settings {
      */
     std::uint32_t membershipPeerRetryCap{2};
     /**
+     * Bit groups of the PEER member row that this fork has always written as zero, flipped
+     * to ones. A bitmask so a positive result can be bisected across rounds WITHOUT a
+     * rebuild - the retry cap allows only ~6 peer bodies per boot, which is far too few to
+     * spend one rebuild per candidate.
+     *
+     *   bit 0  the row's trailing 3 bits          (write(0, 3)  -> 7)
+     *   bit 1  the player-identity tail bit       (write(0, 1)  -> 1)
+     *   bit 2  the player blob's leading pad bit  (write(0, 1)  -> 1)
+     *   bit 3  the player blob's 10-bit field     (write(0, 10) -> 0x3FF)
+     *   bit 4  the player blob's trailing pad bit (write(0, 1)  -> 1)
+     *
+     * Every group is SIZE-PRESERVING: each keeps its wire width, so the body length and
+     * every later field offset are untouched and `encoded_size` still closes. Presence bits
+     * are deliberately NOT in this mask - setting one obliges the value it guards, which
+     * would change the body length and break the encode.
+     *
+     * The local row is never touched. Only the peer row is under test, and a change to what
+     * the client is told about ITSELF is a different experiment with a different risk.
+     *
+     * Default 0 reproduces every body this fork has ever sent, bit for bit.
+     */
+    std::uint32_t membershipPeerRowFlags{0};
+    /**
      * Publish a minimal player profile block on every player row of a membership snapshot
      * instead of the absent flag (FINDINGS 20.177 RESULT 5). The block is the decoder-correct
      * minimum: an empty profile that sets the client's profile-present state without identity

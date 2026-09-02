@@ -126,6 +126,26 @@ struct Settings {
      * told apart from "never installed".
      */
     bool milestoneTrace{};
+    /**
+     * THE GATE POKE (p2-161). Forces participant-record condition bytes on PRESENT,
+     * NON-SELF records, to test by experiment whether the render path is gated on them.
+     *
+     *   bit 0  set bit 4 of +0x38  (cond5, the byte ~10 boots hunted a writer for)
+     *   bit 1  copy SELF's +0x00 onto the peer record (the one structural gap 20.258 R6
+     *          found between a rendering record and a non-rendering one)
+     *
+     * A MASK so a second round costs a settings line, not a rebuild - launches are the
+     * scarce resource here, not builds.
+     *
+     * WHY THIS IS WORTH DOING: 20.258 R6 measured the RENDERED self record at +0x38 = 0x00
+     * with bit 4 CLEAR. Either cond5 is not the render gate, or 20.251 is wrong that the
+     * cond5-gated receiver is required. Writing the bit ourselves settles it in one boot
+     * instead of another round of static reading. Every outcome is informative, including
+     * a crash (which would prove the byte is load-bearing and validated somewhere).
+     *
+     * Default 0 = no write of any kind into game memory.
+     */
+    std::uint32_t gatePoke{};
 
     /** Member-record index the injection writes. Must be unused - the census names one. */
     std::uint32_t admissionMemberIndex{};

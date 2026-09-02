@@ -21,6 +21,7 @@ bool Parser::client_settings(client::Settings& output) noexcept {
     bool hasWorldTrace = false;
     bool hasStateDiff = false;
     bool hasMilestoneTrace = false;
+    bool hasGatePoke = false;
     bool hasAdmissionMemberIndex = false;
     bool hasAdmissionXuid = false;
     bool hasAdmissionPeerSteamId = false;
@@ -84,6 +85,14 @@ bool Parser::client_settings(client::Settings& output) noexcept {
                 return false;
             }
             hasMilestoneTrace = true;
+        } else if (key == "gate_poke") {
+            std::uint64_t value = 0;
+            // Two groups defined; a wider value is a typo, not an intention.
+            if (hasGatePoke || !unsigned_integer(value) || value > 0x3ULL) {
+                return false;
+            }
+            candidate.gatePoke = static_cast<std::uint32_t>(value);
+            hasGatePoke = true;
         } else if (key == "state_diff") {
             if (hasStateDiff || !boolean(candidate.stateDiff)) {
                 return false;

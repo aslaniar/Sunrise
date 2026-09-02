@@ -34,6 +34,12 @@ void arm_table(std::uintptr_t table, int selfIdx, int peerIdx) noexcept;
 /** SEH-guarded sized read for sibling probes (pubrest). False on unreadable. */
 [[nodiscard]] bool safe_read(const void* addr, void* out, std::size_t n) noexcept;
 
+/**
+ * SEH-guarded single byte WRITE into game memory (p2-161 gate poke). False on unwritable.
+ * Behaviour, not observation - callers must gate it on a setting.
+ */
+[[nodiscard]] bool safe_store(void* addr, std::uint8_t value) noexcept;
+
 /** True when `addr` is a participant table this watch has armed on. */
 [[nodiscard]] bool is_armed_table(std::uintptr_t addr) noexcept;
 

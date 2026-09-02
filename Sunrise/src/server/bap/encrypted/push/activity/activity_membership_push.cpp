@@ -320,6 +320,10 @@ make_wire_snapshot(std::uint64_t sessionId,
         // and emitted 128 zero bytes there, and the body then failed to encode (FINDINGS 20.78
         // defect 2). Never second-guess a builder that clears its output on failure.
         wire.peerCitizen = peerCitizen;
+        // Zero-valued peer-row bit groups published as ones, per settings. Default 0 sends
+        // exactly the body this fork has always sent; the mask exists so a positive result
+        // can be bisected without a rebuild between rounds.
+        wire.peerRowFlags = serverSettings.membershipPeerRowFlags;
         // Zero leaves the encoder on its historical value, which is what `solo` wants.
         wire.trailingFirst = values.first;
         wire.trailingSecond = values.second;
@@ -354,7 +358,9 @@ make_wire_snapshot(std::uint64_t sessionId,
         }
     }
     if (publishPeer) {
-        std::array<char, 224> line{};
+        // 256, not 224: row_flags= pushed the widest form of this line past the old buffer,
+        // and snprintf would have truncated the field silently.
+        std::array<char, 256> line{};
         // ack= is the PREVIOUS body's verdict, which is exactly the correlation wanted: the
         // shape named here is the one the client was holding when it decided. A flip to ack=1
         // stops the republish loop, so the last shape logged before the log goes quiet is the
@@ -363,14 +369,16 @@ make_wire_snapshot(std::uint64_t sessionId,
             std::snprintf(line.data(),
                           line.size(),
                           "ev=activity stage=membership_peer result=included key=0x%016llX "
-                          "variant=%s step=%llu ack=%d peer_row=%d first=0x%08X second=0x%08X",
+                          "variant=%s step=%llu ack=%d peer_row=%d first=0x%08X second=0x%08X "
+                          "row_flags=0x%02X",
                           static_cast<unsigned long long>(peerIdentity.memberKey),
                           variant_name(variant),
                           static_cast<unsigned long long>(slot == nullptr ? 0 : slot->step),
                           state::activity::membership::acknowledged(sessionId) ? 1 : 0,
                           wire.peerPresent ? 1 : 0,
                           values.first,
-                          values.second);
+                          values.second,
+                          wire.peerRowFlags);
         if (includedLine > 0) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::info,

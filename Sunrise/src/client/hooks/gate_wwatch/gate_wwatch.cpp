@@ -132,6 +132,28 @@ bool safe_copy(void* dst, const void* src, std::size_t n) noexcept {
     return addr != nullptr && safe_copy(out, addr, 1);
 }
 
+/**
+ * SEH-guarded single byte WRITE into game memory. The ONLY write this DLL makes into the
+ * game's own structures, and it exists for one experiment: forcing a participant record's
+ * condition bytes to see whether the render path is actually gated on them (p2-161).
+ *
+ * This is NOT in the U18 class. It installs no vectored exception handler, sets no debug
+ * register and suspends no thread; it is one guarded store, the same machinery pubrest
+ * already uses to read. It IS a behaviour change and lives behind a settings switch.
+ */
+bool safe_store_impl(void* addr, std::uint8_t value) noexcept {
+    if (addr == nullptr) {
+        return false;
+    }
+    __try {
+        *static_cast<volatile std::uint8_t*>(addr) = value;
+        return true;
+    } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION
+                    ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        return false;
+    }
+}
+
 /** SEH-guarded sized read, exported for sibling probes (pubrest rec8/image dumps). */
 [[nodiscard]] bool safe_read_impl(const void* addr, void* out, std::size_t n) noexcept {
     return addr != nullptr && safe_copy(out, addr, n);
@@ -627,8 +649,34 @@ bool is_armed_table(std::uintptr_t addr) noexcept {
     return is_armed_table_impl(addr);
 }
 
+bool safe_store(void* addr, std::uint8_t value) noexcept {
+    return safe_store_impl(addr, value);
+}
+
 bool install() noexcept {
+    // RETIRED 2026-09-02 (20.255): the DR watch is abnormal-outcome-correlated in THREE
+    // of THREE armed boots - p2-158 rig crash at landing, p2-159 rig crash in Tower,
+    // p2-159 mac MACHINE freeze - across two different builds (with and without the
+    // capture-then-quiet mitigation and the every-sweep arming). Its question is
+    // ANSWERED (20.252/20.254: the bulk copier + the obfuscated restore). The vectors it
+    // adds - a first-chance VEH on every exception, hardware DRs on every game thread,
+    // and a 4 Hz suspend/setcontext sweep - are exactly the classes a game client must
+    // not carry. arm_table STILL records table addresses (below) so pubrest's role
+    // classification keeps working; only the DR/VEH/sweep machinery is retired.
+    // Re-enable ONLY behind a design that neither suspends game threads nor installs
+    // a vectored exception handler.
+    constexpr bool kWatchEnabled = false;
     if (g_installed.exchange(true, std::memory_order_relaxed)) {
+        return true;
+    }
+    if (!kWatchEnabled) {
+        std::array<char, 160> t{};
+        const int w = std::snprintf(t.data(), t.size(),
+            "ev=mtrace stage=wwatch fn=wwatch result=retired why=crash-correlated "
+            "(20.255; arm_table still classifies for pubrest)");
+        if (w > 0) {
+            emit_line(t.data(), static_cast<std::size_t>(w));
+        }
         return true;
     }
     // The self-test slot is armed FIRST: it is the pipeline's liveness proof.

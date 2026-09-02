@@ -105,6 +105,7 @@ bool Parser::server_settings(server::Settings& output) noexcept {
     bool hasMembershipSweepBodies = false;
     bool hasMembershipSweepPin = false;
     bool hasMembershipPeerRetryCap = false;
+    bool hasMembershipPeerRowFlags = false;
     bool hasPublishPlayerProfile = false;
     bool hasGameplay = false;
     bool hasActivation = false;
@@ -307,6 +308,14 @@ bool Parser::server_settings(server::Settings& output) noexcept {
             }
             output.membershipPeerRetryCap = static_cast<std::uint32_t>(value);
             hasMembershipPeerRetryCap = true;
+        } else if (key == "membership_peer_row_flags") {
+            std::uint64_t value = 0;
+            // 5 groups defined; a wider value is a typo, not an intention.
+            if (hasMembershipPeerRowFlags || !unsigned_integer(value) || value > 0x1FULL) {
+                return false;
+            }
+            output.membershipPeerRowFlags = static_cast<std::uint32_t>(value);
+            hasMembershipPeerRowFlags = true;
         } else if (key == "publish_player_profile") {
             if (hasPublishPlayerProfile || !boolean(output.publishPlayerProfile)) {
                 return false;

@@ -29,6 +29,34 @@ constexpr std::size_t kIdentityPresenceFieldCount = 15;
 constexpr std::uint16_t kPlayerBlobByteCount = 18;
 
 /**
+ * Bit groups of a member row this encoder has always written as zero, addressable so the
+ * PEER row can publish them as ones under `membership_peer_row_flags`. See that setting for
+ * why: cond5 (bit 4 of participant record +0x38) is the last gate, no wire field is known to
+ * feed it, and these are the row's only size-preserving zero-valued bits - each keeps its
+ * wire width, so the body length and every later field offset are unchanged.
+ *
+ * The mask reaches the peer row only. The local row always encodes with flags == 0.
+ */
+enum RowFlag : std::uint32_t {
+    /** The row's trailing 3 bits, before the set flag: 0 -> 7. */
+    kRowFlagTrailingTriple = 1U << 0,
+    /** The player-identity block's tail bit: 0 -> 1. */
+    kRowFlagIdentityTail = 1U << 1,
+    /** The player blob's leading pad bit: 0 -> 1. */
+    kRowFlagBlobLeadPad = 1U << 2,
+    /** The player blob's 10-bit field: 0 -> 0x3FF. */
+    kRowFlagBlobWide = 1U << 3,
+    /** The player blob's trailing pad bit: 0 -> 1. */
+    kRowFlagBlobTailPad = 1U << 4,
+};
+
+/** @return `set` when the group is selected, 0 otherwise - the width never changes. */
+[[nodiscard]] constexpr std::uint32_t
+flagged(std::uint32_t flags, std::uint32_t group, std::uint32_t set) noexcept {
+    return (flags & group) != 0U ? set : 0U;
+}
+
+/**
  * Writes one 8-element key, low byte first.
  * @param writer Fixed-buffer MSB-first writer.
  * @param key Host-order key to split into byte elements.
@@ -50,10 +78,12 @@ constexpr std::uint16_t kPlayerBlobByteCount = 18;
  * @return True when all 144 blob bits fit.
  */
 [[nodiscard]] bool write_player_blob(encoding::bits::Writer& writer,
-                                     const client_identity::ClientIdentity& identity) noexcept {
-    return writer.write(1, 3) && writer.write(0, 1) && writer.write(0, 10) && writer.write(1, 1)
+                                     const client_identity::ClientIdentity& identity,
+                                     const std::uint32_t flags) noexcept {
+    return writer.write(1, 3) && writer.write(flagged(flags, kRowFlagBlobLeadPad, 1U), 1)
+           && writer.write(flagged(flags, kRowFlagBlobWide, 0x3FFU), 10) && writer.write(1, 1)
            && writer.write(identity.accountSoid, 64) && writer.write(identity.field5, 64)
-           && writer.write(0, 1);
+           && writer.write(flagged(flags, kRowFlagBlobTailPad, 1U), 1);
 }
 
 /**
@@ -63,7 +93,8 @@ constexpr std::uint16_t kPlayerBlobByteCount = 18;
  * @return True when fields 3, 5 and 14 and all presence bits fit.
  */
 [[nodiscard]] bool write_player_identity(encoding::bits::Writer& writer,
-                                         const client_identity::ClientIdentity& identity) noexcept {
+                                         const client_identity::ClientIdentity& identity,
+                                         const std::uint32_t flags) noexcept {
     for (std::size_t field = 0; field < kIdentityPresenceFieldCount; ++field) {
         const bool present = field == 3 || field == 5 || field == 14;
         if (!writer.write(present ? 1U : 0U, 1)) {
@@ -76,16 +107,18 @@ constexpr std::uint16_t kPlayerBlobByteCount = 18;
             return false;
         }
         if (field == 14
-            && (!writer.write(kPlayerBlobByteCount, 14) || !write_player_blob(writer, identity))) {
+            && (!writer.write(kPlayerBlobByteCount, 14)
+                || !write_player_blob(writer, identity, flags))) {
             return false;
         }
     }
-    return writer.write(0, 1);
+    return writer.write(flagged(flags, kRowFlagIdentityTail, 1U), 1);
 }
 
 /** Writes the populated row for one member, then its trailing state bits. */
 [[nodiscard]] bool write_member_row(encoding::bits::Writer& writer,
-                                    const client_identity::ClientIdentity& identity) noexcept {
+                                    const client_identity::ClientIdentity& identity,
+                                    const std::uint32_t flags) noexcept {
     const std::uint32_t field1Wire = std::bit_cast<std::uint32_t>(identity.field1) + kField1Bias;
     const std::uint32_t field2Wire = std::bit_cast<std::uint32_t>(identity.field2) + kField2Bias;
     // The trailing 3+1+5 bits mirror the local row: presence of the nested block's tail, a
@@ -96,7 +129,8 @@ constexpr std::uint16_t kPlayerBlobByteCount = 18;
            && writer.write(identity.field3, 64) && writer.write(identity.accountSoid, 64)
            && writer.write(identity.field5, 64) && writer.write(identity.field6, 64)
            && writer.write(1, 1) && writer.write(1, 1)
-           && write_player_identity(writer, identity) && writer.write(0, 3)
+           && write_player_identity(writer, identity, flags)
+           && writer.write(flagged(flags, kRowFlagTrailingTriple, 7U), 3)
            && writer.write(1, 1) && writer.write(kLeaveReasonWire, 5);
 }
 
@@ -113,10 +147,13 @@ bool valid(const MembershipSnapshot& snapshot) noexcept {
 bool write_member_table(encoding::bits::Writer& writer,
                         const client_identity::ClientIdentity& identity,
                         const client_identity::ClientIdentity& peer,
-                        bool peerPresent) noexcept {
-    bool encoded = writer.bit_count() == kMemberStartBit && write_member_row(writer, identity);
+                        bool peerPresent,
+                        const std::uint32_t peerRowFlags) noexcept {
+    // The LOCAL row always encodes with flags == 0: only the peer row is under test, and
+    // changing what the client is told about itself is a different experiment.
+    bool encoded = writer.bit_count() == kMemberStartBit && write_member_row(writer, identity, 0U);
     if (encoded && peerPresent) {
-        encoded = write_member_row(writer, peer);
+        encoded = write_member_row(writer, peer, peerRowFlags);
     }
     for (std::size_t member = peerPresent ? 2 : 1; encoded && member < kMemberCount; ++member) {
         encoded = writer.write(0, kAbsentMemberBitCount);

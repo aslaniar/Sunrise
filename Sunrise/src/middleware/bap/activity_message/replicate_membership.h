@@ -85,6 +85,12 @@ struct MembershipSnapshot final {
     client_identity::ClientIdentity peer{};
     bool peerPresent{};
     /**
+     * Bit groups of the PEER row to publish as ones instead of zeros; see the server
+     * setting `membership_peer_row_flags` for the group map. Zero reproduces every body
+     * this encoder has ever produced, bit for bit. Size-preserving by construction.
+     */
+    std::uint32_t peerRowFlags{};
+    /**
      * INSTRUMENT (Track 1): override for the first trailing 32-bit field, zero meaning
      * "keep the historical value". With ONE member a slot MASK and a member COUNT are the
      * same number (1), which is why the two readings were indistinguishable for months;
@@ -188,12 +194,14 @@ region_block_end_bit(const MembershipSnapshot& snapshot) noexcept {
  * @param identity Exact client identity accepted for the current join; occupies slot 0.
  * @param peer The other joined session's identity; occupies slot 1 when present.
  * @param peerPresent True when a peer row is published this revision.
+ * @param peerRowFlags Zero-valued bit groups of the PEER row to publish as ones.
  * @return True when the writer reaches the region-block presence bit.
  */
 [[nodiscard]] bool write_member_table(encoding::bits::Writer& writer,
                                       const client_identity::ClientIdentity& identity,
                                       const client_identity::ClientIdentity& peer,
-                                      bool peerPresent) noexcept;
+                                      bool peerPresent,
+                                      std::uint32_t peerRowFlags = 0) noexcept;
 
 /**
  * Writes all 64 state-zero regions and the host-present tail.
