@@ -84,6 +84,7 @@ std::atomic<bool> g_selfTestSeen{false};
 std::atomic<unsigned> g_lastTotal{0};
 std::atomic<unsigned> g_lastCovered{0};
 std::atomic<unsigned> g_lastFailed{0};
+std::atomic<bool> g_quieted[3]{};
 std::uintptr_t g_base{0};  ///< main module base, for RIP -> RVA conversion in the handler
 
 alignas(8) volatile std::uint8_t g_selfTestByte{0};
@@ -126,6 +127,30 @@ bool safe_copy(void* dst, const void* src, std::size_t n) noexcept {
     }
 }
 
+/** SEH-guarded single byte read, exported for sibling probes (pubrest). */
+[[nodiscard]] bool safe_byte_impl(const void* addr, std::uint8_t* out) noexcept {
+    return addr != nullptr && safe_copy(out, addr, 1);
+}
+
+/** SEH-guarded sized read, exported for sibling probes (pubrest rec8/image dumps). */
+[[nodiscard]] bool safe_read_impl(const void* addr, void* out, std::size_t n) noexcept {
+    return addr != nullptr && safe_copy(out, addr, n);
+}
+
+/** True when `addr` is a table this watch has armed on (role classification). */
+[[nodiscard]] bool is_armed_table_impl(std::uintptr_t addr) noexcept {
+    if (addr == 0) {
+        return false;
+    }
+    for (unsigned s = 0; s < 3; ++s) {
+        if (g_slots[s].table.load(std::memory_order_relaxed) == addr) {
+            return true;
+        }
+    }
+    return false;
+}
+
+
 void emit_line(const char* text, std::size_t length) noexcept {
     core::log::write(core::log::Channel::client, core::log::Level::info, {text, length});
 }
@@ -164,7 +189,12 @@ LONG NTAPI vec_handler(PEXCEPTION_POINTERS info) noexcept {
         return EXCEPTION_CONTINUE_SEARCH;
     }
     const unsigned dr6bits = static_cast<unsigned>(info->ContextRecord->Dr6 & 0xFULL);
-    const unsigned ours = dr6bits & g_enabledMask.load(std::memory_order_relaxed);
+    // CONSUMPTION RULE (adversarial review, p2-159): ONLY this instrument sets hardware
+    // breakpoints in this process, so ANY #DB naming a slot via Dr6 is ours - even when
+    // the software mask has already quieted that slot but a sweep has not yet re-armed
+    // every thread. Consuming here closes the unhandled-SINGLE_STEP hole (the exact
+    // crash class this boot tests); the mask only governs quiet/flood bookkeeping.
+    const unsigned ours = dr6bits;
     if (ours == 0U) {
         // A single-step that is not ours (none exists in this process today) must pass
         // through so any other handler behaves exactly as before.
@@ -173,6 +203,20 @@ LONG NTAPI vec_handler(PEXCEPTION_POINTERS info) noexcept {
     unsigned slot = 0U;
     while (((ours >> slot) & 1U) == 0U) {
         ++slot;
+    }
+    // Paranoia: the slot's DR address in THIS context must be one we recognize.
+    {
+        const auto ctxDr = (&info->ContextRecord->Dr0)[slot];
+        bool known = false;
+        for (unsigned s = 0; s < 4; ++s) {
+            if (g_slots[s].addr.load(std::memory_order_relaxed) == ctxDr) {
+                known = true;
+                break;
+            }
+        }
+        if (!known) {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
     }
 
     Hit hit{};
@@ -423,15 +467,36 @@ DWORD WINAPI watchdog_main(LPVOID) noexcept {
         drainedSeq = claimed;
         g_drainedSeq.store(claimed, std::memory_order_relaxed);
 
-        // 2. Flood guard: a watched window written hundreds of times per sweep is either
-        //    a hot neighbour byte or a misunderstanding - disarm THAT slot and say so
-        //    (the census keeps its hit count; the instrument never silently starves).
+        // 2. Flood guard + CAPTURE-THEN-QUIET (the p2-158 crash mitigation): after a
+        //    record slot's FIRST capture the slot disarms - the writer is named by that
+        //    one capture, and the landing transition is not fed repeated #DBs. The
+        //    self-test slot (3) never quiets: it is the pipeline's liveness proof.
         unsigned mask = g_enabledMask.load(std::memory_order_relaxed);
         for (unsigned s = 0; s < 3; ++s) {
             const auto total = g_slots[s].hits.load(std::memory_order_relaxed);
             const auto delta = total - prevHits[s];
             prevHits[s] = total;
-            if (delta > kFloodDisarmPerSweep && ((mask >> s) & 1U) != 0U) {
+            const bool armed = ((mask >> s) & 1U) != 0U;
+            if (!armed) {
+                continue;
+            }
+            if (total > 0 && !g_quieted[s].load(std::memory_order_relaxed)) {
+                // First capture on this slot: log the quiet and disarm.
+                g_quieted[s].store(true, std::memory_order_relaxed);
+                mask &= ~(1U << s);
+                g_enabledMask.store(mask, std::memory_order_relaxed);
+                g_version.fetch_add(1U, std::memory_order_relaxed);
+                std::array<char, 192> t{};
+                const int w = std::snprintf(t.data(), t.size(),
+                    "ev=mtrace stage=wwatch fn=wwatch result=quiet slot=%u "
+                    "why=captured total_hits=%u (capture-then-quiet)",
+                    s, static_cast<unsigned>(total));
+                if (w > 0) {
+                    emit_line(t.data(), static_cast<std::size_t>(w));
+                }
+                continue;
+            }
+            if (delta > kFloodDisarmPerSweep) {
                 mask &= ~(1U << s);
                 g_enabledMask.store(mask, std::memory_order_relaxed);
                 g_version.fetch_add(1U, std::memory_order_relaxed);
@@ -549,6 +614,18 @@ DWORD WINAPI watchdog_main(LPVOID) noexcept {
 }
 
 } // namespace
+
+bool safe_byte(const void* addr, std::uint8_t* out) noexcept {
+    return safe_byte_impl(addr, out);
+}
+
+bool safe_read(const void* addr, void* out, std::size_t n) noexcept {
+    return safe_read_impl(addr, out, n);
+}
+
+bool is_armed_table(std::uintptr_t addr) noexcept {
+    return is_armed_table_impl(addr);
+}
 
 bool install() noexcept {
     if (g_installed.exchange(true, std::memory_order_relaxed)) {
@@ -677,6 +754,7 @@ void arm_table(std::uintptr_t table, int selfIdx, int peerIdx) noexcept {
             g_slots[2].len.store(len, std::memory_order_relaxed);
             g_slots[2].recIndex.store(static_cast<std::uint32_t>(selfIdx),
                                       std::memory_order_relaxed);
+            g_slots[2].table.store(tableKey, std::memory_order_relaxed);
             changed = true;
             std::array<char, 224> t{};
             const int w = std::snprintf(t.data(), t.size(),

@@ -94,6 +94,13 @@ enum class Probe : std::uint8_t {
      *  evaluator's whole query set is captured without flooding a 7,000-call path, and
      *  the change-gated return value is still emitted on leave. */
     c4query,
+    /** THE PUBLISH/RESTORE OBSERVER (20.254): rcx = copy-side object (its +0x80 is the
+     *  staging or the live table), rdx = image id, r8 = the OTHER side (the table on
+     *  publish, the source image on restore). Logs both sides, the role (classified via
+     *  gate_wwatch's armed tables), the source's per-record gate bytes, and one-shots a
+     *  full source-image hexdump on the first restore. The writer 20.246 could never
+     *  see, observed. */
+    pubrest,
 };
 
 struct Target {
@@ -254,7 +261,10 @@ constexpr std::uintptr_t kGate1LoopCaller = 0x1308AB6;  ///< return addr of the 
 // NOT hooked: 0x141702595 (the 534-B body). It is entered by FALL-THROUGH from the 21-byte
 // head, not by a call - a detour there would `ret` into the head's frame. Checked, excluded.
 constexpr std::uintptr_t kPTableRva = 0x17021C0;      ///< same rcx as 0x141702580
-constexpr std::uintptr_t kTableFromObj = 0x6C38;      ///< [rcx] + this = participant table
+// p2-159: the publish/restore entry (20.254) - the only clean caller of the bulk copier
+// 0x1404DF6A0 that refreshes the participant table. Verified .pdata start
+// 0x1403CB340..0x1403CB3EF; the boot gate resolves it like every RVA here.
+constexpr std::uintptr_t kPubRestRva = 0x3CB340;constexpr std::uintptr_t kTableFromObj = 0x6C38;      ///< [rcx] + this = participant table
 constexpr std::uintptr_t kMaskA = 0x59248;            ///< gate cond 3: bit i must be SET
 constexpr std::uintptr_t kMaskB = 0x5924C;            ///< gate cond 1: first set bit = i
 constexpr std::uintptr_t kMaskC = 0x59250;            ///< the third mask (0x1404DF650)
@@ -395,7 +405,7 @@ constexpr std::uintptr_t kType30SchemaKeyPtr = 0x1FA42B8;
 /** The type-30 key is independently known; it is this instrument's self-test. */
 constexpr std::uint32_t kType30SchemaKeyOracle = 0x80808683;
 
-constexpr std::array<Target, 41> kTargets{{
+constexpr std::array<Target, 42> kTargets{{
     // The entity receive cluster. 0x141718510 is the ENTRY and has ZERO static references
     // of any kind in the whole image (20.209) - its caller is the open question, so it gets
     // the largest budget.
@@ -520,6 +530,13 @@ constexpr std::array<Target, 41> kTargets{{
     {"pool_disp",     kPoolDispRva,    0, OutParam::none, false, Probe::pooldisp},
     {"t45_handler",   kT45HandlerRva,  8, OutParam::none, false, Probe::poolc4},
     {"t30_handler",   kT30HandlerRva,  4, OutParam::none, false, Probe::poolc4},
+    // p2-159: THE PUBLISH/RESTORE OBSERVER (20.254). The ONLY clean entry to the bulk
+    // copier 0x1404DF6A0 that refreshes the participant table (gate bytes included) -
+    // the writer 20.246's store-encoding scans could never see. Clean .pdata function
+    // (~0xAF bytes). Logs both copy sides, the role (publish vs restore, classified via
+    // gate_wwatch's armed tables), the SOURCE image's per-record gate bytes, and on the
+    // first restore a one-shot hexdump of the whole source image.
+    {"pubrest",       kPubRestRva,     0, OutParam::none, false, Probe::pubrest},
     // DELIBERATELY NOT TRACED: registry 0x16BAB50 (36 B) and ent_encode 0x171E240 (37 B)
     // are too small to carry a detour safely, and schema_res 0x4C74D0 / ent_index 0x4C16C0
     // are hot content-load helpers that run thousands of times before any entity exists.
@@ -572,6 +589,12 @@ std::array<std::atomic<bool>, kTargets.size()> g_hasProbe{};
  */
 constexpr unsigned kTrackProbeCap = 240;
 std::array<std::atomic<unsigned>, kTargets.size()> g_trackEmits{};
+/** One-shot source-image dumps per boot (pubrest): the first restore only. */
+std::atomic<unsigned> g_pubrestDumped{0};
+/** Per-phase novelty state for pubrest (enter and leave tracked independently). */
+std::array<std::atomic<std::uint64_t>, kTargets.size()> g_pubrestLastEnter{};
+std::array<std::atomic<std::uint64_t>, kTargets.size()> g_pubrestLastLeave{};
+std::array<std::atomic<bool>, kTargets.size()> g_pubrestSeen{};
 std::atomic<bool> g_installed{};
 std::atomic<std::uint64_t> g_total{};
 std::atomic<std::uint64_t> g_lastCensusMs{};
@@ -1073,6 +1096,132 @@ void emit_ptable(std::size_t index, const char* fn, std::uint64_t call,
 }
 
 /**
+ * THE PUBLISH/RESTORE OBSERVER (20.254). rcx = the copy-side object (its +0x80 is one
+ * side of the bulk copy), rdx = the image id, r8 = the other side. When arg1+0x80 is a
+ * known participant table this is a RESTORE (an image is being copied INTO the live
+ * table - the write-back that reaches the gate bytes); when arg3 is a known table it is
+ * a PUBLISH (table -> snapshot). The copy is offset-1:1 over [dest, dest+0x59260), so
+ * the source's per-record gate bytes sit at src+0x38+i*0x2AC0 - logged for records 0..3
+ * with their identities. On the first restore, the WHOLE source image is hexdumped once
+ * (state_diff's dump pattern): the structure of the thing that would carry bit4 in
+ * retail. Safety: every game-memory read is SEH-guarded via gate_wwatch::safe_byte /
+ * safe_copy; emission is novelty-gated on (caller, args, gate-byte tuple) - no budget.
+ */
+void emit_pubrest(std::size_t index, const char* fn, const char* when, std::uint64_t call,
+                  std::uintptr_t callerRva, const void* rcx, const void* rdx,
+                  const void* r8) noexcept {
+    const auto arg1 = reinterpret_cast<std::uintptr_t>(rcx);
+    const auto arg3 = reinterpret_cast<std::uintptr_t>(r8);
+    if (arg1 < 0x1000U || (arg1 & 7U) != 0U) {
+        return;
+    }
+    const auto staging = arg1 + 0x80U;
+    const bool restore = gate_wwatch::is_armed_table(staging);
+    const bool publish = !restore && gate_wwatch::is_armed_table(arg3);
+    const char* role = restore ? "restore" : (publish ? "publish" : "unknown");
+    const bool isEnter = (when[0] == 'e');
+
+    // Source-side gate bytes (arg3 is the source in both directions) and DEST-side gate
+    // bytes (arg1+0x80) - the enter/leave delta of the dest tuple is the "did this call
+    // change the dest" measurement. 0xFF = read failed (never a real gate value).
+    std::uint8_t f38[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+    std::uint8_t f38d[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+    std::uint64_t rec8[2] = {0, 0};
+    bool srcOk = false;
+    if (arg3 >= 0x1000U) {
+        srcOk = true;
+        for (unsigned i = 0; i < 4; ++i) {
+            if (!gate_wwatch::safe_byte(
+                    reinterpret_cast<const void*>(arg3 + 0x38U + i * 0x2AC0U), &f38[i])) {
+                f38[i] = 0xFFU;
+                srcOk = false;
+            }
+        }
+        if (!gate_wwatch::safe_read(reinterpret_cast<const void*>(arg3 + 8U),
+                                    &rec8[0], sizeof(rec8[0]))) {
+            srcOk = false;
+        }
+        if (!gate_wwatch::safe_read(reinterpret_cast<const void*>(arg3 + 0x2AC0U + 8U),
+                                    &rec8[1], sizeof(rec8[1]))) {
+            srcOk = false;
+        }
+    }
+    for (unsigned i = 0; i < 4; ++i) {
+        if (!gate_wwatch::safe_byte(
+                reinterpret_cast<const void*>(staging + 0x38U + i * 0x2AC0U), &f38d[i])) {
+            f38d[i] = 0xFFU;
+        }
+    }
+
+    // Per-phase novelty (adversarial review #2): enter and leave each collapse repeats
+    // of an identical call independently, so a hot stable path costs two lines total
+    // while any arg/gate-byte change emits.
+    const std::uint64_t fingerprint =
+        callerRva ^ arg1 ^ arg3 ^ (restore ? 0x8000000000000000ULL : 0ULL)
+        ^ static_cast<std::uint64_t>(f38[0]) ^ (static_cast<std::uint64_t>(f38[1]) << 8)
+        ^ (static_cast<std::uint64_t>(f38[2]) << 16) ^ (static_cast<std::uint64_t>(f38[3]) << 24)
+        ^ static_cast<std::uint64_t>(f38d[0]) ^ (static_cast<std::uint64_t>(f38d[1]) << 8)
+        ^ (static_cast<std::uint64_t>(f38d[2]) << 16) ^ (static_cast<std::uint64_t>(f38d[3]) << 24);
+    auto& lastSeen = isEnter ? g_pubrestLastEnter[index] : g_pubrestLastLeave[index];
+    const std::uint64_t prev = lastSeen.load(std::memory_order_relaxed);
+    const bool first = !g_pubrestSeen[index].load(std::memory_order_relaxed);
+    if (!first && prev == fingerprint) {
+        return;
+    }
+    lastSeen.store(fingerprint, std::memory_order_relaxed);
+    g_pubrestSeen[index].store(true, std::memory_order_relaxed);
+
+    {
+        std::array<char, 480> t{};
+        const int w = std::snprintf(t.data(), t.size(),
+            "ev=mtrace stage=pubrest fn=%s when=%s call=%llu caller_rva=0x%llX role=%s "
+            "arg1=0x%llX image_id=0x%llX src=0x%llX staging=0x%llX src_ok=%u "
+            "f38src_0..3=%02x,%02x,%02x,%02x f38dest_0..3=%02x,%02x,%02x,%02x "
+            "rec8_0=0x%llX rec8_1=0x%llX",
+            fn, when, static_cast<unsigned long long>(call),
+            static_cast<unsigned long long>(callerRva), role,
+            static_cast<unsigned long long>(arg1),
+            reinterpret_cast<unsigned long long>(rdx),
+            static_cast<unsigned long long>(arg3),
+            static_cast<unsigned long long>(staging), srcOk ? 1U : 0U,
+            f38[0], f38[1], f38[2], f38[3], f38d[0], f38d[1], f38d[2], f38d[3],
+            static_cast<unsigned long long>(rec8[0]),
+            static_cast<unsigned long long>(rec8[1]));
+        if (w > 0) {
+            emit(t.data(), static_cast<std::size_t>(w));
+        }
+    }
+    // ONE-SHOT full source-image hexdump, first RESTORE's enter only (adversarial review
+    // #6: enter+leave would double-burn the cap; ~1,427 lines of 0x100 each, chunk reads
+    // are one SEH-guarded 256-byte copy per line, not per byte).
+    if (restore && isEnter && srcOk && !g_pubrestDumped.load(std::memory_order_relaxed)) {
+        g_pubrestDumped.store(1U, std::memory_order_relaxed);
+        constexpr std::uintptr_t kImageBytes = 0x59260U;
+        constexpr std::uintptr_t kChunk = 0x100U;
+        std::array<std::uint8_t, kChunk> chunk{};
+        for (std::uintptr_t off = 0; off < kImageBytes; off += kChunk) {
+            if (!gate_wwatch::safe_read(reinterpret_cast<const void*>(arg3 + off),
+                                        chunk.data(), chunk.size())) {
+                break;  // unreadable region: stop the dump here, honestly
+            }
+            std::array<char, 1024> t{};
+            int w = std::snprintf(t.data(), t.size(),
+                "ev=mtrace stage=pubrestimg idx=0 src=0x%llX off=0x%llX hex=",
+                static_cast<unsigned long long>(arg3),
+                static_cast<unsigned long long>(off));
+            for (std::size_t b = 0; w > 0 && b < chunk.size(); ++b) {
+                w += std::snprintf(t.data() + w, t.size() - static_cast<std::size_t>(w),
+                                   "%02x", chunk[b]);
+            }
+            if (w > 0) {
+                emit(t.data(), static_cast<std::size_t>(w));
+            }
+        }
+        emit("ev=mtrace stage=pubrestimg result=done", 38);
+    }
+}
+
+/**
  * The tracking-row adders' enter probe (p2-152). rcx is the pool, rdx points at the
  * machine-id qword the callee will append (verified off BOTH callees' own prologues:
  * the canonical adder does `mov rax,[rdx]`, the fixup does `mov rbx,rdx; cmp [..],rbx`).
@@ -1205,6 +1354,10 @@ std::uint64_t __fastcall observe(void* rcx, void* rdx, void* r8, void* r9,
         if (kTargets[Index].probe == Probe::ptable) {
             emit_ptable(Index, kTargets[Index].name, call, rcx);
         }
+        if (kTargets[Index].probe == Probe::pubrest) {
+            emit_pubrest(Index, kTargets[Index].name, "enter", call, callerRva,
+                         rcx, rdx, r8);
+        }
         if (kTargets[Index].probe == Probe::trackadd) {
             emit_trackadd(Index, kTargets[Index].name, call, callerRva, rdx, rcx);
         }
@@ -1242,6 +1395,10 @@ std::uint64_t __fastcall observe(void* rcx, void* rdx, void* r8, void* r9,
     // supply into mgr+0xC118 across this call or it did not, and the delta says which.
     if (siteMatch) {
         run_probe(Index, kTargets[Index].probe, kTargets[Index].name, "leave", call, rcx);
+        if (kTargets[Index].probe == Probe::pubrest) {
+            emit_pubrest(Index, kTargets[Index].name, "leave", call, callerRva,
+                         rcx, rdx, r8);
+        }
         if (kTargets[Index].probe == Probe::poolc4) {
             // The LEAVE side is the measurement: same array, after the handler ran.
             emit_poolc4(kTargets[Index].name, "leave", call, rcx);

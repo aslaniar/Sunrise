@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 namespace sunrise::client::hooks::gate_wwatch {
@@ -26,5 +27,14 @@ bool install() noexcept;
  * same maskB walk 0x1404DD640 performs; peerIdx < 0 means solo (only self present).
  */
 void arm_table(std::uintptr_t table, int selfIdx, int peerIdx) noexcept;
+
+/** SEH-guarded single byte read for sibling probes (pubrest). False on unreadable. */
+[[nodiscard]] bool safe_byte(const void* addr, std::uint8_t* out) noexcept;
+
+/** SEH-guarded sized read for sibling probes (pubrest). False on unreadable. */
+[[nodiscard]] bool safe_read(const void* addr, void* out, std::size_t n) noexcept;
+
+/** True when `addr` is a participant table this watch has armed on. */
+[[nodiscard]] bool is_armed_table(std::uintptr_t addr) noexcept;
 
 } // namespace sunrise::client::hooks::gate_wwatch
