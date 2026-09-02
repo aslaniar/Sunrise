@@ -108,6 +108,11 @@ constexpr std::size_t kPublicSessionCapacity = 2;
 
 /** Revision of the last published snapshot. The consumer refuses one that does not increase. */
 std::atomic<std::uint32_t> g_membershipRevision{0};
+/** Snapshots that may emit the full variant table. One is enough to read the answer; the cap
+ *  exists because a rejected body republishes at kRetryInterval and would flood the log. */
+constexpr std::uint32_t kVariantLogBudget = 2;
+/** Snapshots that have emitted it. */
+std::atomic<std::uint32_t> g_variantsLogged{0};
 /** Stamps `Admitted::lastUse`. It only has to order the records, so it never has to be a clock. */
 std::atomic<std::uint64_t> g_admitClock{0};
 /** Guards the admitted table against the worker and the callback pump. */
@@ -415,21 +420,93 @@ void mark_session_dirty(std::uint64_t sessionId) noexcept {
                                        core::settings::get().server.publishPlayerProfile,
                                        std::string_view{
                                            core::settings::get().server.profileName.data()},
-                                       core::settings::get().server.sessionStateClientBase)
+                                       core::settings::get().server.sessionStateClientBase,
+                                       core::settings::get().server.profileStateVariant)
         || !writer.finish(size)) {
         return false;
     }
+    const bool clientBase = core::settings::get().server.sessionStateClientBase;
+    const bool publishProfile = core::settings::get().server.publishPlayerProfile;
+    const std::string_view profileName{core::settings::get().server.profileName.data()};
+    wire::ProfileModel published{};
+    published.publish = publishProfile;
+    published.name = profileName;
+    published.variant =
+        wire::profile_variant(core::settings::get().server.profileStateVariant);
     // The peer logs the hash it wanted, so ours has to be logged next to it to read a mismatch.
     report(core::log::Level::info,
            "ev=gameplay stage=membership result=built revision=%u members=%zu players=%zu "
-           "hash=0x%08X peer=%u client_base=%u",
+           "hash=0x%08X peer=%u client_base=%u profile=%u variant=%zu",
            composition.update.revision,
            composition.update.members.size(),
            composition.update.players.size(),
-           wire::session_state_hash(composition.update,
-                                    core::settings::get().server.sessionStateClientBase),
+           wire::session_state_hash(composition.update, clientBase, published),
            record.endpoint.port,
-           core::settings::get().server.sessionStateClientBase ? 1U : 0U);
+           clientBase ? 1U : 0U,
+           publishProfile ? 1U : 0U,
+           core::settings::get().server.profileStateVariant);
+    // THE DISCRIMINATOR (FINDINGS 20.205 / session-state-profile-image.md OPEN). Two things
+    // in the stored image are enumerable rather than known: whether the name stores
+    // obfuscated or plain, and where the tail's 5-bit field lands in its trailing 8 bytes.
+    // Publishing one guess and rebuilding per hypothesis costs a boot each. Instead every
+    // variant's hash is logged ONCE per session; the client prints the hash it computed, and
+    // whichever variant reproduces it is the answer - after which `profile_state_variant`
+    // makes it live as a SETTINGS FLIP, no rebuild. Capped so it cannot flood a republish loop.
+    // BUDGET PER EVENT CLASS (STATE hard rule; p2(133) spent this budget on a players=0
+    // snapshot where every variant is identical and learned nothing from half its own
+    // instrument). Only a PLAYER-BEARING snapshot may spend it - a body with no player row
+    // carries no profile, so its variants cannot differ.
+    if (publishProfile && !composition.update.players.empty()
+        && g_variantsLogged.fetch_add(1, std::memory_order_relaxed) < kVariantLogBudget) {
+        for (std::size_t index = 0; index < wire::kProfileVariantCount; ++index) {
+            wire::ProfileModel candidate{};
+            candidate.publish = true;
+            candidate.name = profileName;
+            candidate.variant = wire::profile_variant(index);
+            report(core::log::Level::info,
+                   "ev=gameplay stage=membership result=variant revision=%u index=%zu "
+                   "name_obfuscated=%u tail_field=%d hash=0x%08X",
+                   composition.update.revision,
+                   index,
+                   candidate.variant.nameObfuscated ? 1U : 0U,
+                   candidate.variant.tailFieldOffset == wire::kTailFieldAbsent
+                       ? -1
+                       : static_cast<int>(candidate.variant.tailFieldOffset),
+                   wire::session_state_hash(composition.update, clientBase, candidate));
+        }
+        // The absent-model hash too, so a body that STILL fails can be told apart from one
+        // whose failure is unrelated to the profile.
+        wire::ProfileModel absent{};
+        report(core::log::Level::info,
+               "ev=gameplay stage=membership result=variant revision=%u index=absent "
+               "hash=0x%08X",
+               composition.update.revision,
+               wire::session_state_hash(composition.update, clientBase, absent));
+        // OUR HALF OF THE DIFF. p2(130)'s capture recipe was unrunnable because the server
+        // never dumped the replica it built, so there was nothing to diff the client's
+        // stored bytes against. One 424-byte player entry per published player row, hex,
+        // keyed by revision and slot - small, and it makes the client-side capture usable
+        // offline the moment it lands.
+        static thread_local wire::SessionState built{};
+        wire::build_session_state(composition.update, built, clientBase, published);
+        for (const auto& player : composition.update.players) {
+            const std::size_t entry = wire::kPlayerTableOffset + wire::kPlayerStride * player.slot;
+            std::array<char, core::log::kLineCapacity> text{};
+            int written = std::snprintf(text.data(), text.size(),
+                                        "ev=gameplay stage=membership result=entry revision=%u "
+                                        "slot=%u hex=",
+                                        composition.update.revision, player.slot);
+            for (std::size_t i = 0; i < wire::kPlayerStride && written > 0; ++i) {
+                written += std::snprintf(text.data() + written,
+                                         text.size() - static_cast<std::size_t>(written),
+                                         "%02X",
+                                         static_cast<unsigned>(built[entry + i]));
+            }
+            if (written > 0) {
+                report(core::log::Level::info, "%s", text.data());
+            }
+        }
+    }
     const bool queued = peer::enqueue_reliable(
         record.sessionId,
         record.endpoint,

@@ -213,14 +213,16 @@ bool initialize() noexcept {
     report(core::log::Level::info,
            "ev=gameplay stage=settings region_bound=%u join_machine_ids=%u "
            "public_row_bodies=%u region_survives_churn=%u member_setup_flags=%u "
-           "slice_follows_region=%u reserve=%u",
+           "slice_follows_region=%u reserve=%u c4_mark_push=%u peer_retry_cap=%u",
            configured.activityHostRegionBound ? 1U : 0U,
            configured.publishJoinMachineIds ? 1U : 0U,
            static_cast<unsigned>(configured.activityPublicRowMembershipBodies),
            configured.activityRegionSurvivesChurn ? 1U : 0U,
            configured.activityMemberSetupFlags ? 1U : 0U,
            configured.activitySliceSetFollowsRegion ? 1U : 0U,
-           static_cast<unsigned>(configured.serverReserveCount));
+           static_cast<unsigned>(configured.serverReserveCount),
+           configured.poolC4MarkPush ? 1U : 0U,
+           static_cast<unsigned>(core::settings::get().server.membershipPeerRetryCap));
     return true;
 }
 

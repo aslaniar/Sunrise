@@ -51,9 +51,15 @@ bool Parser::gameplay_settings(gameplay::Settings& output) noexcept {
     bool hasPort = false;
     bool hasReserve = false;
     bool hasJoinGrant = false;
+    bool hasEntityIndexAllocation = false;
+    bool hasEntityIndexGrant = false;
+    bool hasEntityIndexGrantFlat = false;
+    bool hasEntityIndexAssignment = false;
+    bool hasPoolC4MarkPush = false;
     bool hasSearchSelfHost = false;
     bool hasPublishJoinMachineIds = false;
     bool hasActivityHostRegionBound = false;
+    bool hasMembershipPeerSameRegionAdvert = false;
     bool hasActivityRegionSurvivesChurn = false;
     bool hasActivityMemberSetupFlags = false;
     bool hasActivitySliceSetFollowsRegion = false;
@@ -105,6 +111,31 @@ bool Parser::gameplay_settings(gameplay::Settings& output) noexcept {
             }
             candidate.serverReserveCount = static_cast<std::uint16_t>(value);
             hasReserve = true;
+        } else if (key == "entity_index_allocation") {
+            if (hasEntityIndexAllocation || !boolean(candidate.entityIndexAllocation)) {
+                return false;
+            }
+            hasEntityIndexAllocation = true;
+        } else if (key == "entity_index_grant") {
+            if (hasEntityIndexGrant || !boolean(candidate.entityIndexGrant)) {
+                return false;
+            }
+            hasEntityIndexGrant = true;
+        } else if (key == "entity_index_grant_flat") {
+            if (hasEntityIndexGrantFlat || !boolean(candidate.entityIndexGrantFlat)) {
+                return false;
+            }
+            hasEntityIndexGrantFlat = true;
+        } else if (key == "entity_index_assignment") {
+            if (hasEntityIndexAssignment || !boolean(candidate.entityIndexAssignment)) {
+                return false;
+            }
+            hasEntityIndexAssignment = true;
+        } else if (key == "pool_c4_mark_push") {
+            if (hasPoolC4MarkPush || !boolean(candidate.poolC4MarkPush)) {
+                return false;
+            }
+            hasPoolC4MarkPush = true;
         } else if (key == "client_join_grant_count") {
             std::uint64_t value = 0;
             if (hasJoinGrant || !unsigned_integer(value)
@@ -128,6 +159,11 @@ bool Parser::gameplay_settings(gameplay::Settings& output) noexcept {
                 return false;
             }
             hasActivityHostRegionBound = true;
+        } else if (key == "membership_peer_same_region_advert") {
+            if (hasMembershipPeerSameRegionAdvert || !boolean(candidate.membershipPeerSameRegionAdvert)) {
+                return false;
+            }
+            hasMembershipPeerSameRegionAdvert = true;
         } else if (key == "activity_region_survives_churn") {
             if (hasActivityRegionSurvivesChurn || !boolean(candidate.activityRegionSurvivesChurn)) {
                 return false;

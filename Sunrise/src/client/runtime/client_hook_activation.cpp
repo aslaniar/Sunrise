@@ -28,6 +28,7 @@
 #include "../hooks/profile_harvest/profile_harvest_observer.h"
 #include "../hooks/profile_ingress/profile_ingress_observer.h"
 #include "../hooks/decoder_trace/decoder_trace_observer.h"
+#include "../hooks/milestone_trace/milestone_trace_observer.h"
 #include "../hooks/state_diff/state_diff_observer.h"
 #include "../hooks/world_trace/world_trace_observer.h"
 #include "../hooks/phase_probe/phase_probe_observer.h"
@@ -271,6 +272,11 @@ void clear_game_targets() noexcept {
     // disagreement can be diffed byte-exact offline. Read-only, SEH-guarded,
     // capped, gated by client.state_diff (DEFAULT FALSE).
     (void)hooks::state_diff::install();
+    // (milestone_trace, p2(137)): the table-driven census of the entity/render path. Logs
+    // each traced function's CALLER - the only way to name a runtime-dispatched invoker
+    // (20.209) - and heartbeats every hook's call count including the zeros.
+    // Gated by client.milestone_trace (DEFAULT FALSE).
+    (void)hooks::milestone_trace::install();
     // The weapon/armor validation-chain observers (item_gate, FINDINGS 14.23): log-only
     // research instrumentation for the two-bugs front, which CLOSED at 15.9. Left
     // uninstalled by default (2026-08-22) - the "cool path" note above was wrong: it

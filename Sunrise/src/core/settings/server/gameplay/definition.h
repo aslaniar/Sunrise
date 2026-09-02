@@ -61,6 +61,47 @@ struct Settings {
     /** Entity indices the join grants. The rest stay free for the client to request. */
     std::uint16_t clientJoinGrantCount{kDefaultClientJoinGrant};
     /**
+     * Push one type-20 (allocate_entity_indices) notification per join, naming the
+     * joining member's index block. Off keeps the join burst byte-identical to the
+     * pre-20.213 shape (FINDINGS 20.212/20.213, RE_output/claims/
+     * entity-index-allocation-schema.md).
+     */
+    bool entityIndexAllocation{false};
+    /**
+     * Push one type-21 (entity-index grant) notification per join, carrying the
+     * joiner's lease as the 1024-byte free-slot mask the client's entity manager
+     * feeds its index allocator from (claims K/M, RE_output/claims/
+     * entity-index-allocation-schema.md). Independent of entity_index_allocation
+     * so either push can be turned off without a rebuild.
+     */
+    bool entityIndexGrant{false};
+    /**
+     * Push one type-30 (entity-index pool ASSIGNMENT) notification per join: one u32
+     * the client decodes into [pool+0x602b4]. Its -1 default blocks the entity
+     * manager's post-init local-mask sync, leaving the host client's mask empty and
+     * failing every peer/player_broadcast creation (FINDINGS 20.217). v1 value: 0.
+     */
+    bool entityIndexAssignment{false};
+    /**
+     * Push one type-45 (peer-contact) notification alongside every peer-bearing
+     * membership body: a 6-bit count and the peer's machine id, which the client's
+     * handler 0x1404F3870 turns into "this peer is CONTACTABLE" (pool+0x602C4 = 1).
+     * That byte is the last missing input of the per-tick peer evaluator
+     * 0x140C171F0 - p2-153 caught the evaluator running and aborting on it 6,293
+     * times across the two clients without it ever going nonzero (FINDINGS 20.245),
+     * and 20.246 R6 established the evaluator's remaining per-entry probes are
+     * informational writes rather than gates. Default off so the push burst stays
+     * byte-identical until the lane turns it on.
+     */
+    bool poolC4MarkPush{false};
+    /**
+     * Selects the flat type-21 body (256 mask words, each MSB-first — the client
+     * pool sender's own serialization) instead of the raw struct shape
+     * {reserved word, mask bytes, owner byte}. Flippable without a rebuild so
+     * one boot can A/B the two framings.
+     */
+    bool entityIndexGrantFlat{false};
+    /**
      * Answer a session search with THIS server's gameplay endpoint instead of relaying another
      * client's advertisement (FINDINGS 20.114).
      *
@@ -98,6 +139,22 @@ struct Settings {
      * without a rebuild (HARD RULES, p2(62)).
      */
     bool activityHostRegionBound{false};
+    /**
+     * Publishes the PEER's citizen advertisement even when the peer stands in THIS
+     * session's own region (the shared-bubble case), instead of skipping it (FINDINGS
+     * 20.239; the deferred 20.79 gap-5 question resolved as: both advertisements point
+     * at the SAME region-bound shared host session, which activityHostRegionBound
+     * already makes safe - the second request returns the existing row instead of
+     * retiring it, so the p2(54)-era collide-and-retire destruction is unreachable).
+     *
+     * MEASURED DEFECT (p2-150, both machines, verified by dump + logs): with both
+     * clients in one Tower region the peer row went out WITHOUT its join endpoint
+     (peer_citizen=0), and the client fixup-released exactly that row ("a peer with
+     * no address is not joinable"): the peer's participant record never activated
+     * (state dword 0 vs the local 5), no presence bit, and the construction gate
+     * never evaluated the peer. False keeps the historical skip (HARD RULES, p2(62)).
+     */
+    bool membershipPeerSameRegionAdvert{false};
     /**
      * Seeds a freshly committed activity-session record with the account's last
      * client-reported region (FINDINGS 20.147). True by default.

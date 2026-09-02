@@ -33,6 +33,7 @@ enum class BodyCodec : std::uint8_t {
     steamCertificate,
     userMessageResponse,
     webService,
+    entityIndexGrantResponse,
 };
 
 /** Optional side effect produced while decoding one authenticated service body. */

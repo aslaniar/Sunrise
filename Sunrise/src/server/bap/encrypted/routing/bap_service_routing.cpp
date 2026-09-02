@@ -62,9 +62,17 @@ bool resolve(std::uint16_t request, ServiceRoute& route) noexcept {
                  "ev=bap svc=18 rsp=19 result=ok"};
         return true;
     case middleware::bap::RequestService::purchasedOffers:
+        // The handbook names svc 21 "purchased offers", but the live frames say
+        // otherwise: the request arrives exactly once per join, gated with the
+        // entity-manager init, and the whole entity-index chain (claims E-O of
+        // entity-index-allocation-schema.md) says it is the client's
+        // entity-index pool request. The reply carries the requester's lease
+        // mask (BodyCodec::entityIndexGrantResponse) behind the
+        // entity_index_grant switch; with the switch off the legacy empty
+        // reply goes out unchanged.
         route = {ResponseMode::reply,
                  middleware::bap::ResponseService::purchasedOffers,
-                 BodyCodec::empty,
+                 BodyCodec::entityIndexGrantResponse,
                  "ev=bap svc=21 rsp=22 result=ok"};
         return true;
     case middleware::bap::RequestService::accountTranslation:

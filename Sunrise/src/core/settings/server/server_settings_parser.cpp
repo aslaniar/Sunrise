@@ -91,6 +91,7 @@ bool Parser::server_settings(server::Settings& output) noexcept {
     bool hasProfileIdentity = false;
     bool hasProfilePower = false;
     bool hasSessionStateClientBase = false;
+    bool hasProfileStateVariant = false;
     bool hasConfigGuid = false;
     bool hasClientLogPath = false;
     bool hasPackagesDir = false;
@@ -160,6 +161,17 @@ bool Parser::server_settings(server::Settings& output) noexcept {
                 return false;
             }
             hasSessionStateClientBase = true;
+        } else if (key == "profile_state_variant") {
+            // Which stored-profile image the hash models; see the field's doc. Out-of-range
+            // values are refused rather than wrapped, so a typo cannot silently publish a
+            // different image than the operator asked for.
+            std::uint64_t value = 0;
+            if (hasProfileStateVariant || !unsigned_integer(value)
+                || value >= server::kProfileStateVariantCount) {
+                return false;
+            }
+            output.profileStateVariant = static_cast<std::size_t>(value);
+            hasProfileStateVariant = true;
         } else if (key == "profile_power") {
             // Region A chunk 8's float, authored as an integer light level. Zero (the
             // default) keeps the chunk absent, which reproduces the pre-power bytes.

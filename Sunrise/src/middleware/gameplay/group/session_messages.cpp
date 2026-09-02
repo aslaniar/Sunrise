@@ -545,7 +545,8 @@ bool write_membership_update(bits::Writer& writer,
                              const MembershipUpdate& body,
                              bool publishProfile,
                              std::string_view profileName,
-                             bool clientStateBase) noexcept {
+                             bool clientStateBase,
+                             std::size_t profileVariant) noexcept {
     // The consumer refuses the message unless the base revision is below the message revision,
     // and a complete snapshot always publishes base revision 0.
     if (body.revision == 0 || body.members.size() > kMemberCapacity
@@ -589,7 +590,11 @@ bool write_membership_update(bits::Writer& writer,
     }
     // The consumer hashes its own state after applying and compares. The replica layout must
     // stay in step with it.
-    return writer.write(session_state_hash(body, clientStateBase), kWordWidth);
+    ProfileModel profile{};
+    profile.publish = publishProfile;
+    profile.name = profileName;
+    profile.variant = profile_variant(profileVariant);
+    return writer.write(session_state_hash(body, clientStateBase, profile), kWordWidth);
 }
 
 } // namespace sunrise::middleware::gameplay::group

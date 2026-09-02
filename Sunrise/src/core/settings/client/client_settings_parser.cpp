@@ -20,6 +20,7 @@ bool Parser::client_settings(client::Settings& output) noexcept {
     bool hasStagingPopulate = false;
     bool hasWorldTrace = false;
     bool hasStateDiff = false;
+    bool hasMilestoneTrace = false;
     bool hasAdmissionMemberIndex = false;
     bool hasAdmissionXuid = false;
     bool hasAdmissionPeerSteamId = false;
@@ -78,6 +79,11 @@ bool Parser::client_settings(client::Settings& output) noexcept {
                 return false;
             }
             hasDecoderTrace = true;
+        } else if (key == "milestone_trace") {
+            if (hasMilestoneTrace || !boolean(candidate.milestoneTrace)) {
+                return false;
+            }
+            hasMilestoneTrace = true;
         } else if (key == "state_diff") {
             if (hasStateDiff || !boolean(candidate.stateDiff)) {
                 return false;

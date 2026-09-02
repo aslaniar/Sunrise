@@ -235,6 +235,7 @@ struct MembershipUpdate {
                                            const MembershipUpdate& body,
                                            bool publishProfile,
                                            std::string_view profileName,
-                                           bool clientStateBase) noexcept;
+                                           bool clientStateBase,
+                                           std::size_t profileVariant) noexcept;
 
 } // namespace sunrise::middleware::gameplay::group

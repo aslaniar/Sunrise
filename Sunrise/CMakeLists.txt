@@ -97,6 +97,7 @@ add_library(steam_api64 SHARED
     src/client/hooks/profile_ingress/profile_ingress_observer.cpp
     src/client/hooks/decoder_trace/decoder_trace_observer.cpp
     src/client/hooks/world_trace/world_trace_observer.cpp
+    src/client/hooks/milestone_trace/milestone_trace_observer.cpp
     src/client/hooks/state_diff/state_diff_observer.cpp
     src/client/hooks/item_gate/item_gate_observer.cpp
     src/client/hooks/handle_message/handle_message_observer.cpp
@@ -446,6 +447,9 @@ add_library(steam_api64 SHARED
     src/middleware/bap/activity_message/activity_message_notification_encoder.cpp
     src/middleware/bap/activity_message/activity_join_result_encoder.cpp
     src/middleware/bap/activity_message/activity_entity_slot_request_parser.cpp
+    src/middleware/bap/activity_message/activity_entity_index_allocation_encoder.cpp
+    src/middleware/bap/activity_message/activity_entity_index_grant_encoder.cpp
+    src/middleware/bap/activity_message/activity_peer_contact_encoder.cpp
     src/middleware/bap/activity_message/activity_entity_slots_decoder.cpp
     src/middleware/bap/activity_message/activity_entity_authority_parser.cpp
     src/middleware/bap/activity_message/activity_entity_baseline.cpp
@@ -756,6 +760,9 @@ add_executable(sunrise-server
     src/middleware/bap/activity_message/activity_entity_authority_parser.cpp
     src/middleware/bap/activity_message/activity_entity_baseline.cpp
     src/middleware/bap/activity_message/activity_entity_slot_request_parser.cpp
+    src/middleware/bap/activity_message/activity_entity_index_allocation_encoder.cpp
+    src/middleware/bap/activity_message/activity_entity_index_grant_encoder.cpp
+    src/middleware/bap/activity_message/activity_peer_contact_encoder.cpp
     src/middleware/bap/activity_message/activity_entity_slots_decoder.cpp
     src/middleware/bap/activity_message/activity_entity_slots_encoder.cpp
     src/middleware/bap/activity_message/activity_global_state_encoder.cpp

@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdio>
 
 #include "../../../middleware/crypto/random_bytes.h"
 #include "../../../middleware/encoding/bit_reader.h"
@@ -705,6 +706,40 @@ bool apply_acknowledgement(gp::PeerLink& peer, const wire::AckState& ack) noexce
 }
 
 /**
+ * Dumps one undecoded assembled message's identity and the first 48 body bytes as hex.
+ * The dump starts at the body's CONTAINING byte; the message's bit offset is logged so
+ * the reader can shift. Body bytes past the assembled window are skipped, not wrapped.
+ * @param body The assembled message the group layer could not decode.
+ */
+void dump_body(const wire::AssembledMessage& body) noexcept {
+    constexpr std::size_t kDumpBytes = 48;
+    constexpr char kHexDigits[] = "0123456789abcdef";
+    const std::size_t bodyByte = body.bodyBitOffset / 8;
+    std::size_t dumpLen = kDumpBytes;
+    if (bodyByte >= gp::kReassemblyCapacity) {
+        dumpLen = 0;
+    } else if (bodyByte + dumpLen > gp::kReassemblyCapacity) {
+        dumpLen = gp::kReassemblyCapacity - bodyByte;
+    }
+    std::array<char, 64 + kDumpBytes * 2> text{};
+    const int written = std::snprintf(text.data(), text.size(),
+                                      "ev=gameplay stage=body id=%u declared=%u bits=%zu "
+                                      "body_bit=%zu hex=",
+                                      static_cast<unsigned>(body.id),
+                                      body.declaredSize, body.bitCount, body.bodyBitOffset);
+    if (written <= 0 || static_cast<std::size_t>(written) >= text.size()) {
+        return;
+    }
+    for (std::size_t index = 0; index < dumpLen; ++index) {
+        const unsigned value = std::to_integer<unsigned>(body.bytes[bodyByte + index]);
+        text[static_cast<std::size_t>(written) + index * 2] = kHexDigits[value >> 4];
+        text[static_cast<std::size_t>(written) + index * 2 + 1] = kHexDigits[value & 0xF];
+    }
+    const std::size_t hexEnd = static_cast<std::size_t>(written) + dumpLen * 2;
+    report(core::log::Level::debug, "%.*s", static_cast<int>(hexEnd), text.data());
+}
+
+/**
  * Consumes one established packet.
  * @param from Peer endpoint.
  * @param payload Whole decrypted payload.
@@ -805,6 +840,13 @@ void consume_established(const gp::Endpoint& from,
             report(core::log::Level::debug,
                    "ev=gameplay stage=message result=undecoded id=%u",
                    static_cast<unsigned>(body.id));
+            // The undecoded BODY dump. The established-plane census left exactly one
+            // unidentified id (37, post-join + periodic); its body shape - a 4-byte
+            // count versus a 1024-byte bitmap - is what discriminates "37 is the
+            // entity-index pool request" from "37 is housekeeping" without a pcap.
+            // The dump starts at the body's CONTAINING byte; body_bit carries the
+            // sub-byte offset for exact alignment.
+            dump_body(body);
         }
     }
     if (queueCleared) {

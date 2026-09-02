@@ -76,7 +76,7 @@ volatile LONG64 g_nextAssertTick{};
  * Rate-limited to one report per distinct (target, RVA): these lines are on the game's own
  * logging path and a Tower session emits thousands.
  */
-constexpr std::size_t kTargetCount = 19;
+constexpr std::size_t kTargetCount = 20;
 constexpr const char* kCallerTargets[kTargetCount] = {
     "Adding player",
     "Could not find tracking data",
@@ -126,6 +126,13 @@ constexpr const char* kCallerTargets[kTargetCount] = {
     "Request timed out",
     "Public Addr",
     "sent INTRO REQ",
+    // FINDINGS 20.213. The player_broadcast entity-creation failure (site 206/207 - the
+    // site id differs between boots, so it is not a stable key). The creation attempt
+    // fires on membership_replication pushes and dies before any index request; the
+    // caller RVA names the creating function, which no static route can reach (the
+    // whole subsystem composes its strings at runtime). Rate-limited one RVA per
+    // distinct site, so a burst reports once.
+    "failed to create",
 };
 std::uintptr_t g_reportedRva[kTargetCount]{};
 

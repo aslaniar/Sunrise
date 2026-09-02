@@ -11,6 +11,13 @@
 
 namespace sunrise::core::settings::server {
 
+/** Stored-profile image variants the state hash can be built from: 2 name forms x 9 tail
+ *  field positions (absent, then bytes 0..7). Mirrors
+ *  middleware/gameplay/group/session_state.h kProfileVariantCount, which static_asserts
+ *  the two agree - settings sits below middleware and cannot include it. */
+inline constexpr std::size_t kProfileStateVariantCount = 18;
+
+
 /** The loopback port the BAP listener binds, and the relay port SignOn hands the Client. */
 inline constexpr std::uint16_t kDefaultBapPort = 30974;
 /** The Client rewrites every external URL onto the HTTPS default port. */
@@ -171,6 +178,19 @@ struct Settings {
      * historical bytes; TRUE publishes the client-consistent hash.
      */
     bool sessionStateClientBase{false};
+    /**
+     * Which stored-profile image variant the published state hash is built from
+     * (RE_output/claims/session-state-profile-image.md OPEN). Static analysis pinned every
+     * offset of the profile block the client stores inside the hashed player entry except
+     * two enumerable choices: whether the name stores obfuscated or plain, and where the
+     * tail's 5-bit field lands in its trailing 8 bytes. The server logs EVERY variant's
+     * hash once per session (`result=variant`); whichever one reproduces the value the
+     * client prints in "session membership checksum failed, <computed> != <ours>" is the
+     * right one, and setting it here makes it live WITHOUT a rebuild. Index order:
+     * 0..8 = plain name, tail field absent then bytes 0..7; 9..17 = the same with the
+     * obfuscated name. Ignored while publish_player_profile is false.
+     */
+    std::size_t profileStateVariant{0};
     /** Peer-bearing bodies one shape carries before advancing. Zero takes the default. */
     std::uint64_t membershipSweepBodies{4};
     /** Milliseconds one shape must also hold, so a burst cannot skip shapes. Zero = default. */

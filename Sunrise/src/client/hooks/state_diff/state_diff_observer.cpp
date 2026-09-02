@@ -19,15 +19,27 @@ namespace sunrise::client::hooks::state_diff {
 namespace {
 
 /**
- * Image RVA of the checksum verifier 0x141772100 (0x141772100..0x1417722F8, .pdata
- * START; verify_hook_rvas.py gates this). The state hash immediate 0xDEAE2F4E sits
- * inside it at offset 0x76.
+ * Image RVA of the membership APPLY 0x141781800 (.pdata START). p2(130) hooked the
+ * checksum verifier 0x141772100 instead and logged ZERO calls across a full paired run
+ * (20.204 R2) - that function does not run in this flow. The apply is where the profile
+ * lands: it writes the two 0xFFFFFFFF absent markers at entry+0x1c/+0x108 (0x141782408 /
+ * 0x141782410) and calls the region-A/tail and region-B helpers under the profile gate.
+ * decoder_trace also owns this address and MUST stay disarmed (it already is).
  */
-constexpr std::uintptr_t kChecksumFnRva = 0x1772100;
-/** The replica lives at holder+8 (the function copies from there). */
-constexpr std::uintptr_t kReplicaOffset = 8;
-/** The session-state replica size, byte-exact (the copy loop moves 0x7060). */
-constexpr std::size_t kReplicaBytes = 28768;
+constexpr std::uintptr_t kChecksumFnRva = 0x1781800;
+/**
+ * Player table base in the apply's OWN coordinates. Helper B writes player entry +0x108
+ * to state+0x3c68 (0x1417af2de), so the table sits at 0x3c68-0x108 = 0x3b60 relative to
+ * the apply's base pointer. (The hashed buffer starts 8 bytes above that base, which is
+ * why the fork's replica model correctly uses 15192 - FINDINGS 20.206.)
+ */
+constexpr std::uintptr_t kPlayerTableOffset = 0x3b60;
+/** Bytes one player entry occupies. */
+constexpr std::size_t kPlayerStride = 424;
+/** Player slots captured. Two players is the whole paired case. */
+constexpr std::size_t kCapturedSlots = 2;
+/** Bytes captured per call: the two entries, back to back. */
+constexpr std::size_t kReplicaBytes = kPlayerStride * kCapturedSlots;
 /** The session-state hash initial (the immediate at offset 0x76). */
 constexpr std::uint32_t kHashInitial = 0xDEAE2F4EU;
 /** Bytes per hexdump line (kLineCapacity is 1024: 512 hex chars + prefix fits). */
@@ -60,12 +72,13 @@ bool copy_state(std::uintptr_t address, std::array<std::byte, kReplicaBytes>& ou
 }
 
 /** Hexdump line: 0x100 bytes with a tagged prefix. */
-void dump_line(unsigned call, std::size_t offset, const std::byte* bytes) noexcept {
+void dump_line(unsigned call, std::size_t slot, std::size_t offset,
+               const std::byte* bytes, std::size_t span) noexcept {
     std::array<char, core::log::kLineCapacity> text{};
     int written = std::snprintf(text.data(), text.size(),
-                                "ev=sdiff stage=dump call=%u off=0x%zx hex=",
-                                call, offset);
-    for (std::size_t i = 0; i < kDumpLineBytes && written > 0; ++i) {
+                                "ev=sdiff stage=entry call=%u slot=%zu off=0x%zx hex=",
+                                call, slot, offset);
+    for (std::size_t i = 0; i < span && written > 0; ++i) {
         written += std::snprintf(text.data() + written,
                                  text.size() - static_cast<std::size_t>(written),
                                  "%02X", static_cast<unsigned>(*reinterpret_cast<const std::uint8_t*>(
@@ -81,55 +94,46 @@ std::uint64_t __fastcall observe_checksum(void* rcx, void* rdx, void* r8, void* 
                                           void* a5, void* a6, void* a7, void* a8,
                                           void* a9, void* a10) noexcept {
     const unsigned call = g_calls.fetch_add(1, std::memory_order_relaxed) + 1U;
-    const std::uintptr_t holder = reinterpret_cast<std::uintptr_t>(rcx);
+    // POST-APPLY. The profile lands inside the player entry during the original, so a
+    // capture taken before it would show the pre-update bytes - which is the whole point
+    // of the diff and the easiest thing to get wrong.
+    const auto original = reinterpret_cast<ChecksumFn>(g_handle.original);
+    const std::uint64_t result = original(rcx, rdx, r8, r9, a5, a6, a7, a8, a9, a10);
+
+    const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(rcx);
     std::array<std::byte, kReplicaBytes> replica{};
-    const bool ok = holder != 0 && copy_state(holder + kReplicaOffset, replica);
-    std::uint32_t hash = 0;
-    if (ok) {
-        hash = middleware::crypto::lookup3::hash_bytes(replica, kHashInitial);
-    }
-    const bool dump = ok && g_dumped.load(std::memory_order_relaxed) < kDumpCap;
-    if (ok) {
-        const unsigned hashed = g_hashed.fetch_add(1, std::memory_order_relaxed) + 1U;
-        if (hashed <= kHashCap || dump) {
-            std::array<char, 160> text{};
-            const int written = std::snprintf(
-                text.data(), text.size(),
-                "ev=sdiff stage=verify call=%u holder=0x%llX hash=0x%08X%s",
-                call, static_cast<unsigned long long>(holder),
-                static_cast<unsigned>(hash), dump ? " dump=1" : "");
+    const bool ok = base != 0 && copy_state(base + kPlayerTableOffset, replica);
+    if (!ok) {
+        if (g_hashed.fetch_add(1, std::memory_order_relaxed) < kHashCap) {
+            std::array<char, 128> text{};
+            const int written = std::snprintf(text.data(), text.size(),
+                                              "ev=sdiff stage=entry call=%u base=0x%llX "
+                                              "result=unreadable",
+                                              call,
+                                              static_cast<unsigned long long>(base));
             if (written > 0) {
                 core::log::write(core::log::Channel::client, core::log::Level::info,
                                  {text.data(), static_cast<std::size_t>(written)});
             }
         }
-    } else {
-        std::array<char, 128> text{};
-        const int written = std::snprintf(text.data(), text.size(),
-                                          "ev=sdiff stage=verify call=%u holder=0x%llX "
-                                          "result=unreadable",
-                                          call, static_cast<unsigned long long>(holder));
-        if (written > 0) {
-            core::log::write(core::log::Channel::client, core::log::Level::info,
-                             {text.data(), static_cast<std::size_t>(written)});
-        }
+        return result;
     }
-    if (dump) {
-        g_dumped.fetch_add(1, std::memory_order_relaxed);
-        for (std::size_t offset = 0; offset < kReplicaBytes; offset += kDumpLineBytes) {
-            dump_line(call, offset, replica.data() + offset);
+    // Only dump an entry that actually carries something: an all-zero entry is an unused
+    // slot and spending the budget on it is the p2(133) mistake (budget per event class).
+    for (std::size_t slot = 0; slot < kCapturedSlots; ++slot) {
+        const std::byte* const entry = replica.data() + slot * kPlayerStride;
+        bool empty = true;
+        for (std::size_t i = 0; i < kPlayerStride && empty; ++i) {
+            empty = entry[i] == std::byte{0};
         }
-    }
-    const auto original = reinterpret_cast<ChecksumFn>(g_handle.original);
-    const std::uint64_t result = original(rcx, rdx, r8, r9, a5, a6, a7, a8, a9, a10);
-    if (ok && g_hashed.load(std::memory_order_relaxed) <= kHashCap + 2U) {
-        std::array<char, 128> text{};
-        const int written = std::snprintf(text.data(), text.size(),
-                                          "ev=sdiff stage=verify_done call=%u ret=%llu",
-                                          call, static_cast<unsigned long long>(result));
-        if (written > 0) {
-            core::log::write(core::log::Channel::client, core::log::Level::info,
-                             {text.data(), static_cast<std::size_t>(written)});
+        if (empty || g_dumped.fetch_add(1, std::memory_order_relaxed) >= kDumpCap) {
+            continue;
+        }
+        for (std::size_t offset = 0; offset < kPlayerStride; offset += kDumpLineBytes) {
+            const std::size_t span = kPlayerStride - offset < kDumpLineBytes
+                                         ? kPlayerStride - offset
+                                         : kDumpLineBytes;
+            dump_line(call, slot, offset, entry + offset, span);
         }
     }
     return result;

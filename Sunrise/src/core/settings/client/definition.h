@@ -117,6 +117,15 @@ struct Settings {
      * exact fix. OBSERVATION ONLY. FALSE by default.
      */
     bool stateDiff{};
+    /**
+     * THE MILESTONE TRACER: a table-driven census of the entity/render path. Logs each
+     * traced function's CALLER - the only way to name a runtime-dispatched invoker, since
+     * the entity receive chain has zero static references anywhere in the image
+     * (FINDINGS 20.209) - and heartbeats every hook's call count, ZEROS INCLUDED. Built
+     * after p2(130)/p2(133)/p2(136) each lost their answer to a silence that could not be
+     * told apart from "never installed".
+     */
+    bool milestoneTrace{};
 
     /** Member-record index the injection writes. Must be unused - the census names one. */
     std::uint32_t admissionMemberIndex{};

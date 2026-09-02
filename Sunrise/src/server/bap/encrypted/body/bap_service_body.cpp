@@ -1,6 +1,9 @@
 #include "../../../../core/logging/log.h"
+#include "../../../../core/settings/settings.h"
 #include "../../../../middleware/bap/account_translation/account_translation_response.h"
 #include "../../../../middleware/bap/activity_host/activity_host_response.h"
+#include "../../../../middleware/bap/activity_message/activity_entity_index_grant_encoder.h"
+#include "../../../../middleware/bap/activity_message/entity_slots.h"
 #include "../../../../middleware/bap/certificate.h"
 #include "../../../../middleware/bap/client_config/client_config_response.h"
 #include "../../../../middleware/bap/family_subscription.h"
@@ -14,6 +17,8 @@
 #include "../internal.h"
 #include "../matchmaking/matchmaking_route.h"
 #include "../queuez/queuez_state_validation.h"
+
+namespace entity_index_grant = sunrise::middleware::bap::activity_message::entity_index_grant;
 
 namespace sunrise::server::bap::encrypted::body {
 
@@ -43,6 +48,39 @@ bool process(const ServiceRoute& route,
     case BodyCodec::empty:
         written = 0;
         return true;
+    case BodyCodec::entityIndexGrantResponse: {
+        // The client's entity-index pool request (BAP svc 21, claim O of
+        // entity-index-allocation-schema.md): its free-slot pool is empty and it
+        // asks the host for indices. P2-143 FIRST STEP: log the request body hex
+        // (the shape is still unread — claim P) and keep the legacy EMPTY reply
+        // until the response framing is decode-verified offline (claim P's
+        // femu loop). entity_index_grant=true ONLY turns the logging on.
+        std::array<char, 8> dummy{};
+        const std::size_t bodyLen = requestBody.size();
+        std::array<char, 512> line{};
+        int logged = std::snprintf(
+            line.data(),
+            line.size(),
+            "ev=activity stage=index_request svc21 session=0x%llX bytes=%zu head=",
+            static_cast<unsigned long long>(activitySessionId),
+            bodyLen);
+        for (std::size_t i = 0; i < requestBody.size() && i < 48; ++i) {
+            logged += std::snprintf(line.data() + logged,
+                                    static_cast<std::size_t>(logged) < line.size()
+                                        ? line.size() - static_cast<std::size_t>(logged)
+                                        : 0,
+                                    "%02x",
+                                    std::to_integer<unsigned>(requestBody[i]));
+        }
+        if (logged > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::info,
+                             {line.data(), static_cast<std::size_t>(logged)});
+        }
+        (void)dummy;
+        written = 0;
+        return true;
+    }
     case BodyCodec::accountTranslationResponse: {
         const state::AccountState account = state::account_snapshot(accountKey);
         // The Client adopts whatever SOID this answer pairs with its token, so the answered

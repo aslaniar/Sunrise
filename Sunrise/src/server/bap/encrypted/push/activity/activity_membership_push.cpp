@@ -1,5 +1,7 @@
 #include "activity_membership_push.h"
 
+#include "activity_message_push.h"
+
 #include <Windows.h>
 
 #include <array>
@@ -204,9 +206,17 @@ make_wire_snapshot(std::uint64_t sessionId,
             peerRegionIndex = peerRegion.index;
             if (peerRegion.index < 0) {
                 peerAdvertReason = "peer_region_unset";
-            } else if (peerRegion.index == region.index) {
+            } else if (peerRegion.index == region.index
+                       && !core::settings::get().server.gameplay.membershipPeerSameRegionAdvert) {
+                // Shared bubble, switch OFF: the historical skip (FINDINGS 20.239 - the
+                // peer row went out with no endpoint and both clients fixup-released it).
                 peerAdvertReason = "same_region";
             } else {
+                // With the switch ON this path also runs for the SHARED bubble: the peer's
+                // advertisement is built against the peer's OWN region, which here equals
+                // ours, and with activityHostRegionBound the second request on that region
+                // key returns the EXISTING shared host row (no retire, no conflict) - so
+                // both advertisements carry the same shared activity-host descriptor.
                 std::uint64_t peerGeneration = 0;
                 server::gameplay::build_advertisement(
                     peerBinding,
@@ -462,7 +472,56 @@ bool append_membership_notification(Scratch& scratch,
     SecureZeroMemory(scratch.responseBody.data(), message::encoded_size(snapshot));
     if (encoded) {
         middleware::secure_channel::advance_nonce(nonce);
-    } else {
+    }
+    // TYPE 45 AFTER TYPE 12: mark the peer CONTACTABLE (FINDINGS 20.245/20.246 R6).
+    // The membership body tells this client the peer EXISTS; nothing has ever told it the
+    // peer is REACHABLE, and the per-tick evaluator 0x140C171F0 aborts on that byte -
+    // measured 3,996 times on the mac and 2,297 on the rig in p2-153, never once nonzero.
+    // It rides here rather than in the join burst because the peer is not known at join
+    // time, and this push already recurs, so the mark retries for free: the handler marks
+    // whatever rows exist when the body lands, and the client self-heals the row itself
+    // (20.242), so a body that arrives early is a harmless no-op rather than an error.
+    // Its own switch, so the burst stays byte-identical when off.
+    if (encoded && snapshot.peerPresent
+        && core::settings::get().server.gameplay.poolC4MarkPush) {
+        // NEVER MARK THIS CLIENT'S OWN MACHINE ID (20.249, and it cost a client crash).
+        // p2-156 sent {peer, self} on the theory that marking every row made "which row
+        // does the evaluator read" moot. The mac's own row went c4 0x00 -> 0x01 and ~750
+        // ms later its activity client lost its host (join result with a BLANK session
+        // id), began rejecting message types it had been handling all boot (17, 52),
+        // entered private_repair and crashed; the rig never reached the Tower. The byte
+        // is a claim that a machine is a REMOTE PEER worth contacting - asserting it
+        // about yourself is a state the client is built to exclude (the construction
+        // gate's own cond 2 is "i != self index"). Peer only, always.
+        const std::array<std::uint64_t, 1> machineIds{snapshot.peer.memberKey};
+        const bool marked = append_peer_contact_notification(scratch,
+                                                             activity.sessionId,
+                                                             machineIds,
+                                                             key,
+                                                             nonce,
+                                                             response,
+                                                             written);
+        // NAME THE OUTCOME, not the activity (lesson 5): a silent absence here would be
+        // unattributable between "switch off", "no peer" and "encode refused".
+        std::array<char, 160> markLine{};
+        const int markWritten =
+            std::snprintf(markLine.data(),
+                          markLine.size(),
+                          "ev=activity stage=peer_contact result=%s type=45 session=%llu "
+                          "peer_machine=0x%llX ids=%zu",
+                          marked ? "sent" : "encode_fail",
+                          static_cast<unsigned long long>(activity.sessionId),
+                          static_cast<unsigned long long>(snapshot.peer.memberKey),
+                          machineIds.size());
+        if (markWritten > 0) {
+            core::log::write(core::log::Channel::server,
+                             marked ? core::log::Level::info : core::log::Level::warn,
+                             {markLine.data(), static_cast<std::size_t>(markWritten)});
+        }
+        // A refused mark must not strand the membership body that already encoded: the
+        // appender restores `written` and the nonce itself, so the membership push stands.
+    }
+    if (!encoded) {
         if (written > initialWritten) {
             SecureZeroMemory(response.data() + initialWritten, written - initialWritten);
         }
