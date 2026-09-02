@@ -13,6 +13,7 @@
 #include "../../../core/settings/settings.h"
 #include "../../diagnostics/module_range.h"
 #include "../../hooking/detour.h"
+#include "../gate_wwatch/gate_wwatch.h"
 
 namespace sunrise::client::hooks::milestone_trace {
 namespace {
@@ -997,9 +998,11 @@ void emit_ptable(std::size_t index, const char* fn, std::uint64_t call,
     // SELF INDEX (20.232 R1): 0x1404DD640 walks maskB comparing [table + i*stride + 8]
     // against the reference qword at [obj + 0x6C30]. Without this, "FAIL-cond3 on i=0"
     // cannot be told apart from "self, correctly excluded" - the wild-goose-chase guard.
+    // The same walk names the PEER index (any other populated slot) for gate_wwatch.
     const auto selfRef =
         *reinterpret_cast<const std::uint64_t*>(obj + kTableFromObj - 8);  // obj+0x6C30
     int selfIdx = -1;
+    int peerIdx = -1;
     std::uint64_t selfRec8 = 0;
     for (unsigned si = 0; si < kMaxParticipants; ++si) {
         if (((maskB >> si) & 1U) == 0U) {
@@ -1010,9 +1013,20 @@ void emit_ptable(std::size_t index, const char* fn, std::uint64_t call,
         if (rec8 == selfRef) {
             selfIdx = static_cast<int>(si);
             selfRec8 = rec8;
+        } else if (peerIdx < 0 && rec8 != 0) {
+            // A populated non-self record: the PEER. Zero identities are heap residue
+            // (the p2-150 T4 lesson) and are never armed on.
+            peerIdx = static_cast<int>(si);
+        }
+        if (selfIdx >= 0 && peerIdx >= 0) {
             break;
         }
     }
+    // THE cond5 WIRE-WATCH (20.251): arm the hardware write-watches on this table's peer
+    // and self gate bytes. Address arithmetic only here - no dereference the ptable read
+    // above did not already perform - and the callee's arm_table is a two-atomic fast
+    // path once armed, so the per-tick cost of 35k lifecycle calls is negligible.
+    gate_wwatch::arm_table(table, selfIdx, peerIdx);
     if (!probe_changed(index, (static_cast<std::uint64_t>(maskA) << 32) ^ maskB ^
                               (static_cast<std::uint64_t>(maskC) << 16))) {
         return;
@@ -1384,6 +1398,11 @@ bool install() noexcept {
     // The install census states which detours actually attached, so a later zero can be
     // read as "never called" rather than "never hooked".
     emit_summary("install");
+    // THE cond5 WIRE-WATCH (20.251): hardware write-watches on the participant gate
+    // bytes. Installs its own VEC + watchdog; arms itself off the ptable probe above.
+    // No new detours, no game-memory writes - the crash-safety argument is in
+    // gate_wwatch.cpp's header comment, and the boot brief carries the short form.
+    (void)gate_wwatch::install();
     return true;
 }
 

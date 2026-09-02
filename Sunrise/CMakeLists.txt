@@ -98,6 +98,7 @@ add_library(steam_api64 SHARED
     src/client/hooks/decoder_trace/decoder_trace_observer.cpp
     src/client/hooks/world_trace/world_trace_observer.cpp
     src/client/hooks/milestone_trace/milestone_trace_observer.cpp
+    src/client/hooks/gate_wwatch/gate_wwatch.cpp
     src/client/hooks/state_diff/state_diff_observer.cpp
     src/client/hooks/item_gate/item_gate_observer.cpp
     src/client/hooks/handle_message/handle_message_observer.cpp
