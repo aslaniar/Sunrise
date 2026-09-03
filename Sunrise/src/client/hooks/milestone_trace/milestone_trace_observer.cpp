@@ -286,6 +286,13 @@ constexpr std::uintptr_t kResvLookupRva = 0x17C40F0;   ///< the reservation-tabl
                                                        ///< path's own lookup, so it runs
                                                        ///< without the poke. Its probe
                                                        ///< walks the table states.
+constexpr std::uintptr_t kConnMgrRva = 0x17C53B0;      ///< the connection-state ITERATOR
+                                                       ///< (20.273 R2): walks the
+                                                       ///< reservation records' two
+                                                       ///< state fields on the manager
+                                                       ///< object and notifies. Its
+                                                       ///< CALLER names what drives each
+                                                       ///< evaluation (W2's question).
 constexpr std::uintptr_t kEntPassRva = 0x17039CD;      ///< the guard's fall-through body (W1):
                                                        ///< entered ONLY when all three bails
                                                        ///< pass, by fall-through or nothing
@@ -424,7 +431,7 @@ constexpr std::uintptr_t kType30SchemaKeyPtr = 0x1FA42B8;
 /** The type-30 key is independently known; it is this instrument's self-test. */
 constexpr std::uint32_t kType30SchemaKeyOracle = 0x80808683;
 
-constexpr std::array<Target, 44> kTargets{{
+constexpr std::array<Target, 45> kTargets{{
     // The entity receive cluster. 0x141718510 is the ENTRY and has ZERO static references
     // of any kind in the whole image (20.209) - its caller is the open question, so it gets
     // the largest budget.
@@ -487,6 +494,9 @@ constexpr std::array<Target, 44> kTargets{{
     // CHANGE: every reservation record's two lifecycle states + identity prefix. Zero
     // writes into game memory; the accessor 0x1417CF0E0 is CALLED, not detoured.
     {"resv",          kResvLookupRva, 32, OutParam::none, false, Probe::resvtable},
+    // W2 (20.273): the connection-state iterator. Enter lines carry caller_rva - WHICH
+    // subsystem drove each evaluation. Budget 24; the args are context (manager + flags).
+    {"connmgr",       kConnMgrRva, 24, OutParam::none, false, Probe::none},
     // W1 (20.269 R5): the fall-through body. Entered by FALL-THROUGH from ent_gate only,
     // never by call, so its enter-line rcx/rdx/r8/r9 are REGISTER RESIDUE, not arguments,
     // and caller_rva is the fall-through frame's stack word - read neither. The COUNT and
