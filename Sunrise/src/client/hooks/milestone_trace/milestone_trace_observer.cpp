@@ -293,6 +293,16 @@ constexpr std::uintptr_t kConnMgrRva = 0x17C53B0;      ///< the connection-state
                                                        ///< object and notifies. Its
                                                        ///< CALLER names what drives each
                                                        ///< evaluation (W2's question).
+constexpr std::uintptr_t kResvNotifyRva = 0x17FFA20;   ///< the per-record NOTIFIER the
+                                                       ///< iterator calls (ecx=idx, dl,
+                                                       ///< r8d, r9d - the standard enter
+                                                       ///< capture IS the args). Body is
+                                                       ///< obfuscated (keyed family) but
+                                                       ///< the prologue is clean 5-byte
+                                                       ///< stores; WIDE-NET per the
+                                                       ///< user's directive, with the
+                                                       ///< p2-147a attach-crash risk
+                                                       ///< PRE-NAMED as outcome (e2).
 constexpr std::uintptr_t kEntPassRva = 0x17039CD;      ///< the guard's fall-through body (W1):
                                                        ///< entered ONLY when all three bails
                                                        ///< pass, by fall-through or nothing
@@ -431,7 +441,7 @@ constexpr std::uintptr_t kType30SchemaKeyPtr = 0x1FA42B8;
 /** The type-30 key is independently known; it is this instrument's self-test. */
 constexpr std::uint32_t kType30SchemaKeyOracle = 0x80808683;
 
-constexpr std::array<Target, 45> kTargets{{
+constexpr std::array<Target, 46> kTargets{{
     // The entity receive cluster. 0x141718510 is the ENTRY and has ZERO static references
     // of any kind in the whole image (20.209) - its caller is the open question, so it gets
     // the largest budget.
@@ -497,6 +507,9 @@ constexpr std::array<Target, 45> kTargets{{
     // W2 (20.273): the connection-state iterator. Enter lines carry caller_rva - WHICH
     // subsystem drove each evaluation. Budget 24; the args are context (manager + flags).
     {"connmgr",       kConnMgrRva, 24, OutParam::none, false, Probe::none},
+    // WIDE NET (user directive): the notifier's args are the promotion's parameters.
+    // Attach-crash risk pre-named (p2-147a class) - outcome (e2) of the brief.
+    {"notifier",      kResvNotifyRva, 24, OutParam::none, false, Probe::none},
     // W1 (20.269 R5): the fall-through body. Entered by FALL-THROUGH from ent_gate only,
     // never by call, so its enter-line rcx/rdx/r8/r9 are REGISTER RESIDUE, not arguments,
     // and caller_rva is the fall-through frame's stack word - read neither. The COUNT and
@@ -1578,9 +1591,13 @@ void emit_resvtable(std::size_t index, const char* fn, std::uint64_t call) noexc
     constexpr std::uintptr_t kOffState1 = 0x30E8;   // guard predicate 2: ==4 established
     constexpr std::uintptr_t kOffState2 = 0x1DC0;   // guard predicate 3: ==5 connected
     constexpr std::uintptr_t kOffIdentity = 0x3144; // the 86-byte identity blob
+    constexpr std::uintptr_t kOffMask = 0x3112;     // predicate 1's u16 participant mask
+    constexpr std::uintptr_t kOffTouch = 0x4270;    // the touch-clear target (20.273 R1)
     std::uint32_t states1[kRecordCount]{};
     std::uint32_t states2[kRecordCount]{};
     std::uint64_t idents[kRecordCount]{};
+    std::uint16_t masks[kRecordCount]{};
+    std::uint64_t touch[kRecordCount]{};
     std::uint32_t nonzero = 0;
     std::uint64_t fingerprint = 14695981039346656037ULL;
     for (std::size_t r = 0; r < kRecordCount; ++r) {
@@ -1588,19 +1605,27 @@ void emit_resvtable(std::size_t index, const char* fn, std::uint64_t call) noexc
         std::uint32_t s1 = 0;
         std::uint32_t s2 = 0;
         std::uint64_t ident = 0;
+        std::uint16_t mask = 0;
+        std::uint64_t touched = 0;
         const bool ok1 = gate_wwatch::safe_read(reinterpret_cast<const void*>(rec + kOffState1),
                                                 &s1, sizeof(s1));
         const bool ok2 = gate_wwatch::safe_read(reinterpret_cast<const void*>(rec + kOffState2),
                                                 &s2, sizeof(s2));
         const bool ok3 = gate_wwatch::safe_read(reinterpret_cast<const void*>(rec + kOffIdentity),
                                                 &ident, sizeof(ident));
-        if (!ok1 || !ok2 || !ok3) {
+        const bool ok4 = gate_wwatch::safe_read(reinterpret_cast<const void*>(rec + kOffMask),
+                                                &mask, sizeof(mask));
+        const bool ok5 = gate_wwatch::safe_read(reinterpret_cast<const void*>(rec + kOffTouch),
+                                                &touched, sizeof(touched));
+        if (!ok1 || !ok2 || !ok3 || !ok4 || !ok5) {
             fingerprint = (fingerprint ^ (0x9E3779B9ULL + r)) * 16777619ULL;
             continue;
         }
         states1[r] = s1;
         states2[r] = s2;
         idents[r] = ident;
+        masks[r] = mask;
+        touch[r] = touched;
         if (s1 != 0U || s2 != 0U || ident != 0U) {
             ++nonzero;
         }
@@ -1608,6 +1633,8 @@ void emit_resvtable(std::size_t index, const char* fn, std::uint64_t call) noexc
         fingerprint = (fingerprint ^ s2) * 16777619ULL;
         fingerprint = (fingerprint ^ (ident >> 32)) * 16777619ULL;
         fingerprint = (fingerprint ^ (ident & 0xFFFFFFFFULL)) * 16777619ULL;
+        fingerprint = (fingerprint ^ mask) * 16777619ULL;
+        fingerprint = (fingerprint ^ touched) * 16777619ULL;
     }
     if (!probe_changed(index, fingerprint)) {
         return;
@@ -1623,12 +1650,13 @@ void emit_resvtable(std::size_t index, const char* fn, std::uint64_t call) noexc
         if (states1[r] == 0U && states2[r] == 0U && idents[r] == 0U) {
             continue;
         }
-        std::array<char, 192> rt{};
+        std::array<char, 224> rt{};
         w = std::snprintf(rt.data(), rt.size(),
             "ev=mtrace stage=resv_rec fn=%s call=%llu rec=%zu s30e8=%u s1dc0=%u "
-            "ident=0x%016llX",
+            "mask=0x%04X touch=%lld ident=0x%016llX",
             fn, static_cast<unsigned long long>(call), r,
-            states1[r], states2[r],
+            states1[r], states2[r], masks[r],
+            static_cast<long long>(touch[r]),
             static_cast<unsigned long long>(idents[r]));
         if (w > 0) { emit(rt.data(), static_cast<std::size_t>(w)); }
     }
