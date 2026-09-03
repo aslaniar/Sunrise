@@ -66,6 +66,15 @@ enum class Probe : std::uint8_t {
      *  Emitted on leave, and ONLY when the value differs from the last one emitted for
      *  this target - a predicate called 50,000 times yields a handful of lines. */
     retwatch,
+    /** The callee is the RESERVATION-TABLE LOOKUP 0x1417C40F0 (20.269 R1): the table base
+     *  comes from the obfuscated accessor 0x1417CF0E0, which this probe CALLS (never
+     *  detours - the p2-147a class) to walk all 62 x 0x41F0 records and report each
+     *  record's two lifecycle states (+0x30E8, +0x1DC0 - the CONNECTION ladder
+     *  none/empty/connecting/established/connected, 20.271 R5) plus its 86-byte identity
+     *  prefix at +0x3144. Change-gated on the whole-table state fingerprint, so a dwell
+     *  emits lines only when a connection state MOVES. This is the read that names which
+     *  rung the peer's connection sticks at (the W2 front, 20.271). */
+    resvtable,
     /** The callee is a TRACKING-ROW ADDER (20.241 R1): rcx is the pool, rdx points at the
      *  machine-id qword it will append at [pool + i*10 + 0x602BC]. On enter, log the
      *  caller RVA and the machine-id VALUE ([rdx], not rdx - the pointer is not the
@@ -272,6 +281,11 @@ constexpr std::uintptr_t kRecStride = 0x2AC0;         ///< per-participant recor
 constexpr std::uintptr_t kRecGateByte = 0x38;         ///< cond 5: bit 4 of this must be SET
 constexpr unsigned kMaxParticipants = 32;
 constexpr std::uintptr_t kEntGateRva = 0x1703910;      ///< chain top; carries both predicates
+constexpr std::uintptr_t kResvLookupRva = 0x17C40F0;   ///< the reservation-table LOOKUP
+                                                       ///< (20.269 R1); also the reserve
+                                                       ///< path's own lookup, so it runs
+                                                       ///< without the poke. Its probe
+                                                       ///< walks the table states.
 constexpr std::uintptr_t kEntPassRva = 0x17039CD;      ///< the guard's fall-through body (W1):
                                                        ///< entered ONLY when all three bails
                                                        ///< pass, by fall-through or nothing
@@ -410,7 +424,7 @@ constexpr std::uintptr_t kType30SchemaKeyPtr = 0x1FA42B8;
 /** The type-30 key is independently known; it is this instrument's self-test. */
 constexpr std::uint32_t kType30SchemaKeyOracle = 0x80808683;
 
-constexpr std::array<Target, 43> kTargets{{
+constexpr std::array<Target, 44> kTargets{{
     // The entity receive cluster. 0x141718510 is the ENTRY and has ZERO static references
     // of any kind in the whole image (20.209) - its caller is the open question, so it gets
     // the largest budget.
@@ -469,6 +483,10 @@ constexpr std::array<Target, 43> kTargets{{
     // p2-147: the construction chain. Read top-down; the LAST one with calls>0 is the answer.
     {"ptable",        kPTableRva, 12, OutParam::none, false, Probe::ptable},
     {"ent_gate",      kEntGateRva, 24, OutParam::none, false, Probe::stackargs},
+    // W2 (20.271 R5): the connection-ladder reader. Emits one line per whole-table state
+    // CHANGE: every reservation record's two lifecycle states + identity prefix. Zero
+    // writes into game memory; the accessor 0x1417CF0E0 is CALLED, not detoured.
+    {"resv",          kResvLookupRva, 32, OutParam::none, false, Probe::resvtable},
     // W1 (20.269 R5): the fall-through body. Entered by FALL-THROUGH from ent_gate only,
     // never by call, so its enter-line rcx/rdx/r8/r9 are REGISTER RESIDUE, not arguments,
     // and caller_rva is the fall-through frame's stack word - read neither. The COUNT and
@@ -1517,6 +1535,95 @@ void emit_trackadd(std::size_t index, const char* fn, std::uint64_t call,
 }
 
 /** Dispatches whichever structured probe this target declared, on enter. */
+/**
+ * THE RESERVATION-TABLE CONNECTION-LADDER READER (W2, 20.271 R5). The lookup
+ * 0x1417C40F0 runs on the reserve path (joins) and, with the poke armed, on every
+ * guard pass - each leave is a sampling opportunity. The table base comes from the
+ * obfuscated accessor 0x1417CF0E0, which is CALLED here (same thread, same keys the
+ * game itself uses; never detoured - the p2-147a class). Walks all 62 x 0x41F0
+ * records, reads the two lifecycle states (+0x30E8, +0x1DC0) SEH-guarded, folds a
+ * fingerprint, and emits ONLY on a change: one summary line plus up to eight
+ * per-record lines naming the states and the identity prefix. Read-only: no writes
+ * into game memory anywhere in this probe.
+ */
+void emit_resvtable(std::size_t index, const char* fn, std::uint64_t call) noexcept {
+    using ResvBaseFn = void* (*)() noexcept;
+    const auto accessor = reinterpret_cast<ResvBaseFn>(g_base + 0x17CF0E0);
+    if (accessor == nullptr) {
+        return;
+    }
+    const auto base = reinterpret_cast<std::uintptr_t>(accessor());
+    if (base < 0x10000U) {
+        if (probe_changed(index, 0ULL)) {
+            std::array<char, 160> t{};
+            const int w = std::snprintf(t.data(), t.size(),
+                "ev=mtrace stage=resv fn=%s call=%llu base=0 result=no-base",
+                fn, static_cast<unsigned long long>(call));
+            if (w > 0) { emit(t.data(), static_cast<std::size_t>(w)); }
+        }
+        return;
+    }
+    constexpr std::uintptr_t kRecStride = 0x41F0;
+    constexpr std::size_t kRecordCount = 62;
+    constexpr std::uintptr_t kOffState1 = 0x30E8;   // guard predicate 2: ==4 established
+    constexpr std::uintptr_t kOffState2 = 0x1DC0;   // guard predicate 3: ==5 connected
+    constexpr std::uintptr_t kOffIdentity = 0x3144; // the 86-byte identity blob
+    std::uint32_t states1[kRecordCount]{};
+    std::uint32_t states2[kRecordCount]{};
+    std::uint64_t idents[kRecordCount]{};
+    std::uint32_t nonzero = 0;
+    std::uint64_t fingerprint = 14695981039346656037ULL;
+    for (std::size_t r = 0; r < kRecordCount; ++r) {
+        const auto rec = base + r * kRecStride;
+        std::uint32_t s1 = 0;
+        std::uint32_t s2 = 0;
+        std::uint64_t ident = 0;
+        const bool ok1 = gate_wwatch::safe_read(reinterpret_cast<const void*>(rec + kOffState1),
+                                                &s1, sizeof(s1));
+        const bool ok2 = gate_wwatch::safe_read(reinterpret_cast<const void*>(rec + kOffState2),
+                                                &s2, sizeof(s2));
+        const bool ok3 = gate_wwatch::safe_read(reinterpret_cast<const void*>(rec + kOffIdentity),
+                                                &ident, sizeof(ident));
+        if (!ok1 || !ok2 || !ok3) {
+            fingerprint = (fingerprint ^ (0x9E3779B9ULL + r)) * 16777619ULL;
+            continue;
+        }
+        states1[r] = s1;
+        states2[r] = s2;
+        idents[r] = ident;
+        if (s1 != 0U || s2 != 0U || ident != 0U) {
+            ++nonzero;
+        }
+        fingerprint = (fingerprint ^ s1) * 16777619ULL;
+        fingerprint = (fingerprint ^ s2) * 16777619ULL;
+        fingerprint = (fingerprint ^ (ident >> 32)) * 16777619ULL;
+        fingerprint = (fingerprint ^ (ident & 0xFFFFFFFFULL)) * 16777619ULL;
+    }
+    if (!probe_changed(index, fingerprint)) {
+        return;
+    }
+    std::array<char, 192> t{};
+    int w = std::snprintf(t.data(), t.size(),
+        "ev=mtrace stage=resv fn=%s call=%llu base=0x%llX nonzero=%u fp=0x%016llX",
+        fn, static_cast<unsigned long long>(call),
+        static_cast<unsigned long long>(base), nonzero,
+        static_cast<unsigned long long>(fingerprint));
+    if (w > 0) { emit(t.data(), static_cast<std::size_t>(w)); }
+    for (std::size_t r = 0; r < kRecordCount && w > 0; ++r) {
+        if (states1[r] == 0U && states2[r] == 0U && idents[r] == 0U) {
+            continue;
+        }
+        std::array<char, 192> rt{};
+        w = std::snprintf(rt.data(), rt.size(),
+            "ev=mtrace stage=resv_rec fn=%s call=%llu rec=%zu s30e8=%u s1dc0=%u "
+            "ident=0x%016llX",
+            fn, static_cast<unsigned long long>(call), r,
+            states1[r], states2[r],
+            static_cast<unsigned long long>(idents[r]));
+        if (w > 0) { emit(rt.data(), static_cast<std::size_t>(w)); }
+    }
+}
+
 void run_probe(std::size_t index, Probe probe, const char* fn, const char* when,
                std::uint64_t call, const void* rcx) noexcept {
     switch (probe) {
@@ -1642,6 +1749,9 @@ std::uint64_t __fastcall observe(void* rcx, void* rdx, void* r8, void* r9,
     // supply into mgr+0xC118 across this call or it did not, and the delta says which.
     if (siteMatch) {
         run_probe(Index, kTargets[Index].probe, kTargets[Index].name, "leave", call, rcx);
+        if (kTargets[Index].probe == Probe::resvtable) {
+            emit_resvtable(Index, kTargets[Index].name, call);
+        }
         if (kTargets[Index].probe == Probe::pubrest) {
             emit_pubrest(Index, kTargets[Index].name, "leave", call, callerRva,
                          rcx, rdx, r8);
