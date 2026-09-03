@@ -22,6 +22,7 @@ bool Parser::client_settings(client::Settings& output) noexcept {
     bool hasStateDiff = false;
     bool hasMilestoneTrace = false;
     bool hasGatePoke = false;
+    bool hasNotifierHook = false;
     bool hasAdmissionMemberIndex = false;
     bool hasAdmissionXuid = false;
     bool hasAdmissionPeerSteamId = false;
@@ -93,6 +94,11 @@ bool Parser::client_settings(client::Settings& output) noexcept {
             }
             candidate.gatePoke = static_cast<std::uint32_t>(value);
             hasGatePoke = true;
+        } else if (key == "notifier_hook") {
+            if (hasNotifierHook || !boolean(candidate.notifierHook)) {
+                return false;
+            }
+            hasNotifierHook = true;
         } else if (key == "state_diff") {
             if (hasStateDiff || !boolean(candidate.stateDiff)) {
                 return false;

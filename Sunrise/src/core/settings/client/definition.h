@@ -147,6 +147,14 @@ struct Settings {
      */
     std::uint32_t gatePoke{};
 
+    /**
+     * Arms the notifier detour (0x1417FFA20) in the milestone tracer. Default 0: that
+     * body is obfuscated (keyed family) and a rig login failure correlated with the
+     * 46-target set (p2-164 attempt 1, 2026-09-03), so the wide-net capture is
+     * per-machine opt-in until the correlation is cleared.
+     */
+    bool notifierHook{};
+
     /** Member-record index the injection writes. Must be unused - the census names one. */
     std::uint32_t admissionMemberIndex{};
     /** Peer xuid the injection publishes. Zero disables the injection outright. */

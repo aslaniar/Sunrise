@@ -1917,6 +1917,14 @@ void install_all(std::index_sequence<Index...>) noexcept {
     (
         [] {
             constexpr std::size_t i = Index;
+            // The notifier detour is per-machine opt-in (WIDE NET directive, p2-164
+            // attempt 1): the body is obfuscated and a rig login failure correlated
+            // with its attachment, so it only arms when the setting names it.
+            if constexpr (kTargets[i].rva == kResvNotifyRva) {
+                if (!core::settings::get().client.notifierHook) {
+                    return;
+                }
+            }
             const auto address = reinterpret_cast<void*>(g_base + kTargets[i].rva);
             diagnostics::ModuleRange range{};
             if (!diagnostics::module_range(reinterpret_cast<HMODULE>(g_base), range)
