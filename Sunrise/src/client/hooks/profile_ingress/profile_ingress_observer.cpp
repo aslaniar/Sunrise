@@ -47,7 +47,12 @@ constexpr std::size_t kChunkBytes = 64;
  *     and the tail inside the entry by inspection instead of by derivation.
  * 0x200 covers the whole 0x1a8 stride with room to see what follows it.
  */
-constexpr std::size_t kEntryDumpBytes = 0x200;
+/** The decoded-body struct dump. 0x600 covers the SECOND member row's identity region
+ *  (the local row's decoded footprint pushes the peer row past the old 0x200 window -
+ *  p2-165's entry dumps stopped at 0xE8 because the copy buffer was region-sized). */
+constexpr std::size_t kEntryDumpBytes = 0x600;
+/** The widest single dump_region payload; the SEH copy buffer is sized to it. */
+constexpr std::size_t kMaxDumpBytes = kEntryDumpBytes;
 
 /**
  * THE LANDMARK SCAN (p2(127)) - stop guessing the entry base, FIND it.
@@ -143,7 +148,7 @@ void dump_region(const char* tag,
     if (address == nullptr || bytes == 0) {
         return;
     }
-    std::array<std::uint8_t, kRegionABytes> copy{};
+    std::array<std::uint8_t, kMaxDumpBytes> copy{};
     const std::size_t span = bytes > copy.size() ? copy.size() : bytes;
     bool ok = true;
     __try {

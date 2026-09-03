@@ -1239,29 +1239,24 @@ void emit_ptable(std::size_t index, const char* fn, std::uint64_t call,
     // above did not already perform - and the callee's arm_table is a two-atomic fast
     // path once armed, so the per-tick cost of 35k lifecycle calls is negligible.
     gate_wwatch::arm_table(table, selfIdx, peerIdx);
-    // THE IDENTITY CARDS (20.278-20.280): slot+0x142, the 86 bytes the admission sweep
-    // compares against each reservation record. A blank card is the W1 wall; these lines
-    // make "did the fork's new field land" visible on the SAME sweep that runs the claim
-    // machinery - no dump needed. Emitted per populated slot whenever any card CHANGES,
-    // independent of the mask fingerprint above (the compose fills cards without touching
-    // the masks).
+    // THE SLOT DUMP (20.282 follow-up): the card at +0x142 stayed zero while the field
+    // decoded client-side, so the identity may land at a DIFFERENT slot offset (or at the
+    // alternate claim source +0xEC). Dump each populated slot's first 0x300 bytes in three
+    // 256-byte chunks whenever any card changed, so the next boot shows where the fork's
+    // 86 bytes go - or that they never reach the slot.
     {
         std::uint64_t cardFp = 14695981039346656037ULL;
-        std::uint8_t cards[kMaxParticipants][86] = {};
-        bool cardOk[kMaxParticipants] = {};
+        std::uint8_t slotBuf[0x300] = {};
         for (unsigned i = 0; i < kMaxParticipants; ++i) {
             if (((maskB >> i) & 1U) == 0U) {
                 continue;
             }
-            const bool ok = gate_wwatch::safe_read(
-                reinterpret_cast<const void*>(table
-                                              + static_cast<std::uintptr_t>(i) * kRecStride
-                                              + 0x142U),
-                cards[i], sizeof(cards[i]));
-            cardOk[i] = ok;
-            if (ok) {
-                for (std::size_t b = 0; b < sizeof(cards[i]); ++b) {
-                    cardFp = (cardFp ^ cards[i][b]) * 16777619ULL;
+            if (gate_wwatch::safe_read(
+                    reinterpret_cast<const void*>(table
+                                                  + static_cast<std::uintptr_t>(i) * kRecStride),
+                    slotBuf, sizeof(slotBuf))) {
+                for (std::size_t b = 0; b < sizeof(slotBuf); ++b) {
+                    cardFp = (cardFp ^ slotBuf[b]) * 16777619ULL;
                 }
             } else {
                 cardFp = (cardFp ^ (0x9E3779B9ULL + i)) * 16777619ULL;
@@ -1269,18 +1264,37 @@ void emit_ptable(std::size_t index, const char* fn, std::uint64_t call,
         }
         if (probe_changed(kCardGateSlot, cardFp)) {
             for (unsigned i = 0; i < kMaxParticipants; ++i) {
-                if (((maskB >> i) & 1U) == 0U || !cardOk[i]) {
+                if (((maskB >> i) & 1U) == 0U) {
                     continue;
                 }
-                std::array<char, 320> ct{};
-                int cw = std::snprintf(ct.data(), ct.size(),
+                if (!gate_wwatch::safe_read(
+                        reinterpret_cast<const void*>(table
+                                                      + static_cast<std::uintptr_t>(i)
+                                                      * kRecStride),
+                        slotBuf, sizeof(slotBuf))) {
+                    continue;
+                }
+                for (std::size_t chunk = 0; chunk < 0x300; chunk += 0x100) {
+                    std::array<char, 640> ct{};
+                    int cw = std::snprintf(ct.data(), ct.size(),
+                        "ev=mtrace stage=slot_dump fn=%s call=%llu slot=%u off=0x%02zX hex=",
+                        fn, static_cast<unsigned long long>(call), i, chunk);
+                    for (std::size_t b = 0; cw > 0 && b < 0x100; ++b) {
+                        cw += std::snprintf(ct.data() + cw, ct.size() - cw, "%02x",
+                                            static_cast<unsigned>(slotBuf[chunk + b]));
+                    }
+                    if (cw > 0) { emit(ct.data(), static_cast<std::size_t>(cw)); }
+                }
+                // The card line stays for the quick diff against resv_ident.
+                std::array<char, 320> ct2{};
+                int cw2 = std::snprintf(ct2.data(), ct2.size(),
                     "ev=mtrace stage=slot_card fn=%s call=%llu slot=%u card86=",
                     fn, static_cast<unsigned long long>(call), i);
-                for (std::size_t b = 0; cw > 0 && b < 86; ++b) {
-                    cw += std::snprintf(ct.data() + cw, ct.size() - cw, "%02x",
-                                        static_cast<unsigned>(cards[i][b]));
+                for (std::size_t b = 0; cw2 > 0 && b < 86; ++b) {
+                    cw2 += std::snprintf(ct2.data() + cw2, ct2.size() - cw2, "%02x",
+                                         static_cast<unsigned>(slotBuf[0x142 + b]));
                 }
-                if (cw > 0) { emit(ct.data(), static_cast<std::size_t>(cw)); }
+                if (cw2 > 0) { emit(ct2.data(), static_cast<std::size_t>(cw2)); }
             }
         }
     }
