@@ -74,6 +74,24 @@ std::uint64_t private_activity_session(const core::settings::AccountKey accountK
                                                          : 0;
 }
 
+/** The character SOID each account's last private join carried, parallel to the session registry. */
+std::array<std::uint64_t, core::settings::kAccountCapacity> g_privateActivityCharacterSoids{};
+
+/** Records the character SOID the account's private join named. See the header. */
+void note_private_activity_character(const core::settings::AccountKey accountKey,
+                                     const std::uint64_t characterSoid) noexcept {
+    if (accountKey < core::settings::kAccountCapacity) {
+        g_privateActivityCharacterSoids[accountKey] = characterSoid;
+    }
+}
+
+/** @return The character SOID the account's last private join named, or zero when none. */
+std::uint64_t private_activity_character_soid(
+    const core::settings::AccountKey accountKey) noexcept {
+    return accountKey < core::settings::kAccountCapacity ? g_privateActivityCharacterSoids[accountKey]
+                                                         : 0;
+}
+
 /** Publishes the captured connection fields after a successful commit. */
 void publish_connection_fields(Session& session,
                                const transactions::Publication& publication,
@@ -85,6 +103,7 @@ void publish_connection_fields(Session& session,
         // connection, p2(88)/p2(89)). Recorded so that half can find this session.
         if (publication.activitySessionId != session.activityPublicRowSession) {
             note_private_activity_session(session.accountKey, publication.activitySessionId);
+            note_private_activity_character(session.accountKey, fields.joinCharacterSoid);
         }
     }
     if (fields.joinMemberKey != 0) {

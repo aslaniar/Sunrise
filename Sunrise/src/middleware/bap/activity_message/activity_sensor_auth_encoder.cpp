@@ -30,6 +30,13 @@ constexpr std::uint32_t kMaximumRegion = 0x7FFFFFFF;
             || snapshot.spawnSetHash == kAbsentSpawnSetHash)) {
         return false;
     }
+    // A staged peer must carry a real identity and a region the signed field accepts; anything
+    // else would bind a zero key, which the client reads as "no player".
+    if (snapshot.peer.hasPeer
+        && (snapshot.peer.playerKey == 0
+            || (snapshot.peer.hasRegion && snapshot.peer.region > kMaximumRegion))) {
+        return false;
+    }
     // The grant is a change, not a value: the client compares it against a mirror that starts at
     // zero, so a token of zero grants nothing.
     if (snapshot.hasGrant
@@ -53,32 +60,44 @@ constexpr std::uint32_t kMaximumRegion = 0x7FFFFFFF;
  * Writes every group's object blocks, in publish order. Every registered object must be seeded
  * before any auth state applies, because the client's gate walks the whole sync-record pool. A
  * partial message seeds nothing that applies.
+ *
+ * Type-13 slot binding order inside the key group: the first participation slot binds the local
+ * player, the second binds the peer when one is staged, and every later participation slot binds
+ * the local player only when `keyOnEveryParticipationSlot` says the gate may read any of them.
+ * With `hasPeer` clear this reproduces the historical bodies bit for bit.
  * @param writer Body writer sitting after the phase-1 delta.
  * @param snapshot Message input.
  * @return True when every block fits.
  */
 [[nodiscard]] bool write_phase_two(bits::Writer& writer, const Snapshot& snapshot) noexcept {
     bool encoded = true;
-    bool keyPlaced = false;
+    std::size_t keyGroupParticipationOrdinal = 0;
     for (std::size_t group = 0; encoded && group < snapshot.roster.groupCount; ++group) {
         const Group& row = snapshot.roster.groups[group];
         // The filler word after the key is read and discarded.
         encoded = writer.write(1, kPresenceWidth) && writer.write(row.key, kKeyWidth)
                   && writer.write(0, kKeyWidth);
+        const bool keyGroup = row.key == snapshot.roster.playerKeyGroup;
         for (std::size_t slot = 0; encoded && slot < row.slotTypes.size(); ++slot) {
             const std::uint8_t slotType = row.slotTypes[slot];
-            const bool firstOrEvery = !keyPlaced || snapshot.keyOnEveryParticipationSlot;
-            const bool carriesPlayerKey = slotType == kSlotTypeParticipation
-                                          && row.key == snapshot.roster.playerKeyGroup
-                                          && firstOrEvery;
-            keyPlaced = keyPlaced || carriesPlayerKey;
+            KeyBinding binding = KeyBinding::none;
+            if (keyGroup && slotType == kSlotTypeParticipation) {
+                const std::size_t ordinal = keyGroupParticipationOrdinal++;
+                if (ordinal == 0) {
+                    binding = KeyBinding::local;
+                } else if (ordinal == 1 && snapshot.peer.hasPeer) {
+                    binding = KeyBinding::peer;
+                } else if (snapshot.keyOnEveryParticipationSlot) {
+                    binding = KeyBinding::local;
+                }
+            }
             encoded = write_object_block(writer,
                                          snapshot,
                                          row.key,
                                          slotType,
                                          static_cast<std::uint16_t>(slot),
                                          row.slotFlags[slot],
-                                         carriesPlayerKey);
+                                         binding);
         }
         encoded = encoded && writer.write(0, kPresenceWidth);
     }

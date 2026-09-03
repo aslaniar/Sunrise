@@ -63,6 +63,7 @@ bool Parser::activity_settings(state::activity::defaults::ActivityDefaults& outp
     bool hasArrivalOverrides = false;
     bool hasRosterKeyFromIdentity = false;
     bool hasRosterKeyOnAllSlots = false;
+    bool hasRosterPeerParticipation = false;
     if (consume('}')) {
         return true;
     }
@@ -91,6 +92,11 @@ bool Parser::activity_settings(state::activity::defaults::ActivityDefaults& outp
                 return false;
             }
             hasRosterKeyOnAllSlots = true;
+        } else if (key == "roster_peer_participation") {
+            if (hasRosterPeerParticipation || !boolean(output.rosterPeerParticipation)) {
+                return false;
+            }
+            hasRosterPeerParticipation = true;
         } else if (!skip_value(0)) {
             return false;
         }

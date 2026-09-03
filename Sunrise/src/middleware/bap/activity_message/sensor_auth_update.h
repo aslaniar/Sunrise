@@ -55,6 +55,27 @@ struct Roster final {
     std::uint32_t playerKeyGroup{};
 };
 
+/**
+ * The peer identity one second participation slot may bind.
+ * Zero key with hasPeer clear leaves the body exactly as every earlier build shipped it.
+ */
+struct PeerBinding final {
+    /** The peer's membership identity, resolved the same way the local player key is. */
+    std::uint64_t playerKey{};
+    /** The peer's participation region, latched by its own body's `+8` term. */
+    std::uint32_t region{};
+    bool hasRegion{};
+    /** When clear, every type-13 slot encodes exactly as before this struct existed. */
+    bool hasPeer{};
+};
+
+/** Which identity, if any, one type-13 slot's auth body binds. */
+enum class KeyBinding : std::uint8_t {
+    none,
+    local,
+    peer,
+};
+
 /** Everything one `sensor_auth_update` carries. */
 struct Snapshot final {
     /** Message 52's payload, echoed exactly. A wrong epoch skips phase 2 and reports nothing. */
@@ -63,6 +84,8 @@ struct Snapshot final {
     Grant grant{};
     /** Message 12's member record key. Zero leaves every type-13 block inert. */
     std::uint64_t playerKey{};
+    /** The peer identity the second participation slot binds when hasPeer is set. */
+    PeerBinding peer{};
     /** Per-entry state byte. A change tears down and rebuilds every roster-owned object. */
     std::uint8_t stateSequence{};
     /** The participation record's region index. Its `+8` latch needs it. */
@@ -177,24 +200,24 @@ inline constexpr std::uint32_t kStateByteBias = 0x80;
  * Reports how many bits of auth body one slot carries.
  * @param snapshot Message input, which decides the type-13 body width.
  * @param slotType Slot type from the group's slot array.
- * @param carriesPlayerKey True for the one type-13 block that binds the player.
+ * @param binding Which identity this type-13 block binds.
  * @return Body bits, or zero for a seed-only block.
  */
 [[nodiscard]] std::size_t
-auth_body_bits(const Snapshot& snapshot, std::uint8_t slotType, bool carriesPlayerKey) noexcept;
+auth_body_bits(const Snapshot& snapshot, std::uint8_t slotType, KeyBinding binding) noexcept;
 
 /**
  * Writes one slot's auth body.
  * @param writer Body writer positioned after the auth delta's root bit.
  * @param snapshot Message input.
  * @param slotType Slot type from the group's slot array.
- * @param carriesPlayerKey True for the one type-13 block that binds the player.
+ * @param binding Which identity this type-13 block binds.
  * @return True when the body fits and matches its declared width.
  */
 [[nodiscard]] bool write_auth_body(encoding::bits::Writer& writer,
                                    const Snapshot& snapshot,
                                    std::uint8_t slotType,
-                                   bool carriesPlayerKey) noexcept;
+                                   KeyBinding binding) noexcept;
 
 /**
  * Writes one per-object state block.
@@ -206,7 +229,7 @@ auth_body_bits(const Snapshot& snapshot, std::uint8_t slotType, bool carriesPlay
  * @param slotType Slot type from the group's slot array.
  * @param slotIndex Slot ordinal, which is also the slot's index.
  * @param flags Sense and auth emit bits for that slot type.
- * @param carriesPlayerKey True for the one type-13 block that binds the player.
+ * @param binding Which identity this type-13 block binds.
  * @return True when the block fits and lands on its declared end bit.
  */
 [[nodiscard]] bool write_object_block(encoding::bits::Writer& writer,
@@ -215,6 +238,6 @@ auth_body_bits(const Snapshot& snapshot, std::uint8_t slotType, bool carriesPlay
                                       std::uint8_t slotType,
                                       std::uint16_t slotIndex,
                                       std::uint8_t flags,
-                                      bool carriesPlayerKey) noexcept;
+                                      KeyBinding binding) noexcept;
 
 } // namespace sunrise::middleware::bap::activity_message::sensor_auth_update

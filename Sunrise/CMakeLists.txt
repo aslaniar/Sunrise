@@ -781,6 +781,7 @@ add_executable(sunrise-server
     src/middleware/bap/activity_message/activity_sensor_auth_blocks.cpp
     src/middleware/bap/activity_message/activity_sensor_auth_bodies.cpp
     src/middleware/bap/activity_message/activity_sensor_auth_encoder.cpp
+    src/middleware/bap/activity_message/sensor_auth_peer_test.cpp
     src/middleware/bap/activity_message/activity_state_refresh_parser.cpp
     src/middleware/bap/bap_frame.cpp
     src/middleware/bap/certificate.cpp

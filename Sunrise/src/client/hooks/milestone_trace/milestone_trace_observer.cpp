@@ -272,6 +272,11 @@ constexpr std::uintptr_t kRecStride = 0x2AC0;         ///< per-participant recor
 constexpr std::uintptr_t kRecGateByte = 0x38;         ///< cond 5: bit 4 of this must be SET
 constexpr unsigned kMaxParticipants = 32;
 constexpr std::uintptr_t kEntGateRva = 0x1703910;      ///< chain top; carries both predicates
+constexpr std::uintptr_t kEntPassRva = 0x17039CD;      ///< the guard's fall-through body (W1):
+                                                       ///< entered ONLY when all three bails
+                                                       ///< pass, by fall-through or nothing
+                                                       ///< (zero E8 callers - 20.269 R1).
+                                                       ///< calls>0 here IS outcome (b).
 constexpr std::uintptr_t kEntRegRva = 0x16FF3C0;       ///< bail-on-(-1), then register
 constexpr std::uintptr_t kEntAllocRva = 0x16CA0B0;     ///< get-or-create: eax = index or -1
 constexpr std::uintptr_t kEntTeardownRva = 0x16CACD0;  ///< the destroy half
@@ -405,7 +410,7 @@ constexpr std::uintptr_t kType30SchemaKeyPtr = 0x1FA42B8;
 /** The type-30 key is independently known; it is this instrument's self-test. */
 constexpr std::uint32_t kType30SchemaKeyOracle = 0x80808683;
 
-constexpr std::array<Target, 42> kTargets{{
+constexpr std::array<Target, 43> kTargets{{
     // The entity receive cluster. 0x141718510 is the ENTRY and has ZERO static references
     // of any kind in the whole image (20.209) - its caller is the open question, so it gets
     // the largest budget.
@@ -464,6 +469,12 @@ constexpr std::array<Target, 42> kTargets{{
     // p2-147: the construction chain. Read top-down; the LAST one with calls>0 is the answer.
     {"ptable",        kPTableRva, 12, OutParam::none, false, Probe::ptable},
     {"ent_gate",      kEntGateRva, 24, OutParam::none, false, Probe::stackargs},
+    // W1 (20.269 R5): the fall-through body. Entered by FALL-THROUGH from ent_gate only,
+    // never by call, so its enter-line rcx/rdx/r8/r9 are REGISTER RESIDUE, not arguments,
+    // and caller_rva is the fall-through frame's stack word - read neither. The COUNT and
+    // its timing against the gate poke is the measurement: 0 in every boot so far, and
+    // rising with the peer participation staged is outcome (b) of the pre-named tree.
+    {"ent_pass",      kEntPassRva, 24, OutParam::none, false, Probe::none},
     {"ent_reg",       kEntRegRva, 24, OutParam::none, false, Probe::registry},
     // ent_alloc 0x1416CA0B0 is ALSO REMOVED for p2-147a. It is the one target of the six
     // sitting in comparison-tree obfuscated code (cmp ecx,<random imm32>/je dispatch,

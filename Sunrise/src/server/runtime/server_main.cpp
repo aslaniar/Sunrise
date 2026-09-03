@@ -12,6 +12,7 @@
 #include "../../core/logging/log.h"
 #include "../../core/settings/settings.h"
 #include "../../middleware/compression/oodle/runtime.h"
+#include "../../middleware/bap/activity_message/sensor_auth_peer_test.h"
 #include "../../middleware/runtime/middleware_runtime.h"
 #include "../../state/runtime/equipment/configured_equipment_identity.h"
 #include "../../state/account/account_state.h"
@@ -426,10 +427,18 @@ int main(int argc, char** argv) {
     // never be silent again.
     const bool localAccountTest =
         argc > 1 && std::strcmp(argv[1], "--local-account-test") == 0;
+    // The peer-participation encoder gate (FINDINGS 20.269 R5): the off path must stay
+    // bit-identical to the pre-peer encoder, the on path must bind local then peer.
+    const bool sensorAuthPeerTest =
+        argc > 1 && std::strcmp(argv[1], "--sensor-auth-peer-test") == 0;
     const HMODULE module = GetModuleHandleW(nullptr);
     if (!sunrise::core::settings::initialize(module)) {
         // Settings name their own failure; the sinks do not exist yet to carry a second line.
         return 1;
+    }
+    if (sensorAuthPeerTest) {
+        return sunrise::middleware::bap::activity_message::sensor_auth_update::
+            run_sensor_auth_peer_test();
     }
     if (membershipSweepTest) {
         return sunrise::server::bap::encrypted::push::activity::run_membership_sweep_test();

@@ -70,6 +70,12 @@ struct ActivityDefaults final {
      * datum names, which need not be that one.
      */
     bool rosterKeyOnAllSlots{};
+    /**
+     * Binds the PEER's identity into a second participation slot of the key group, so the other
+     * client's roster seed formally introduces the peer. Off by default: the body is then
+     * bit-identical to every build before the peer-participation experiment (FINDINGS 20.269 R5).
+     */
+    bool rosterPeerParticipation{};
 };
 
 } // namespace sunrise::state::activity::defaults

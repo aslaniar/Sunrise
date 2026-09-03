@@ -82,10 +82,10 @@ bool write_object_block(bits::Writer& writer,
                         std::uint8_t slotType,
                         std::uint16_t slotIndex,
                         std::uint8_t flags,
-                        bool carriesPlayerKey) noexcept {
+                        KeyBinding binding) noexcept {
     const bool emitAuth = (flags & kSlotAuthFlag) != 0;
     const bool emitSense = (flags & kSlotSenseFlag) != 0;
-    const std::size_t body = emitAuth ? auth_body_bits(snapshot, slotType, carriesPlayerKey) : 0;
+    const std::size_t body = emitAuth ? auth_body_bits(snapshot, slotType, binding) : 0;
     const std::size_t remainder = (emitAuth ? 2U : 0U) + (emitSense ? 1U : 0U) + body;
     bool encoded = writer.write(1, kPresenceWidth) && writer.write(key, kKeyWidth)
                    && writer.write(std::uint32_t{slotType} + kSlotTypeBias, kSlotTypeWidth)
@@ -97,7 +97,7 @@ bool write_object_block(bits::Writer& writer,
         encoded =
             writer.write(1, kPresenceWidth) && writer.write(body > 0 ? 1U : 0U, kPresenceWidth);
         if (encoded && body > 0) {
-            encoded = write_auth_body(writer, snapshot, slotType, carriesPlayerKey);
+            encoded = write_auth_body(writer, snapshot, slotType, binding);
         }
     }
     // A sense-present bit of one costs 35 more bits, not one, so it is always sent absent.

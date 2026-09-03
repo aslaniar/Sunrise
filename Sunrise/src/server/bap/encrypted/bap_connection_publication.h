@@ -67,6 +67,23 @@ void note_private_activity_session(core::settings::AccountKey accountKey,
     core::settings::AccountKey accountKey) noexcept;
 
 /**
+ * Records the character SOID the account's private join named, parallel to the session
+ * registry. The peer-participation seeding reads it to bind the peer's own identity the
+ * same way the local player key is resolved.
+ * @param accountKey Provisioned account slot the connection authenticated as.
+ * @param characterSoid Character SOID the join carried, or zero to clear it.
+ */
+void note_private_activity_character(core::settings::AccountKey accountKey,
+                                     std::uint64_t characterSoid) noexcept;
+
+/**
+ * @param accountKey Provisioned account slot.
+ * @return The character SOID the account's last private join named, or zero when none.
+ */
+[[nodiscard]] std::uint64_t private_activity_character_soid(
+    core::settings::AccountKey accountKey) noexcept;
+
+/**
  * Publishes the captured connection fields after a successful commit.
  * @param session Connection-owned activity binding and epoch.
  * @param publication Committed State bindings.

@@ -11,6 +11,7 @@
 #include "../../../../../state/activity/membership/activity_membership_query.h"
 #include "../../../../../state/build_data/runtime.h"
 #include "../../../../../state/runtime/runtime.h"
+#include "../../bap_connection_publication.h"
 #include "activity_arrival.h"
 #include "internal.h"
 
@@ -131,6 +132,95 @@ next_state_sequence(Session& session, std::uint32_t folded, bool burst) noexcept
     return session.activityRosterState;
 }
 
+/**
+ * Counts the type-13 slots of the group that binds the player.
+ * The peer needs a second one: the first carries the local identity, the second the peer's.
+ * @param roster The published roster whose playerKeyGroup names the group.
+ * @return Participation-slot count of the key group, or zero when it is not among them.
+ */
+[[nodiscard]] std::size_t
+key_group_participation_slot_count(const message::Roster& roster) noexcept {
+    for (std::size_t index = 0; index < roster.groupCount; ++index) {
+        if (roster.groups[index].key != roster.playerKeyGroup) {
+            continue;
+        }
+        std::size_t count = 0;
+        for (std::size_t slot = 0; slot < roster.groups[index].slotTypes.size(); ++slot) {
+            count += roster.groups[index].slotTypes[slot] == kSlotTypeParticipation ? 1U : 0U;
+        }
+        return count;
+    }
+    return 0;
+}
+
+/**
+ * Stages the peer binding when the setting arms it and a peer session shares this destination.
+ * Everything here is inert while `roster_peer_participation` is off: the encoder then sees an
+ * unset `hasPeer` and encodes the historical body bit for bit.
+ *
+ * The peer's identity is resolved the same way the local player key is - character SOID of the
+ * peer's own join, or its published membership identity when `roster_key_from_identity` is on -
+ * because the client binds a participation record by matching this value against the object
+ * registry, and a value the peer's character does not own binds nothing (FINDINGS 20.269 R4a).
+ * @param session Connection whose roster body is being built.
+ * @param defaults Parsed activity settings, which carry the arming flag.
+ * @param name This session's destination package name.
+ * @param snapshot Receives the peer binding when every precondition holds.
+ * @return True when the peer binding was staged.
+ */
+[[nodiscard]] bool stage_peer_participation(
+    const Session& session,
+    const state::activity::defaults::ActivityDefaults& defaults,
+    std::string_view name,
+    message::Snapshot& snapshot) noexcept {
+    if (!defaults.rosterPeerParticipation) {
+        return false;
+    }
+    // The key group needs a second participation slot; one cannot bind two identities.
+    if (key_group_participation_slot_count(snapshot.roster) < 2) {
+        return false;
+    }
+    for (std::size_t slot = 0; slot < core::settings::kAccountCapacity; ++slot) {
+        const auto accountKey = static_cast<core::settings::AccountKey>(slot);
+        if (accountKey == session.accountKey) {
+            continue;
+        }
+        const std::uint64_t peerSessionId = private_activity_session(accountKey);
+        if (peerSessionId == 0 || peerSessionId == session.activitySessionId) {
+            continue;
+        }
+        // Same destination only: a participation record binding a peer whose character is not in
+        // this destination's roster would name an object the other client never seeds.
+        state::activity::destination::DestinationSelection peerSelection{};
+        if (!state::activity::destination::snapshot(peerSessionId, peerSelection)) {
+            continue;
+        }
+        const std::string_view peerName(
+            reinterpret_cast<const char*>(peerSelection.packageName.data()),
+            peerSelection.packageNameLength);
+        if (peerName != name) {
+            continue;
+        }
+        // The peer's region comes from the same resolution the peer's own roster body uses, so
+        // both clients latch the same bubble for the same identity.
+        snapshot.peer.region =
+            static_cast<std::uint32_t>(effective_region(peerSessionId).index);
+        snapshot.peer.hasRegion = true;
+        snapshot.peer.playerKey = 0;
+        if (defaults.rosterKeyFromIdentity) {
+            snapshot.peer.playerKey =
+                state::activity::membership::join_identity(peerSessionId);
+        }
+        if (snapshot.peer.playerKey == 0) {
+            snapshot.peer.playerKey = roster_player_key(
+                private_activity_character_soid(accountKey), accountKey);
+        }
+        snapshot.peer.hasPeer = snapshot.peer.playerKey != 0;
+        return snapshot.peer.hasPeer;
+    }
+    return false;
+}
+
 } // namespace
 
 /** Resolves the one region a session publishes. */
@@ -243,6 +333,7 @@ RosterOutcome build_roster_snapshot(Session& session,
     // The participation record's `+0` latches only when the region index is known.
     snapshot.region = static_cast<std::uint32_t>(region.index);
     snapshot.hasRegion = true;
+    static_cast<void>(stage_peer_participation(session, defaults, name, snapshot));
     // The spawn override always names the destination's own arrival, never the player's position.
     snapshot.spawnSliceSet = region.arrival;
     snapshot.spawnSetHash =
