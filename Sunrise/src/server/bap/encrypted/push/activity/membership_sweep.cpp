@@ -271,7 +271,8 @@ void fill_advertisement(message::CitizenAdvertisement& advertisement,
 std::uint64_t check_wire_case(const char* label,
                               const bool peerPresent,
                               const Advertisements advertisements,
-                              const std::size_t wantDescriptors) noexcept {
+                              const std::size_t wantDescriptors,
+                              const bool transportIdentity = false) noexcept {
     namespace bits = middleware::encoding::bits;
 
     // Distinct values, so a dropped, duplicated or swapped field is visible as a WRONG value
@@ -306,12 +307,24 @@ std::uint64_t check_wire_case(const char* label,
         break;
     }
 
+    if (transportIdentity) {
+        snapshot.peerPresent = true;
+        // Distinct non-zero bytes: a dropped, shifted or mis-packed byte is visible as a
+        // WRONG value rather than as a zero. The endpoint fields {192.168.9.7:3097} mirror
+        // what the composition writes into a live body.
+        snapshot.peerTransportIdentityPresent = true;
+        for (std::size_t byte = 0; byte < snapshot.peerTransportIdentity.size(); ++byte) {
+            snapshot.peerTransportIdentity[byte] = static_cast<std::byte>(byte + 1);
+        }
+    }
+
     std::uint64_t failures = 0;
     // The independent count. `encoded_size` derives from `advertisement_count`, so comparing the
     // two would only prove the header agrees with itself.
     const std::size_t wantBits =
         message::kMeaningfulBitCount
         + (peerPresent ? message::kPeerRowExtraBits : std::size_t{0})
+        + (peerPresent && transportIdentity ? message::kPeerTransportIdentityBits : std::size_t{0})
         + wantDescriptors * message::kDescriptorBitCount;
     if (message::meaningful_bit_count(snapshot) != wantBits) {
         std::printf("ev=wire_test stage=check result=fail case=%s what=bit_count got=%llu "
@@ -337,6 +350,37 @@ std::uint64_t check_wire_case(const char* label,
     }
 
     // Read the trailer back from where the region block ends.
+    // The transport identity is schema field 10 of the nested block - NOT the row's last
+    // payload. Between its end and `region_block_start_bit` sit: the region block's own
+    // presence bit (1), fields 11-13's presence bits (3), field 14 (presence 1 + 14-bit
+    // count + 144-bit blob = 159), the identity tail flag (1), the row trailer (3+1+5 = 9),
+    // and the 30 absent member slots (3 each = 90): 263 bits.
+    if (transportIdentity) {
+        bits::Reader identityReader{std::span<const std::byte>(gWireBuffer).first(written)};
+        const std::size_t afterField10Bits = 263;
+        const std::size_t identityStartBit = message::region_block_start_bit(snapshot)
+                                             - afterField10Bits
+                                             - message::kPeerTransportIdentityBits;
+        if (!identityReader.skip(identityStartBit)) {
+            std::printf("ev=wire_test stage=check result=fail case=%s what=skip_to_identity\n",
+                        label);
+            return failures + 1;
+        }
+        for (std::size_t byte = 0; byte < 86; ++byte) {
+            std::uint64_t value = 0;
+            if (!identityReader.read(8, value)
+                || value != static_cast<std::uint64_t>(byte + 1)) {
+                std::printf("ev=wire_test stage=check result=fail case=%s what=identity_byte "
+                            "byte=%llu got=%llu want=%llu\n",
+                            label,
+                            static_cast<unsigned long long>(byte),
+                            static_cast<unsigned long long>(value),
+                            static_cast<unsigned long long>(byte + 1));
+                ++failures;
+                break;
+            }
+        }
+    }
     bits::Reader reader{std::span<const std::byte>(gWireBuffer).first(written)};
     if (!reader.skip(message::region_block_end_bit(snapshot))) {
         std::printf("ev=wire_test stage=check result=fail case=%s what=skip_to_trailer\n", label);
@@ -398,6 +442,11 @@ int run_membership_wire_test() noexcept {
     failures += check_wire_case("peer_citizen", true, Advertisements::own, 1);
     // THE CASE THAT WOULD HAVE CAUGHT p2(54): two advertisements in separate region records.
     failures += check_wire_case("peer_two_adverts", true, Advertisements::ownAndPeerSplit, 2);
+    // The transport-identity shape (FINDINGS 20.280): the 86-byte card the client's admission
+    // sweep compares against each reservation record. Byte-exact readback, independent count.
+    failures += check_wire_case("peer_transport_identity", true, Advertisements::none, 0, true);
+    failures += check_wire_case("peer_transport_identity_citizen", true, Advertisements::own, 1,
+                                true);
     // Two advertisements naming ONE record: the writer emits one descriptor, and the size rule
     // must agree with the writer rather than with the number of advertisements it was handed.
     failures += check_wire_case("peer_shared_region", true, Advertisements::ownAndPeerShared, 1);

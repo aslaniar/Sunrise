@@ -110,6 +110,11 @@ enum class Probe : std::uint8_t {
      *  full source-image hexdump on the first restore. The writer 20.246 could never
      *  see, observed. */
     pubrest,
+    /** THE GUARD'S REQUIRED-BIT READER (20.279 R2 / 20.280): rcx = the guard's container;
+     *  the bit predicate 1 demands is dword[[rcx+8]+8] + 6 - the value the red team could
+     *  only infer (bit 7 mac / 6 rig). Novelty-gated on the bit VALUE, so 898 evaluations
+     *  cost a handful of lines and a mid-boot change of the required bit is loud. */
+    gatebit,
 };
 
 struct Target {
@@ -147,6 +152,17 @@ struct Target {
      * site makes the budget mean "N samples of THE CALL WE CARE ABOUT".
      */
     std::uintptr_t caller_filter;
+    /**
+     * FIRST-SEEN-KEY LEAVE GATING (postmortem 09-01, the pattern that worked). The flat
+     * budget exhausts in the earliest burst - for ent_gate that is the self-slot join
+     * burst - and the informative outcomes (a DIFFERENT slot, a DIFFERENT bail class)
+     * land after the cap, which is exactly how p2-164's log went silent through the
+     * entire peer era. Past the budget, a target with this flag still emits the leave
+     * line the first time each (rdx slot, ret class) pair is seen, so a bail-3 flip or
+     * a pass on the peer slot can never be invisible. Bounded by the key table, not by
+     * the budget.
+     */
+    bool first_seen_leave;
 };
 
 /**
@@ -441,7 +457,8 @@ constexpr std::uintptr_t kType30SchemaKeyPtr = 0x1FA42B8;
 /** The type-30 key is independently known; it is this instrument's self-test. */
 constexpr std::uint32_t kType30SchemaKeyOracle = 0x80808683;
 
-constexpr std::array<Target, 46> kTargets{{
+constexpr std::size_t kTargetsSize = 46;
+constexpr std::array<Target, kTargetsSize> kTargets{{
     // The entity receive cluster. 0x141718510 is the ENTRY and has ZERO static references
     // of any kind in the whole image (20.209) - its caller is the open question, so it gets
     // the largest budget.
@@ -499,14 +516,14 @@ constexpr std::array<Target, 46> kTargets{{
     {"mgr_sync",       kMgrSyncRva, 16, OutParam::none, false, Probe::manager},
     // p2-147: the construction chain. Read top-down; the LAST one with calls>0 is the answer.
     {"ptable",        kPTableRva, 12, OutParam::none, false, Probe::ptable},
-    {"ent_gate",      kEntGateRva, 24, OutParam::none, false, Probe::stackargs},
+    {"ent_gate",      kEntGateRva, 24, OutParam::none, false, Probe::gatebit, 0, true},
     // W2 (20.271 R5): the connection-ladder reader. Emits one line per whole-table state
     // CHANGE: every reservation record's two lifecycle states + identity prefix. Zero
     // writes into game memory; the accessor 0x1417CF0E0 is CALLED, not detoured.
     {"resv",          kResvLookupRva, 32, OutParam::none, false, Probe::resvtable},
     // W2 (20.273): the connection-state iterator. Enter lines carry caller_rva - WHICH
     // subsystem drove each evaluation. Budget 24; the args are context (manager + flags).
-    {"connmgr",       kConnMgrRva, 24, OutParam::none, false, Probe::none},
+    {"connmgr",       kConnMgrRva, 24, OutParam::none, false, Probe::none, 0, true},
     // WIDE NET (user directive): the notifier's args are the promotion's parameters.
     // Attach-crash risk pre-named (p2-147a class) - outcome (e2) of the brief.
     {"notifier",      kResvNotifyRva, 24, OutParam::none, false, Probe::none},
@@ -515,7 +532,7 @@ constexpr std::array<Target, 46> kTargets{{
     // and caller_rva is the fall-through frame's stack word - read neither. The COUNT and
     // its timing against the gate poke is the measurement: 0 in every boot so far, and
     // rising with the peer participation staged is outcome (b) of the pre-named tree.
-    {"ent_pass",      kEntPassRva, 24, OutParam::none, false, Probe::none},
+    {"ent_pass",      kEntPassRva, 24, OutParam::none, false, Probe::none, 0, true},
     {"ent_reg",       kEntRegRva, 24, OutParam::none, false, Probe::registry},
     // ent_alloc 0x1416CA0B0 is ALSO REMOVED for p2-147a. It is the one target of the six
     // sitting in comparison-tree obfuscated code (cmp ecx,<random imm32>/je dispatch,
@@ -629,8 +646,11 @@ std::array<std::atomic<unsigned>, kTargets.size()> g_logged{};
  * ~50MB log (FINDINGS 20.219 R7). Sampling by CHANGE rather than by count keeps every
  * transition - which is the whole signal - while collapsing the steady state to one line.
  */
-std::array<std::atomic<std::uint64_t>, kTargets.size()> g_lastProbe{};
-std::array<std::atomic<bool>, kTargets.size()> g_hasProbe{};
+std::array<std::atomic<std::uint64_t>, kTargets.size() + 1> g_lastProbe{};
+std::array<std::atomic<bool>, kTargets.size() + 1> g_hasProbe{};
+/** One spare novelty slot beyond the target list: the ptable probe's identity-card
+ *  fingerprint gate (the cards change without the masks changing). */
+constexpr std::size_t kCardGateSlot = kTargets.size();
 /**
  * The tracking-adder probe's per-target emission cap (p2-152). The canonical adder is
  * append-only in retail (count++ on every call), so it cannot be per-tick hot - but the
@@ -708,6 +728,43 @@ void emit_summary(const char* reason) noexcept;
 }
 
 /**
+ * THE GUARD'S REQUIRED-BIT READER. The guard 0x141703910 computes
+ * bit = dword[[rcx+8]+8] + 6 and every reservation lookup on this path filters records by
+ * that bit in the record's mask word. Which bit runs live is the difference between
+ * "the peer's record is selectable" and "no record can ever match" (20.279: the red team
+ * derived 7 on the mac / 6 on the rig from the logged bail-5s; this pins it at runtime).
+ * Emitted on CHANGE only; the read chain dereferences exactly what the guard itself
+ * dereferences on every call, SEH-guarded besides.
+ */
+[[nodiscard]] bool probe_changed(std::size_t index, std::uint64_t value) noexcept;
+[[nodiscard]] const void* at(const void* base, std::uintptr_t offset) noexcept;
+void emit_gatebit(std::size_t index, const char* fn, std::uint64_t call,
+                  const void* rcx) noexcept {
+    if (rcx == nullptr) {
+        return;
+    }
+    const void* const containerA = *static_cast<const void* const*>(at(rcx, 8));
+    if (containerA == nullptr) {
+        return;
+    }
+    const std::uint32_t containerValue =
+        *static_cast<const std::uint32_t*>(at(containerA, 8));
+    const std::uint64_t bit =
+        static_cast<std::uint64_t>(static_cast<std::int32_t>(containerValue) + 6);
+    if (!probe_changed(index, bit)) {
+        return;
+    }
+    std::array<char, 224> t{};
+    const int w = std::snprintf(t.data(), t.size(),
+        "ev=mtrace stage=gatebit fn=%s call=%llu container=0x%llX value=%d bitreq=%llu",
+        fn, static_cast<unsigned long long>(call),
+        reinterpret_cast<unsigned long long>(containerA),
+        static_cast<int>(containerValue),
+        static_cast<unsigned long long>(bit));
+    if (w > 0) { emit(t.data(), static_cast<std::size_t>(w)); }
+}
+
+/**
  * True when `value` differs from the last value this target emitted (always true the
  * first time). Cheap, lock-free, and deliberately racy: a duplicate line under a race is
  * harmless, a missed transition is not, so the compare-then-store is not made atomic.
@@ -725,6 +782,55 @@ void emit_summary(const char* reason) noexcept;
 /** Byte-offset helper so the field arithmetic below reads like the offset table. */
 [[nodiscard]] const void* at(const void* base, std::uintptr_t offset) noexcept {
     return static_cast<const std::byte*>(base) + offset;
+}
+
+/**
+ * FIRST-SEEN-KEY STATE: one small open-addressing table per target. A leave line past the
+ * budget is emitted exactly once per (slot, ret-class) key - the informative transition
+ * (bail 5 -> bail 3, or the first peer-slot evaluation) is a NEW key and can never be
+ * silenced by an exhausted budget. 16 keys is generous: the real key space is the
+ * participant slot count times four ret classes.
+ */
+constexpr std::size_t kFirstSeenKeys = 16;
+std::atomic<std::uint64_t> g_seenLeaveKeys[kTargetsSize][kFirstSeenKeys] = {};
+std::atomic<unsigned> g_seenLeaveCount[kTargetsSize] = {};
+
+/**
+ * Buckets a return value into a small class so a MEANINGFUL CHANGE (bail 5's table-base
+ * ret vs bail 3's index-or-minus-one vs a pass) is a new key, while repetitions of the
+ * same verdict are not. Verified against the p2-161/162b/163/164 forensics: bail 5 reads
+ * base & ~0xFF (class 2), bail 3 with idx < 0 reads all-ones (class 1), bail 3 with
+ * idx >= 0 reads a small index (class 3), a pass reads 0 (class 0).
+ */
+[[nodiscard]] unsigned classify_ret(std::uint64_t ret) noexcept {
+    if (ret == 0ULL) {
+        return 0U;
+    }
+    if (ret == 0xFFFFFFFFFFFFFFFFULL) {
+        return 1U;
+    }
+    if ((ret & 0xFFULL) == 0ULL && ret >= 0x10000ULL) {
+        return 2U;
+    }
+    if (ret < 0x100ULL) {
+        return 3U;
+    }
+    return 4U;
+}
+
+/** True the first time `key` is seen for this target (lock-free, racy, monotonic). */
+[[nodiscard]] bool leave_key_first_seen(std::size_t index, std::uint64_t key) noexcept {
+    const unsigned count = g_seenLeaveCount[index].load(std::memory_order_relaxed);
+    for (unsigned i = 0; i < count && i < kFirstSeenKeys; ++i) {
+        if (g_seenLeaveKeys[index][i].load(std::memory_order_relaxed) == key) {
+            return false;
+        }
+    }
+    if (count < kFirstSeenKeys) {
+        g_seenLeaveKeys[index][count].store(key, std::memory_order_relaxed);
+        g_seenLeaveCount[index].store(count + 1U, std::memory_order_relaxed);
+    }
+    return true;
 }
 
 /**
@@ -1133,6 +1239,51 @@ void emit_ptable(std::size_t index, const char* fn, std::uint64_t call,
     // above did not already perform - and the callee's arm_table is a two-atomic fast
     // path once armed, so the per-tick cost of 35k lifecycle calls is negligible.
     gate_wwatch::arm_table(table, selfIdx, peerIdx);
+    // THE IDENTITY CARDS (20.278-20.280): slot+0x142, the 86 bytes the admission sweep
+    // compares against each reservation record. A blank card is the W1 wall; these lines
+    // make "did the fork's new field land" visible on the SAME sweep that runs the claim
+    // machinery - no dump needed. Emitted per populated slot whenever any card CHANGES,
+    // independent of the mask fingerprint above (the compose fills cards without touching
+    // the masks).
+    {
+        std::uint64_t cardFp = 14695981039346656037ULL;
+        std::uint8_t cards[kMaxParticipants][86] = {};
+        bool cardOk[kMaxParticipants] = {};
+        for (unsigned i = 0; i < kMaxParticipants; ++i) {
+            if (((maskB >> i) & 1U) == 0U) {
+                continue;
+            }
+            const bool ok = gate_wwatch::safe_read(
+                reinterpret_cast<const void*>(table
+                                              + static_cast<std::uintptr_t>(i) * kRecStride
+                                              + 0x142U),
+                cards[i], sizeof(cards[i]));
+            cardOk[i] = ok;
+            if (ok) {
+                for (std::size_t b = 0; b < sizeof(cards[i]); ++b) {
+                    cardFp = (cardFp ^ cards[i][b]) * 16777619ULL;
+                }
+            } else {
+                cardFp = (cardFp ^ (0x9E3779B9ULL + i)) * 16777619ULL;
+            }
+        }
+        if (probe_changed(kCardGateSlot, cardFp)) {
+            for (unsigned i = 0; i < kMaxParticipants; ++i) {
+                if (((maskB >> i) & 1U) == 0U || !cardOk[i]) {
+                    continue;
+                }
+                std::array<char, 320> ct{};
+                int cw = std::snprintf(ct.data(), ct.size(),
+                    "ev=mtrace stage=slot_card fn=%s call=%llu slot=%u card86=",
+                    fn, static_cast<unsigned long long>(call), i);
+                for (std::size_t b = 0; cw > 0 && b < 86; ++b) {
+                    cw += std::snprintf(ct.data() + cw, ct.size() - cw, "%02x",
+                                        static_cast<unsigned>(cards[i][b]));
+                }
+                if (cw > 0) { emit(ct.data(), static_cast<std::size_t>(cw)); }
+            }
+        }
+    }
     if (!probe_changed(index, (static_cast<std::uint64_t>(maskA) << 32) ^ maskB ^
                               (static_cast<std::uint64_t>(maskC) << 16))) {
         return;
@@ -1659,6 +1810,29 @@ void emit_resvtable(std::size_t index, const char* fn, std::uint64_t call) noexc
             static_cast<long long>(touch[r]),
             static_cast<unsigned long long>(idents[r]));
         if (w > 0) { emit(rt.data(), static_cast<std::size_t>(w)); }
+        // THE FULL CARD (20.277 R3 prerequisite ii): the probe logged 8 of 86 identity
+        // bytes; the implementation boot needs the WHOLE 86 to verify the fork's emitted
+        // transport identity landed byte-exact (prerequisite ii) and to capture the
+        // memcmp-path byte (+0x55 in the 0x1403EA820 type gate). Emitted for every record
+        // the summary line names, SEH-guarded like every read above.
+        {
+            std::uint8_t card[86] = {};
+            if (gate_wwatch::safe_read(
+                    reinterpret_cast<const void*>(base
+                                                  + static_cast<std::uintptr_t>(r)
+                                                  * kRecStride + kOffIdentity),
+                    card, sizeof(card))) {
+                std::array<char, 320> ct{};
+                int cw = std::snprintf(ct.data(), ct.size(),
+                    "ev=mtrace stage=resv_ident fn=%s call=%llu rec=%zu ident86=",
+                    fn, static_cast<unsigned long long>(call), r);
+                for (std::size_t b = 0; cw > 0 && b < sizeof(card); ++b) {
+                    cw += std::snprintf(ct.data() + cw, ct.size() - cw, "%02x",
+                                        static_cast<unsigned>(card[b]));
+                }
+                if (cw > 0) { emit(ct.data(), static_cast<std::size_t>(cw)); }
+            }
+        }
     }
 }
 
@@ -1667,6 +1841,9 @@ void run_probe(std::size_t index, Probe probe, const char* fn, const char* when,
     switch (probe) {
         case Probe::manager:
             emit_manager_probe(index, fn, when, call, rcx);
+            break;
+        case Probe::gatebit:
+            emit_gatebit(index, fn, call, rcx);
             break;
         case Probe::alloc:
             emit_alloc_probe(fn, when, call, rcx);
@@ -1737,7 +1914,8 @@ std::uint64_t __fastcall observe(void* rcx, void* rdx, void* r8, void* r9,
     // precisely how three earlier boots lost their answer to a cap spent by noise.
     if (siteMatch) {
         run_probe(Index, kTargets[Index].probe, kTargets[Index].name, "enter", call, rcx);
-        if (kTargets[Index].probe == Probe::stackargs) {
+        if (kTargets[Index].probe == Probe::stackargs
+            || kTargets[Index].probe == Probe::gatebit) {
             emit_stackargs(kTargets[Index].name, call, a5, a6, a7, a8);
         }
         if (kTargets[Index].probe == Probe::registry) {
@@ -1848,13 +2026,28 @@ std::uint64_t __fastcall observe(void* rcx, void* rdx, void* r8, void* r9,
             emit(text.data(), static_cast<std::size_t>(written));
         }
     }
-    if (detail) {
-        std::array<char, 128> text{};
+    // Leave visibility: the flat budget for the burst, THEN first-seen (slot, ret-class)
+    // keys - a new bail class or a new slot can never be silenced by an exhausted budget
+    // (the p2-164 lesson: 898 calls, 24 logged, the entire peer era invisible).
+    bool leaveVisible = detail;
+    const unsigned leaveClass = classify_ret(result);
+    if (!leaveVisible && kTargets[Index].first_seen_leave) {
+        const std::uint64_t leaveKey =
+            (reinterpret_cast<std::uint64_t>(rdx) << 4U)
+            | static_cast<std::uint64_t>(leaveClass);
+        leaveVisible = leave_key_first_seen(Index, leaveKey);
+    }
+    if (leaveVisible) {
+        std::array<char, 160> text{};
         const int written = std::snprintf(text.data(), text.size(),
-                                          "ev=mtrace stage=leave fn=%s call=%llu ret=0x%llX",
+                                          "ev=mtrace stage=leave fn=%s call=%llu ret=0x%llX "
+                                          "slot=0x%llX retcls=%u%s",
                                           kTargets[Index].name,
                                           static_cast<unsigned long long>(call),
-                                          static_cast<unsigned long long>(result));
+                                          static_cast<unsigned long long>(result),
+                                          reinterpret_cast<unsigned long long>(rdx),
+                                          leaveClass,
+                                          detail ? "" : " note=first-seen-key");
         if (written > 0) {
             emit(text.data(), static_cast<std::size_t>(written));
         }

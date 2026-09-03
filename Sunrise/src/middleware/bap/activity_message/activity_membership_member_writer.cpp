@@ -90,13 +90,20 @@ flagged(std::uint32_t flags, std::uint32_t group, std::uint32_t set) noexcept {
  * Writes the present fields of the nested player identity block.
  * @param writer Fixed-buffer writer sitting at identity field zero.
  * @param identity Values mirrored from the client identity update.
- * @return True when fields 3, 5 and 14 and all presence bits fit.
+ * @param transportIdentity The 86-byte transport identity (schema field 10, node
+ *        0x80807C82 - the field the client's admission sweep compares against each
+ *        reservation record; FINDINGS 20.280). Written only when `transportPresent`.
+ * @param transportPresent True when field 10 publishes its 86-byte payload.
+ * @return True when the present fields and all presence bits fit.
  */
 [[nodiscard]] bool write_player_identity(encoding::bits::Writer& writer,
                                          const client_identity::ClientIdentity& identity,
-                                         const std::uint32_t flags) noexcept {
+                                         const std::uint32_t flags,
+                                         const std::byte* transportIdentity = nullptr,
+                                         bool transportPresent = false) noexcept {
     for (std::size_t field = 0; field < kIdentityPresenceFieldCount; ++field) {
-        const bool present = field == 3 || field == 5 || field == 14;
+        const bool present = field == 3 || field == 5 || field == 14
+                             || (field == 10 && transportPresent);
         if (!writer.write(present ? 1U : 0U, 1)) {
             return false;
         }
@@ -105,6 +112,16 @@ flagged(std::uint32_t flags, std::uint32_t group, std::uint32_t set) noexcept {
         }
         if (field == 5 && !writer.write(identity.field5, 64)) {
             return false;
+        }
+        if (field == 10 && transportPresent && transportIdentity != nullptr) {
+            // Byte arrays on this plane ride in array order, each byte MSB-first - the same
+            // packing write_member_key uses and the peer-contact encoder documents: the
+            // client's array reader copies the bytes in order.
+            for (std::size_t byte = 0; byte < 86; ++byte) {
+                if (!writer.write(std::to_integer<std::uint8_t>(transportIdentity[byte]), 8)) {
+                    return false;
+                }
+            }
         }
         if (field == 14
             && (!writer.write(kPlayerBlobByteCount, 14)
@@ -118,7 +135,9 @@ flagged(std::uint32_t flags, std::uint32_t group, std::uint32_t set) noexcept {
 /** Writes the populated row for one member, then its trailing state bits. */
 [[nodiscard]] bool write_member_row(encoding::bits::Writer& writer,
                                     const client_identity::ClientIdentity& identity,
-                                    const std::uint32_t flags) noexcept {
+                                    const std::uint32_t flags,
+                                    const std::byte* transportIdentity = nullptr,
+                                    bool transportPresent = false) noexcept {
     const std::uint32_t field1Wire = std::bit_cast<std::uint32_t>(identity.field1) + kField1Bias;
     const std::uint32_t field2Wire = std::bit_cast<std::uint32_t>(identity.field2) + kField2Bias;
     // The trailing 3+1+5 bits mirror the local row: presence of the nested block's tail, a
@@ -129,7 +148,7 @@ flagged(std::uint32_t flags, std::uint32_t group, std::uint32_t set) noexcept {
            && writer.write(identity.field3, 64) && writer.write(identity.accountSoid, 64)
            && writer.write(identity.field5, 64) && writer.write(identity.field6, 64)
            && writer.write(1, 1) && writer.write(1, 1)
-           && write_player_identity(writer, identity, flags)
+           && write_player_identity(writer, identity, flags, transportIdentity, transportPresent)
            && writer.write(flagged(flags, kRowFlagTrailingTriple, 7U), 3)
            && writer.write(1, 1) && writer.write(kLeaveReasonWire, 5);
 }
@@ -148,19 +167,26 @@ bool write_member_table(encoding::bits::Writer& writer,
                         const client_identity::ClientIdentity& identity,
                         const client_identity::ClientIdentity& peer,
                         bool peerPresent,
-                        const std::uint32_t peerRowFlags) noexcept {
-    // The LOCAL row always encodes with flags == 0: only the peer row is under test, and
-    // changing what the client is told about itself is a different experiment.
+                        const std::uint32_t peerRowFlags,
+                        const std::byte* peerTransportIdentity,
+                        bool peerTransportIdentityPresent) noexcept {
+    // The LOCAL row always encodes with flags == 0 and no transport identity: only the peer
+    // row is under test, and changing what the client is told about itself is a different
+    // experiment.
     bool encoded = writer.bit_count() == kMemberStartBit && write_member_row(writer, identity, 0U);
     if (encoded && peerPresent) {
-        encoded = write_member_row(writer, peer, peerRowFlags);
+        encoded = write_member_row(writer, peer, peerRowFlags, peerTransportIdentity,
+                                   peerTransportIdentityPresent);
     }
     for (std::size_t member = peerPresent ? 2 : 1; encoded && member < kMemberCount; ++member) {
         encoded = writer.write(0, kAbsentMemberBitCount);
     }
-    return encoded && writer.bit_count() + 1 == kRegionBlockStartBit + (peerPresent
-                                                                            ? kPeerRowExtraBits
-                                                                            : 0);
+    return encoded && writer.bit_count() + 1 == kRegionBlockStartBit
+               + (peerPresent
+                      ? kPeerRowExtraBits + (peerTransportIdentityPresent
+                                                 ? kPeerTransportIdentityBits
+                                                 : std::size_t{0})
+                      : std::size_t{0});
 }
 
 } // namespace sunrise::middleware::bap::activity_message::replicate_membership

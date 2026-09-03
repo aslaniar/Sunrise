@@ -14,6 +14,13 @@ namespace sunrise::middleware::bap::activity_message::replicate_membership {
 /** Membership snapshots use activity message type 12. */
 inline constexpr std::uint32_t kMessageType = 12;
 /**
+ * The peer row's transport identity (schema field 10 of the nested player-identity block,
+ * node 0x80807C82): 86 bytes. Declared before the struct because the struct's own constexpr
+ * size functions use it - inside a member function, unqualified lookup finds the data
+ * member `peerTransportIdentity` before any namespace name.
+ */
+inline constexpr std::size_t kPeerTransportIdentityBits = 86U * 8U;
+/**
  * One local player plus a reflected host is 30,032 meaningful bits.
  *
  * Was 29,968 through p2(46). The client's own schema for type 12 (packed key 0x808086A8,
@@ -91,6 +98,17 @@ struct MembershipSnapshot final {
      */
     std::uint32_t peerRowFlags{};
     /**
+     * The PEER row's transport identity: the nested player-identity block's schema field 10
+     * (an 86-byte byte array, node 0x80807C82 - FINDINGS 20.280), the field the client's
+     * admission sweep compares against each reservation record to decide which records stay
+     * claimed. Content = the peer's advertised NetAddr blob, byte exact - the same bytes the
+     * client composes the reservation record's identity from, so card and record match by
+     * construction. Absent reproduces every body this encoder has ever produced; present the
+     * body carries +688 bits and every later field shifts.
+     */
+    std::array<std::byte, 86> peerTransportIdentity{};
+    bool peerTransportIdentityPresent{};
+    /**
      * INSTRUMENT (Track 1): override for the first trailing 32-bit field, zero meaning
      * "keep the historical value". With ONE member a slot MASK and a member COUNT are the
      * same number (1), which is why the two readings were indistinguishable for months;
@@ -138,6 +156,9 @@ meaningful_bit_count(const MembershipSnapshot& snapshot) noexcept {
     std::size_t bits = kMeaningfulBitCount;
     if (snapshot.peerPresent) {
         bits += kPeerRowExtraBits;
+        if (snapshot.peerTransportIdentityPresent) {
+            bits += kPeerTransportIdentityBits;
+        }
     }
     bits += advertisement_count(snapshot) * kDescriptorBitCount;
     return bits;
@@ -170,8 +191,12 @@ inline constexpr std::size_t kRegionBlockEndBit = 29'899;
 /** @return Bit at which the region block starts for one snapshot. */
 [[nodiscard]] constexpr std::size_t
 region_block_start_bit(const MembershipSnapshot& snapshot) noexcept {
-    return snapshot.peerPresent ? kRegionBlockStartBit + kPeerRowExtraBits
-                                : kRegionBlockStartBit;
+    std::size_t bits = snapshot.peerPresent ? kRegionBlockStartBit + kPeerRowExtraBits
+                                            : kRegionBlockStartBit;
+    if (snapshot.peerPresent && snapshot.peerTransportIdentityPresent) {
+        bits += kPeerTransportIdentityBits;
+    }
+    return bits;
 }
 
 /** @return Bit at which the region block ends for one snapshot. */
@@ -180,6 +205,9 @@ region_block_end_bit(const MembershipSnapshot& snapshot) noexcept {
     std::size_t bits = kRegionBlockEndBit;
     if (snapshot.peerPresent) {
         bits += kPeerRowExtraBits;
+        if (snapshot.peerTransportIdentityPresent) {
+            bits += kPeerTransportIdentityBits;
+        }
     }
     bits += advertisement_count(snapshot) * kDescriptorBitCount;
     return bits;
@@ -195,13 +223,19 @@ region_block_end_bit(const MembershipSnapshot& snapshot) noexcept {
  * @param peer The other joined session's identity; occupies slot 1 when present.
  * @param peerPresent True when a peer row is published this revision.
  * @param peerRowFlags Zero-valued bit groups of the PEER row to publish as ones.
+ * @param peerTransportIdentity The peer row's 86-byte transport identity (schema field 10).
+ *        Read only when `peerTransportIdentityPresent`.
+ * @param peerTransportIdentityPresent True when the peer row publishes the transport
+ *        identity (+688 bits; the local row never carries it).
  * @return True when the writer reaches the region-block presence bit.
  */
 [[nodiscard]] bool write_member_table(encoding::bits::Writer& writer,
                                       const client_identity::ClientIdentity& identity,
                                       const client_identity::ClientIdentity& peer,
                                       bool peerPresent,
-                                      std::uint32_t peerRowFlags = 0) noexcept;
+                                      std::uint32_t peerRowFlags = 0,
+                                      const std::byte* peerTransportIdentity = nullptr,
+                                      bool peerTransportIdentityPresent = false) noexcept;
 
 /**
  * Writes all 64 state-zero regions and the host-present tail.

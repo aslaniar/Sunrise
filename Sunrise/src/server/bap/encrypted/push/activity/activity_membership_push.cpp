@@ -8,6 +8,7 @@
 #include <cstdio>
 
 #include "../../../../../middleware/bap/activity_message/replicate_membership.h"
+#include "../../../../../middleware/gameplay/descriptor/join_descriptor.h"
 #include "../../../../../middleware/secure_channel/runtime.h"
 #include "../../../../../core/logging/log.h"
 #include "../../../../gameplay/gameplay_advertisement.h"
@@ -23,6 +24,7 @@ namespace sunrise::server::bap::encrypted::push::activity {
 namespace {
 
 namespace message = middleware::bap::activity_message::replicate_membership;
+namespace descriptor = middleware::gameplay::descriptor;
 
 /** The one published member always occupies slot zero of both top-level masks. */
 constexpr std::uint8_t kLocalMemberSlot = 0;
@@ -320,6 +322,49 @@ make_wire_snapshot(std::uint64_t sessionId,
         // and emitted 128 zero bytes there, and the body then failed to encode (FINDINGS 20.78
         // defect 2). Never second-guess a builder that clears its output on failure.
         wire.peerCitizen = peerCitizen;
+        // The peer row's transport identity (schema field 10, the 86-byte array the client's
+        // admission sweep compares against each reservation record - FINDINGS 20.277-20.280).
+        // Source: the peer's own join endpoint, recovered from the advertisement descriptor
+        // this body already carries, then re-composed as the exact NetAddr blob the client
+        // builds the reservation identity from - card and record match by construction.
+        // Settings-gated: off reproduces every body this fork has ever sent.
+        const char* transportResult = "off";
+        std::uint32_t transportAddress = 0;
+        std::uint16_t transportPort = 0;
+        if (serverSettings.membershipPeerTransportIdentity) {
+            descriptor::JoinReading reading{};
+            if (!peerCitizen.present) {
+                transportResult = "no_descriptor";
+            } else {
+                // read() fills the endpoint regardless of its verdict; the verdict only says
+                // whether the descriptor reads as a routable direct-path endpoint - say which.
+                const bool routable = descriptor::read(peerCitizen.descriptor, reading);
+                transportAddress = reading.endpoint.address;
+                transportPort = reading.endpoint.port;
+                descriptor::write_net_addr(reading.endpoint.address, reading.endpoint.port,
+                                           wire.peerTransportIdentity);
+                wire.peerTransportIdentityPresent = true;
+                transportResult = routable ? "built" : "read_rejected";
+            }
+        }
+        // Fail-loud either way: a peer row whose transport identity did not go out is
+        // unattributable from the client side alone (the sweep will disown the record and
+        // nothing else will say why). Fires on every peer-bearing body, like peer_advert.
+        {
+            std::array<char, 160> transportLine{};
+            const int transportWritten = std::snprintf(
+                transportLine.data(), transportLine.size(),
+                "ev=activity stage=peer_transport_identity result=%s present=%d addr=%u port=%u",
+                transportResult,
+                wire.peerTransportIdentityPresent ? 1 : 0,
+                static_cast<unsigned>(transportAddress),
+                static_cast<unsigned>(transportPort));
+            if (transportWritten > 0) {
+                core::log::write(core::log::Channel::server,
+                                 core::log::Level::info,
+                                 {transportLine.data(), static_cast<std::size_t>(transportWritten)});
+            }
+        }
         // Zero-valued peer-row bit groups published as ones, per settings. Default 0 sends
         // exactly the body this fork has always sent; the mask exists so a positive result
         // can be bisected without a rebuild between rounds.

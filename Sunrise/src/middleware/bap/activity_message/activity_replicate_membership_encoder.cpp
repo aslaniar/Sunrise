@@ -43,11 +43,16 @@ bool encode_replicate_membership(const MembershipSnapshot& snapshot,
     const std::uint32_t fourth =
         snapshot.trailingFourth != 0 ? snapshot.trailingFourth : historical;
     encoding::bits::Writer writer(output.first(size));
-    const bool encoded = writer.write(1, 1) && writer.write(snapshot.revision, 32)
-                         && writer.write(snapshot.epoch, 32)
-                         && write_member_table(writer, snapshot.identity, snapshot.peer,
-                                               snapshot.peerPresent, snapshot.peerRowFlags)
-                         && writer.write(1, 1) && write_region_block(writer, snapshot)
+    const bool encoded =
+        writer.write(1, 1) && writer.write(snapshot.revision, 32)
+        && writer.write(snapshot.epoch, 32)
+        && write_member_table(writer, snapshot.identity, snapshot.peer, snapshot.peerPresent,
+                              snapshot.peerRowFlags,
+                              snapshot.peerTransportIdentityPresent
+                                  ? snapshot.peerTransportIdentity.data()
+                                  : nullptr,
+                              snapshot.peerTransportIdentityPresent)
+        && writer.write(1, 1) && write_region_block(writer, snapshot)
                          && writer.write(1, 1) && writer.write(first, 32) && writer.write(1, 1)
                          && writer.write(second, 32) && writer.write(1, 1)
                          && writer.write(third, 32) && writer.write(1, 1)

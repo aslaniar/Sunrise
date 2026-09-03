@@ -106,6 +106,7 @@ bool Parser::server_settings(server::Settings& output) noexcept {
     bool hasMembershipSweepPin = false;
     bool hasMembershipPeerRetryCap = false;
     bool hasMembershipPeerRowFlags = false;
+    bool hasMembershipPeerTransportIdentity = false;
     bool hasPublishPlayerProfile = false;
     bool hasGameplay = false;
     bool hasActivation = false;
@@ -316,6 +317,11 @@ bool Parser::server_settings(server::Settings& output) noexcept {
             }
             output.membershipPeerRowFlags = static_cast<std::uint32_t>(value);
             hasMembershipPeerRowFlags = true;
+        } else if (key == "membership_peer_transport_identity") {
+            if (hasMembershipPeerTransportIdentity || !boolean(output.membershipPeerTransportIdentity)) {
+                return false;
+            }
+            hasMembershipPeerTransportIdentity = true;
         } else if (key == "publish_player_profile") {
             if (hasPublishPlayerProfile || !boolean(output.publishPlayerProfile)) {
                 return false;

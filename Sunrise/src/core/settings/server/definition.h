@@ -148,6 +148,23 @@ struct Settings {
      */
     std::uint32_t membershipPeerRowFlags{0};
     /**
+     * Publishes the PEER member row's transport-identity field (the nested player-identity
+     * block's 86-byte array - the field the client's admission sweep compares against each
+     * reservation record to decide which records stay claimed; FINDINGS 20.277-20.280).
+     *
+     * With the field absent the client's participant-slot identity card stays blank, so the
+     * sweep disowns the peer's connection record (mask bit cleared the moment the membership
+     * lands) and the blank slot cards match the blank placeholder record instead. The content
+     * is the peer's advertised NetAddr blob, byte exact - the same 86 bytes this fork already
+     * publishes in the peer's join descriptor, which is what the client composes the
+     * reservation record's identity from, so card and record match by construction.
+     *
+     * UNLIKE membership_peer_row_flags this is NOT size-preserving: present the body carries
+     * +688 bits and every later field shifts (the encoder's size functions account for it).
+     * The off path is byte-identical to every body this fork has ever sent. Default false.
+     */
+    bool membershipPeerTransportIdentity{false};
+    /**
      * Publish a minimal player profile block on every player row of a membership snapshot
      * instead of the absent flag (FINDINGS 20.177 RESULT 5). The block is the decoder-correct
      * minimum: an empty profile that sets the client's profile-present state without identity
