@@ -1371,10 +1371,18 @@ void emit_ptable(std::size_t index, const char* fn, std::uint64_t call,
         const bool condA = ((maskA >> i) & 1U) != 0U;   // cond 3
         const bool condN = nextByte == 0U;              // cond 4 (0x1404DF600 false)
         const bool condG = ((gateByte >> 4) & 1U) != 0U;// cond 5 (0x1404DD470 true)
+        // NOT "would-construct" - that label was wrong and cost nothing only because the
+        // gate never opened (20.285). Reaching the guard CLAIMS: ent_gate 0x141703910 hands
+        // the card at slot+0x142 to the find-or-create path (0x1417c40f0 -> 0x1417cf0e0),
+        // and THAT side effect is what stops the admission sweep disowning the record. The
+        // guard's RETURN value goes nowhere else: it is AND-ed into one accumulator whose
+        // only consumer, at loop end, is a stack-built diagnostic string (0x1404fb380
+        // formats two `Y`/`N` flags through the 0x140092e50 formatter). So a passing gate
+        // constructs NOTHING by itself - it performs the claim and reports a boolean.
         const char* verdict = !condA ? "FAIL-cond3-maskA-bit-clear"
                             : !condN ? "FAIL-cond4-next-record-byte-nonzero"
                             : !condG ? "FAIL-cond5-bit4-of-+0x38-clear"
-                                     : "ALL-PASS-would-construct";
+                                     : "ALL-PASS-would-claim";
         std::array<char, 288> t{};
         const int w = std::snprintf(t.data(), t.size(),
             "ev=mtrace stage=pgate fn=%s call=%llu i=%u self=%d rec8=0x%llX maskA_bit=%u "
