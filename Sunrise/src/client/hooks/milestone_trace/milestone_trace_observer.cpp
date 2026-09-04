@@ -694,6 +694,12 @@ std::atomic<unsigned> g_pubrestPeerDumped{0};
  * or re-ordered view fails the anchor instead of consuming the shot.
  */
 std::atomic<std::uint64_t> g_pubrestLocalIdentity{0};
+/** Bit indices the guard requires in the record's +0x3112 word (container-at-creation + 6).
+ *  TWO slots, not one: the mac pinned 6 AND 7 in p2-170 - two containers wanting different
+ *  bits - and a single global would have reported whichever fired last, silently answering
+ *  W2 for the wrong container. Which requirement applies to which record is not knowable at
+ *  the reservation dump, so it reports BOTH and lets the reader see it. */
+std::array<std::atomic<std::uint32_t>, 2> g_gatebitRequired{};
 /** Per-phase novelty state for pubrest (enter and leave tracked independently). */
 std::array<std::atomic<std::uint64_t>, kTargets.size()> g_pubrestLastEnter{};
 std::array<std::atomic<std::uint64_t>, kTargets.size()> g_pubrestLastLeave{};
@@ -751,7 +757,22 @@ void emit_gatebit(std::size_t index, const char* fn, std::uint64_t call,
         *static_cast<const std::uint32_t*>(at(containerA, 8));
     const std::uint64_t bit =
         static_cast<std::uint64_t>(static_cast<std::int32_t>(containerValue) + 6);
-    if (!probe_changed(index, bit)) {
+    // PUBLISHED so resv_rec can say, in its own line, whether the REQUIRED bit is set.
+    // Until now W2 could only be answered by cross-referencing this probe's bitreq against
+    // resv_rec's `mask` and remembering 20.279's "bit 7/6, not 5" - three places, and it
+    // was misread in-session more than once. One probe should answer one question.
+    {
+        const auto want = static_cast<std::uint32_t>(bit);
+        for (auto& slot : g_gatebitRequired) {
+            const std::uint32_t have = slot.load(std::memory_order_relaxed);
+            if (have == want) { break; }
+            if (have == 0U) { slot.store(want, std::memory_order_relaxed); break; }
+        }
+    }
+    // Change-gated on the CONTAINER too, not just the derived bit: two containers that want
+    // the same bit are two different evaluations, and collapsing them hid the peer's.
+    const std::uint64_t sig = (reinterpret_cast<std::uint64_t>(containerA) << 8) ^ bit;
+    if (!probe_changed(index, sig)) {
         return;
     }
     std::array<char, 224> t{};
@@ -1463,8 +1484,30 @@ void emit_pubrest(std::size_t index, const char* fn, const char* when, std::uint
         return;
     }
     const auto staging = arg1 + 0x80U;
-    const bool restore = gate_wwatch::is_armed_table(staging);
-    const bool publish = !restore && gate_wwatch::is_armed_table(arg3);
+    // ORDERING FIX (20.286). The registry this classifies against is filled by the ptable
+    // walk, which in p2-167 first ran at t=90284 - but the copier ran at t=81670 and
+    // t=86868. EVERY call was therefore classified `unknown` by construction, including
+    // call=1, whose src=0x1D3065B8 the SAME LOG later proves is a participant table. The
+    // instrument had the answer and could not recognise it.
+    //
+    // The seed: caller 0x4F78EC is the pool ctor's call site, and 20.253 R1 read its
+    // arguments directly - it passes `lea r8,[rsi+0x6C38]`, so at THAT call site arg3 IS
+    // the live table by construction, whatever the registry knows yet. Registering it there
+    // makes every later call classifiable, and makes the ctor call itself a known publish.
+    // NOT named *Rva: verify_hook_rvas asserts every k*Rva is a function START because it
+    // will be detoured, and this is a RETURN ADDRESS compared against, never a hook target.
+    // The gate flagged it when it was misnamed, and its report is the confirmation this
+    // value is right: "FRAGMENT offset=0x11c of 0x1404f77d0" - inside the pool ctor, which
+    // is exactly the publish call site 20.253 R1 read (call at 0x1404F78E7, return +5).
+    constexpr std::uintptr_t kPoolCtorCallSite = 0x4F78EC;
+    if (callerRva == kPoolCtorCallSite && arg3 >= 0x1000U) {
+        gate_wwatch::arm_table(arg3, -1, -1);
+    }
+    const bool restore = gate_wwatch::is_armed_table(staging)
+                         || gate_wwatch::is_armed_table(arg1);
+    const bool publish = !restore
+                         && (gate_wwatch::is_armed_table(arg3)
+                             || callerRva == kPoolCtorCallSite);
     const char* role = restore ? "restore" : (publish ? "publish" : "unknown");
     const bool isEnter = (when[0] == 'e');
 
@@ -1843,6 +1886,11 @@ void emit_resvtable(std::size_t index, const char* fn, std::uint64_t call) noexc
         static_cast<unsigned long long>(base), nonzero,
         static_cast<unsigned long long>(fingerprint));
     if (w > 0) { emit(t.data(), static_cast<std::size_t>(w)); }
+    const std::uint32_t bitreqA = g_gatebitRequired[0].load(std::memory_order_relaxed);
+    const std::uint32_t bitreqB = g_gatebitRequired[1].load(std::memory_order_relaxed);
+    const auto bitSet = [](std::uint16_t word, std::uint32_t req) {
+        return req == 0U ? -1 : static_cast<int>((word >> (req & 0xFU)) & 1U);
+    };
     for (std::size_t r = 0; r < kRecordCount && w > 0; ++r) {
         if (states1[r] == 0U && states2[r] == 0U && idents[r] == 0U) {
             continue;
@@ -1850,9 +1898,17 @@ void emit_resvtable(std::size_t index, const char* fn, std::uint64_t call) noexc
         std::array<char, 224> rt{};
         w = std::snprintf(rt.data(), rt.size(),
             "ev=mtrace stage=resv_rec fn=%s call=%llu rec=%zu s30e8=%u s1dc0=%u "
-            "mask=0x%04X touch=%lld ident=0x%016llX",
+            "mask=0x%04X reqA=%u setA=%d reqB=%u setB=%d touch=%lld ident=0x%016llX",
             fn, static_cast<unsigned long long>(call), r,
             states1[r], states2[r], masks[r],
+            // W2, ANSWERED ON ONE LINE. `mask` IS the word the guard tests (kOffMask =
+            // 0x3112) and `bitreq` is the bit it demands, pinned by emit_gatebit. Reading
+            // W2 used to mean joining those two probes and remembering 20.279's "bit 7/6,
+            // not 5"; that got misread more than once in one session, including by me.
+            // req_set = -1 means the requirement has not been pinned yet this boot, which
+            // is NOT the same as the bit being clear - do not read -1 as a negative.
+            bitreqA, bitSet(masks[r], bitreqA),
+            bitreqB, bitSet(masks[r], bitreqB),
             static_cast<long long>(touch[r]),
             static_cast<unsigned long long>(idents[r]));
         if (w > 0) { emit(rt.data(), static_cast<std::size_t>(w)); }
