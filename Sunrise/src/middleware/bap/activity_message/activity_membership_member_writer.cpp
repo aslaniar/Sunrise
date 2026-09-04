@@ -24,7 +24,9 @@ constexpr std::uint32_t kField2Bias = 0x80000000U;
 /** A present local member carries a zero logical leave reason at bias 1. */
 constexpr std::uint8_t kLeaveReasonWire = 1;
 /** The nested identity block has presence bits on fields 0 through 14. */
-constexpr std::size_t kIdentityPresenceFieldCount = 15;
+// kIdentityPresenceFieldCount and kTransportIdentityFieldIndex are declared in
+// replicate_membership.h - same namespace, one definition - so the wire test navigates the
+// encoded body by the SAME index this writes at, and the two cannot drift apart.
 /** The minimal nested player blob is 18 bytes, including one zero pad bit. */
 constexpr std::uint16_t kPlayerBlobByteCount = 18;
 
@@ -90,10 +92,10 @@ flagged(std::uint32_t flags, std::uint32_t group, std::uint32_t set) noexcept {
  * Writes the present fields of the nested player identity block.
  * @param writer Fixed-buffer writer sitting at identity field zero.
  * @param identity Values mirrored from the client identity update.
- * @param transportIdentity The 86-byte transport identity (schema field 10, node
+ * @param transportIdentity The 86-byte transport identity (the guard's array, node
  *        0x80807C82 - the field the client's admission sweep compares against each
  *        reservation record; FINDINGS 20.280). Written only when `transportPresent`.
- * @param transportPresent True when field 10 publishes its 86-byte payload.
+ * @param transportPresent True when that array publishes its 86-byte payload.
  * @return True when the present fields and all presence bits fit.
  */
 [[nodiscard]] bool write_player_identity(encoding::bits::Writer& writer,
@@ -103,7 +105,7 @@ flagged(std::uint32_t flags, std::uint32_t group, std::uint32_t set) noexcept {
                                          bool transportPresent = false) noexcept {
     for (std::size_t field = 0; field < kIdentityPresenceFieldCount; ++field) {
         const bool present = field == 3 || field == 5 || field == 14
-                             || (field == 10 && transportPresent);
+                             || (field == kTransportIdentityFieldIndex && transportPresent);
         if (!writer.write(present ? 1U : 0U, 1)) {
             return false;
         }
@@ -113,7 +115,8 @@ flagged(std::uint32_t flags, std::uint32_t group, std::uint32_t set) noexcept {
         if (field == 5 && !writer.write(identity.field5, 64)) {
             return false;
         }
-        if (field == 10 && transportPresent && transportIdentity != nullptr) {
+        if (field == kTransportIdentityFieldIndex && transportPresent
+            && transportIdentity != nullptr) {
             // Byte arrays on this plane ride in array order, each byte MSB-first - the same
             // packing write_member_key uses and the peer-contact encoder documents: the
             // client's array reader copies the bytes in order.

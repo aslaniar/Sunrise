@@ -1274,13 +1274,37 @@ void emit_ptable(std::size_t index, const char* fn, std::uint64_t call,
                         slotBuf, sizeof(slotBuf))) {
                     continue;
                 }
+                // U6, THE PRE-NAMED NEGATIVE. This block has never run in a game process:
+                // the widened build was staged at 16:44:47 on 2026-09-03, six seconds AFTER
+                // the archive that was briefly mistaken for its boot, and the logs in that
+                // archive are p2-165's session still running the previous DLL. This SHORT
+                // line - the shape of the slot_card line that DOES emit - is what makes the
+                // first real run self-attributing: `begin` present with no hex lines blames
+                // the long-line path, `begin` absent blames the block, and neither costs a
+                // second launch to tell apart.
+                {
+                    std::array<char, 160> bt{};
+                    const int bw = std::snprintf(bt.data(), bt.size(),
+                        "ev=mtrace stage=slot_dump fn=%s call=%llu slot=%u result=begin chunks=3",
+                        fn, static_cast<unsigned long long>(call), i);
+                    if (bw > 0) { emit(bt.data(), static_cast<std::size_t>(bw)); }
+                }
                 for (std::size_t chunk = 0; chunk < 0x300; chunk += 0x100) {
-                    std::array<char, 640> ct{};
+                    // pubrestimg's proven shape: 1024 bytes and %llX. NOT a bug fix - the
+                    // old `%02zX` into 640 was REPLAYED on this exact toolchain
+                    // (x86_64-w64-mingw32-clang++) under this exact Wine and emitted all
+                    // three chunks correctly. This is hardening only: the wider buffer keeps
+                    // the line off the CRT's limit, and the loop guard below stops
+                    // `ct.size() - cw` from wrapping if the prefix ever does grow past it.
+                    std::array<char, 1024> ct{};
                     int cw = std::snprintf(ct.data(), ct.size(),
-                        "ev=mtrace stage=slot_dump fn=%s call=%llu slot=%u off=0x%02zX hex=",
-                        fn, static_cast<unsigned long long>(call), i, chunk);
-                    for (std::size_t b = 0; cw > 0 && b < 0x100; ++b) {
-                        cw += std::snprintf(ct.data() + cw, ct.size() - cw, "%02x",
+                        "ev=mtrace stage=slot_dump fn=%s call=%llu slot=%u off=0x%llX hex=",
+                        fn, static_cast<unsigned long long>(call), i,
+                        static_cast<unsigned long long>(chunk));
+                    for (std::size_t b = 0;
+                         cw > 0 && static_cast<std::size_t>(cw) < ct.size() && b < 0x100; ++b) {
+                        cw += std::snprintf(ct.data() + cw,
+                                            ct.size() - static_cast<std::size_t>(cw), "%02x",
                                             static_cast<unsigned>(slotBuf[chunk + b]));
                     }
                     if (cw > 0) { emit(ct.data(), static_cast<std::size_t>(cw)); }

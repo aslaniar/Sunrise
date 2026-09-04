@@ -181,6 +181,43 @@ meaningful_bit_count(const MembershipSnapshot& snapshot) noexcept {
                                                std::span<std::byte> output,
                                                std::size_t& written) noexcept;
 
+/** Presence-bit slots in the nested player identity block (indices 0..14). */
+inline constexpr std::size_t kIdentityPresenceFieldCount = 15;
+
+/**
+ * Presence index the peer row's 86-byte transport identity is written at.
+ *
+ * MEASURED, not assumed. p2-166 dumped each populated participant slot and found the
+ * endpoint bytes at slot offset 0xF4, on BOTH machines, while the field the admission guard
+ * compares (slot+0x142) stayed all zero. 0x142 - 0xEC = 0x56 = 86 exactly: the payload
+ * landed in the 86-byte array IMMEDIATELY BEFORE the guard's array, so the index was one
+ * too low. Index 10 decoded to slot+0xEC, so index 11 decodes to slot+0x142 - the guard's
+ * field (FINDINGS 20.280 arg4).
+ *
+ * PRE-NAMED NEGATIVE: bytes at slot+0x198 next boot means this is one too HIGH and the
+ * correction is this line. Bytes at 0xEC AGAIN means consecutive presence indices do not
+ * map to consecutive arrays in the client's decode, and the approach needs rework rather
+ * than another nudge.
+ *
+ * It lives here, not beside the writer, because the wire test navigates the encoded body
+ * RELATIVE to this index. Two copies of it silently disagree; one cannot.
+ */
+inline constexpr std::size_t kTransportIdentityFieldIndex = 11;
+
+/**
+ * Bits between the end of the transport identity and `region_block_start_bit`.
+ *
+ * Derived, never hand-counted: the region block's own presence bit, one presence bit for
+ * every identity field after the transport identity except the last, then field 14
+ * (presence + 14-bit count + 144-bit blob), the identity tail flag, the row trailer
+ * (3+1+5), and the 30 absent member slots at 3 bits each.
+ */
+[[nodiscard]] constexpr std::size_t bits_after_transport_identity() noexcept {
+    const std::size_t presenceBitsAfter =
+        kIdentityPresenceFieldCount - 2 - kTransportIdentityFieldIndex;
+    return 1 + presenceBitsAfter + (1 + 14 + 144) + 1 + (3 + 1 + 5) + (30 * 3);
+}
+
 /** The local member begins after root, revision, and epoch fields. */
 inline constexpr std::size_t kMemberStartBit = 65;
 /** The full identity shifts the region block to bit 835. */

@@ -108,6 +108,19 @@ struct SweepSlot final {
      * re-add the peer and start the storm again.
      */
     bool peerWithdrawn{};
+    /**
+     * Peer-bearing bodies published while the peer's transport identity was not yet
+     * knowable, i.e. the activity layer reached the peer row before the gameplay layer
+     * finished admitting that peer.
+     *
+     * MEASURED (p2-166): the two refusals landed at t=322333 and t=327344 while the rig's
+     * gameplay admission completed at t=333686 - the publisher ran six to eleven seconds
+     * ahead of the layer that owns the address, and the unacked cap withdrew the peer row
+     * before the address ever became available. These bodies are real and go out, so they
+     * must still be BOUNDED, but charging them to `unackedPeerBodies` spends the whole
+     * withdrawal budget on a condition that resolves itself.
+     */
+    std::uint64_t peerAddressWaits{};
 };
 
 /** What one peer-bearing body publishes, and what happens after it. */

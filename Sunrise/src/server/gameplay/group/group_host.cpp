@@ -1269,6 +1269,57 @@ void snapshot_admitted(std::span<AdmittedRow> output, std::size_t& count) noexce
     ReleaseSRWLockShared(&g_admittedLock);
 }
 
+/** Reports the byte-exact NetAddr blob one member sent for itself. */
+bool net_addr_for_member(std::uint64_t memberKey,
+                         std::array<std::byte, state::gameplay::kNetAddrBlobSize>& output,
+                         const char*& reason) noexcept {
+    // The measured relation (p2-166 and p2-167, both machines, four samples): the low 24 bits
+    // of the member key ARE the top 24 bits of the join request's machine id. The machine ids
+    // changed between boots while those 24 bits did not, so the relation is real rather than
+    // one boot's coincidence. Rows whose identity table never decoded carry machineId 0 and
+    // are skipped rather than matched against a zero key.
+    //
+    // DELIBERATELY NOT WIDENED. p2-167 saw the activity layer publish the peer row keyed by
+    // 0xD022E6013910CA03 - the rig's own MACHINE ID, not a member key - and this lookup
+    // refused it six times running. Accepting that form was written and then reverted: the
+    // shape appears in ONE boot only (p2-165/p2-166 show member keys exclusively) and only in
+    // the 26 s window before that client's transport reset. It is a symptom of a session
+    // already failing, so matching it would publish a peer card for a peer that is leaving.
+    // The refusal is the CORRECT outcome here; the open question is why the identity changed
+    // at all, and that is answered by reading the roster path, not by loosening this test.
+    const std::uint64_t wanted = memberKey & 0xFFFFFFULL;
+    std::size_t matches = 0;
+    std::uint64_t sessionId = 0;
+    state::gameplay::Endpoint endpoint{};
+    if (wanted != 0) {
+        AcquireSRWLockShared(&g_admittedLock);
+        for (const Admitted& entry : g_admitted) {
+            if (!entry.occupied || entry.machineId == 0
+                || (entry.machineId >> 40) != wanted) {
+                continue;
+            }
+            ++matches;
+            sessionId = entry.sessionId;
+            endpoint = entry.endpoint;
+        }
+        ReleaseSRWLockShared(&g_admittedLock);
+    }
+    if (matches != 1) {
+        reason = matches == 0 ? "no_admitted_row" : "ambiguous_member_key";
+        return false;
+    }
+    // The peer's own blob is echoed byte exact. A blob rebuilt from the endpoint it arrived from
+    // is NOT the same bytes - the same rule publish_snapshot follows, and the reason the client's
+    // 86-byte compare can match at all. The rebuild is the honest fallback, and it is named.
+    if (peer::remote_address(sessionId, endpoint, output)) {
+        reason = "echoed";
+        return true;
+    }
+    descriptor::write_net_addr(endpoint.address, endpoint.port, output);
+    reason = "rebuilt";
+    return true;
+}
+
 /** Clears every group-session record. */
 void reset() noexcept {
     g_membershipRevision.store(0);

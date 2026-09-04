@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -62,6 +63,28 @@ struct AdmittedRow {
 
 /** Copies every admitted group-session record. @param count Receives the copied row count. */
 void snapshot_admitted(std::span<AdmittedRow> output, std::size_t& count) noexcept;
+
+/**
+ * Reports the byte-exact NetAddr blob one member sent for ITSELF in its own connect request.
+ *
+ * Keyed by the activity member key, whose low 24 bits are the TOP 24 bits of the machine id the
+ * join request carried. That relation is measured, not assumed - p2-165 logged both halves for
+ * both machines and both match exactly (mac memberKey 0xE4BD4543DC3C74D5 <-> machine
+ * 0x3C74D501ECA34753, rig 0x846C8338F7D022E6 <-> 0xD022E60133B46B99). A 24-bit key can in
+ * principle name two rows, so an ambiguous match publishes NOTHING and says so: a wrong endpoint
+ * on this field is worse than an absent one, because the client's admission sweep would then
+ * disown a record that matched the wrong machine instead of leaving the field blank.
+ *
+ * @param memberKey Activity member key of the member whose own address is wanted.
+ * @param output Receives the 86-byte NetAddr blob only on success.
+ * @param reason Receives a stable tag for the outcome: `echoed`, `rebuilt`, `no_admitted_row`,
+ *               or `ambiguous_member_key`.
+ * @return True when `output` holds that member's address.
+ */
+[[nodiscard]] bool
+net_addr_for_member(std::uint64_t memberKey,
+                    std::array<std::byte, state::gameplay::kNetAddrBlobSize>& output,
+                    const char*& reason) noexcept;
 
 /**
  * Retries any publish the reliable queue refused, on a timer.

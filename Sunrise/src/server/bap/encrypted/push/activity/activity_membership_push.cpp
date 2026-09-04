@@ -5,7 +5,9 @@
 #include <Windows.h>
 
 #include <array>
+#include <cstddef>
 #include <cstdio>
+#include <string_view>
 
 #include "../../../../../middleware/bap/activity_message/replicate_membership.h"
 #include "../../../../../middleware/gameplay/descriptor/join_descriptor.h"
@@ -15,6 +17,7 @@
 #include "../../../../../state/activity/runtime.h"
 #include "../../../../../state/activity/membership/activity_membership_query.h"
 #include "../../../../../core/settings/settings.h"
+#include "../../../../gameplay/group/group_host.h"
 #include "../../../../gameplay/group/group_host_sessions.h"
 #include "activity_arrival.h"
 #include "membership_sweep.h"
@@ -22,6 +25,17 @@
 
 namespace sunrise::server::bap::encrypted::push::activity {
 namespace {
+
+/**
+ * Peer-bearing bodies that may go out while the peer's transport identity is still
+ * unknowable before they start counting against the withdrawal cap.
+ *
+ * SIZED FROM MEASUREMENT, not picked: p2-166's bodies were ~5 s apart and the gameplay
+ * admission landed 11 s after the first refusal, so three bodies would have covered that
+ * race with no margin. Eight gives roughly 40 s - comfortably past the observed race - and
+ * still terminates, which is the property the cap exists to preserve.
+ */
+constexpr std::uint64_t kPeerAddressWaitCap = 8;
 
 namespace message = middleware::bap::activity_message::replicate_membership;
 namespace descriptor = middleware::gameplay::descriptor;
@@ -324,41 +338,66 @@ make_wire_snapshot(std::uint64_t sessionId,
         wire.peerCitizen = peerCitizen;
         // The peer row's transport identity (schema field 10, the 86-byte array the client's
         // admission sweep compares against each reservation record - FINDINGS 20.277-20.280).
-        // Source: the peer's own join endpoint, recovered from the advertisement descriptor
-        // this body already carries, then re-composed as the exact NetAddr blob the client
-        // builds the reservation identity from - card and record match by construction.
+        //
+        // SOURCE: the PEER'S OWN captured NetAddr blob, echoed byte exact from the connect
+        // request that peer sent, located through group_host by the peer's member key.
+        //
+        // NOT the advertisement descriptor. p2-165 shipped that and it is wrong: the descriptor
+        // `build_advertisement` produces is the ACTIVITY-HOST endpoint for a region, not the
+        // peer's own transport endpoint, so both directions carried the SAME address. p2-165's
+        // server log has addr=3232235940 (192.168.1.164, the mac) on all six builds - including
+        // the body whose peer row named the RIG (key 0x846C8338F7D022E6) - so the mac was being
+        // told its peer lived at the mac's own endpoint. A card naming the wrong machine cannot
+        // match the reservation record no matter what the entry->slot compose hop does with it.
+        //
         // Settings-gated: off reproduces every body this fork has ever sent.
         const char* transportResult = "off";
-        std::uint32_t transportAddress = 0;
-        std::uint16_t transportPort = 0;
+        // TRANSIENT means "the address is not knowable YET", as opposed to a wrong key. The
+        // distinction drives the retry accounting below: waiting for the gameplay layer to
+        // finish admitting the peer must not spend the withdrawal budget, because that budget
+        // exists to stop a REFUSED body from repeating forever, and this body is not refused.
+        bool transportPending = false;
         if (serverSettings.membershipPeerTransportIdentity) {
-            descriptor::JoinReading reading{};
-            if (!peerCitizen.present) {
-                transportResult = "no_descriptor";
-            } else {
-                // read() fills the endpoint regardless of its verdict; the verdict only says
-                // whether the descriptor reads as a routable direct-path endpoint - say which.
-                const bool routable = descriptor::read(peerCitizen.descriptor, reading);
-                transportAddress = reading.endpoint.address;
-                transportPort = reading.endpoint.port;
-                descriptor::write_net_addr(reading.endpoint.address, reading.endpoint.port,
-                                           wire.peerTransportIdentity);
+            const char* addressReason = "";
+            if (server::gameplay::group::net_addr_for_member(peerIdentity.memberKey,
+                                                             wire.peerTransportIdentity,
+                                                             addressReason)) {
                 wire.peerTransportIdentityPresent = true;
-                transportResult = routable ? "built" : "read_rejected";
+                transportResult = addressReason;  // `echoed` or `rebuilt`
+            } else {
+                // Publish NOTHING rather than a guessed endpoint, and say which cause it was.
+                wire.peerTransportIdentity = {};
+                wire.peerTransportIdentityPresent = false;
+                transportResult = addressReason;  // `no_admitted_row` or `ambiguous_member_key`
+                // Only the missing-row case resolves on its own; a bad key never will.
+                transportPending = std::string_view(addressReason) == "no_admitted_row";
             }
         }
         // Fail-loud either way: a peer row whose transport identity did not go out is
         // unattributable from the client side alone (the sweep will disown the record and
         // nothing else will say why). Fires on every peer-bearing body, like peer_advert.
         {
-            std::array<char, 160> transportLine{};
+            // The card's OWN leading bytes, not a pair of scalars re-derived beside it: the
+            // blob is what goes on the wire, so the log has to be able to convict the blob.
+            // Bytes 0-3 are the address and 4-5 the port, in the NetAddr's own byte order -
+            // printed raw so a byte-order question is answerable from the log alone.
+            const auto card = [&wire](std::size_t i) {
+                return static_cast<unsigned>(
+                    std::to_integer<std::uint8_t>(wire.peerTransportIdentity[i]));
+            };
+            std::array<char, 224> transportLine{};
             const int transportWritten = std::snprintf(
                 transportLine.data(), transportLine.size(),
-                "ev=activity stage=peer_transport_identity result=%s present=%d addr=%u port=%u",
+                "ev=activity stage=peer_transport_identity result=%s present=%d "
+                "member=0x%016llX card=%02x%02x%02x%02x:%02x%02x waits=%llu/%llu",
                 transportResult,
                 wire.peerTransportIdentityPresent ? 1 : 0,
-                static_cast<unsigned>(transportAddress),
-                static_cast<unsigned>(transportPort));
+                static_cast<unsigned long long>(peerIdentity.memberKey),
+                card(0), card(1), card(2), card(3), card(4), card(5),
+                // Waits SPENT BEFORE this body: a run that ends with waits short of the cap
+                // means the race resolved, one that pins at the cap means it never did.
+                static_cast<unsigned long long>(retry != nullptr ? retry->peerAddressWaits : 0),
+                static_cast<unsigned long long>(kPeerAddressWaitCap));
             if (transportWritten > 0) {
                 core::log::write(core::log::Channel::server,
                                  core::log::Level::info,
@@ -375,7 +414,15 @@ make_wire_snapshot(std::uint64_t sessionId,
         wire.trailingThird = values.third;
         wire.trailingFourth = values.fourth;
         if (retry != nullptr) {
-            ++retry->unackedPeerBodies;
+            // A body sent while the peer's address is merely not-yet-knowable is charged to
+            // its own bounded counter, so the withdrawal cap still bounds REFUSALS while the
+            // admission race gets room to resolve. Past the wait cap the body is charged
+            // normally again: an admission that never lands must not publish forever.
+            if (transportPending && retry->peerAddressWaits < kPeerAddressWaitCap) {
+                ++retry->peerAddressWaits;
+            } else {
+                ++retry->unackedPeerBodies;
+            }
         }
     }
     {

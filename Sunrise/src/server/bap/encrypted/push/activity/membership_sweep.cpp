@@ -350,16 +350,15 @@ std::uint64_t check_wire_case(const char* label,
     }
 
     // Read the trailer back from where the region block ends.
-    // The transport identity is schema field 10 of the nested block - NOT the row's last
-    // payload. Between its end and `region_block_start_bit` sit: the region block's own
-    // presence bit (1), fields 11-13's presence bits (3), field 14 (presence 1 + 14-bit
-    // count + 144-bit blob = 159), the identity tail flag (1), the row trailer (3+1+5 = 9),
-    // and the 30 absent member slots (3 each = 90): 263 bits.
+    // The transport identity is NOT the row's last payload, so the reader walks BACKWARDS
+    // from `region_block_start_bit`. The distance is derived from the same presence index
+    // the writer uses (message::kTransportIdentityFieldIndex) rather than hand-counted, so
+    // moving the field cannot leave this test reading the old position and passing anyway -
+    // which is exactly what a hand-counted 263 did when the index moved from 10 to 11.
     if (transportIdentity) {
         bits::Reader identityReader{std::span<const std::byte>(gWireBuffer).first(written)};
-        const std::size_t afterField10Bits = 263;
         const std::size_t identityStartBit = message::region_block_start_bit(snapshot)
-                                             - afterField10Bits
+                                             - message::bits_after_transport_identity()
                                              - message::kPeerTransportIdentityBits;
         if (!identityReader.skip(identityStartBit)) {
             std::printf("ev=wire_test stage=check result=fail case=%s what=skip_to_identity\n",
