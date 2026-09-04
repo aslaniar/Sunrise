@@ -115,6 +115,18 @@ enum class Probe : std::uint8_t {
      *  only infer (bit 7 mac / 6 rig). Novelty-gated on the bit VALUE, so 898 evaluations
      *  cost a handful of lines and a mid-boot change of the required bit is loud. */
     gatebit,
+    /** THE CLAIM-SITE OBSERVER (20.287): the callee 0x1417C3480 is the claim entry - its
+     *  edx IS the container-derived bit that find-or-claim ORs into the record's birth
+     *  word. Logs (bit, caller RVA, rcx, r8 identity-blob pointer) novelty-gated on the
+     *  whole tuple, so the question "which path stamped bit 5 vs bit 6/7, for which
+     *  identity" is answered by direct observation instead of mask-flicker inference.
+     *  Enter-only, read-only. */
+    resvclaim,
+    /** THE IMAGE-ARRIVAL OBSERVER (20.288 R1): the callee 0x1403CB720 caches the
+     *  delivered image pointer at [rcx+0x10EB0]. Fed only by the descriptor handler, so
+     *  each firing IS an image arrival: object, image pointer, and the first 16 bytes
+     *  of the image as a fingerprint. Novelty-gated on the object pointer. Enter-only. */
+    imageset,
 };
 
 struct Target {
@@ -298,6 +310,19 @@ constexpr std::uintptr_t kRecGateByte = 0x38;         ///< cond 5: bit 4 of this
 constexpr unsigned kMaxParticipants = 32;
 constexpr std::uintptr_t kEntGateRva = 0x1703910;      ///< chain top; carries both predicates
 constexpr std::uintptr_t kResvLookupRva = 0x17C40F0;   ///< the reservation-table LOOKUP
+// THE CLAIM-SITE OBSERVER (20.287 R1/R2): the claim entry 0x1417C3480 receives the
+// container-derived bit in edx and the identity blob in r8; find-or-claim ORs
+// `1 << edx` into the record's birth word (0x1417c0ea6). Every prior boot inferred
+// WHICH path stamps WHICH bit from mask flicker; this names the stamping call
+// directly: bit + caller RVA + identity-blob pointer, novelty-gated so repeats
+// cost nothing. Read-only: edx/rcx/r8/r9 are arguments, nothing is dereferenced.
+constexpr std::uintptr_t kResvClaimRva = 0x17C3480;
+// THE IMAGE-ARRIVAL OBSERVER (20.287 R3 / 20.288 R1): the image-cache setter
+// 0x1403CB720 stores the delivered image pointer at [obj+0x10EB0] and is fed ONLY
+// by the dispatched descriptor handler 0x1416E73A0. Zero firings on our fork is the
+// pre-named negative "the fork never delivers the image"; one firing names the
+// object and hands us the image pointer. Read-only: rcx/rdx are arguments.
+constexpr std::uintptr_t kImageSetRva = 0x3CB720;
                                                        ///< (20.269 R1); also the reserve
                                                        ///< path's own lookup, so it runs
                                                        ///< without the poke. Its probe
@@ -457,7 +482,7 @@ constexpr std::uintptr_t kType30SchemaKeyPtr = 0x1FA42B8;
 /** The type-30 key is independently known; it is this instrument's self-test. */
 constexpr std::uint32_t kType30SchemaKeyOracle = 0x80808683;
 
-constexpr std::size_t kTargetsSize = 46;
+constexpr std::size_t kTargetsSize = 48;
 constexpr std::array<Target, kTargetsSize> kTargets{{
     // The entity receive cluster. 0x141718510 is the ENTRY and has ZERO static references
     // of any kind in the whole image (20.209) - its caller is the open question, so it gets
@@ -517,6 +542,10 @@ constexpr std::array<Target, kTargetsSize> kTargets{{
     // p2-147: the construction chain. Read top-down; the LAST one with calls>0 is the answer.
     {"ptable",        kPTableRva, 12, OutParam::none, false, Probe::ptable},
     {"ent_gate",      kEntGateRva, 24, OutParam::none, false, Probe::gatebit, 0, true},
+    // 20.288 R6: the two claim/arrival observers. Budgets are irrelevant - both probes
+    // novelty-gate themselves; the budgets only cap the generic enter lines.
+    {"resv_claim",   kResvClaimRva, 8, OutParam::none, false, Probe::resvclaim, 0, true},
+    {"image_set",    kImageSetRva, 8, OutParam::none, false, Probe::imageset, 0, true},
     // W2 (20.271 R5): the connection-ladder reader. Emits one line per whole-table state
     // CHANGE: every reservation record's two lifecycle states + identity prefix. Zero
     // writes into game memory; the accessor 0x1417CF0E0 is CALLED, not detoured.
@@ -798,6 +827,81 @@ void emit_gatebit(std::size_t index, const char* fn, std::uint64_t call,
     g_lastProbe[index].store(value, std::memory_order_relaxed);
     g_hasProbe[index].store(true, std::memory_order_relaxed);
     return true;
+}
+
+void emit_resvclaim(std::size_t index, const char* fn, std::uint64_t call,
+                    std::uint64_t rdx, std::uint64_t r8,
+                    std::uintptr_t callerRva) noexcept;
+void emit_imageset(std::size_t index, const char* fn, std::uint64_t call,
+                   std::uint64_t rcx, std::uint64_t rdx) noexcept;
+/** Defined with the first-seen-key state below; forward-declared for the probes. */
+[[nodiscard]] bool leave_key_first_seen(std::size_t index, std::uint64_t key) noexcept;
+
+/**
+ * THE CLAIM-SITE OBSERVER (20.287 R1): 0x1417C3480's edx IS the bit find-or-claim
+ * ORs into the record's birth word (0x1417c0ea6), and r8 is the 86-byte identity
+ * blob the claim matches against. One line per (blob pointer, bit) pair via the
+ * first-seen-key table - the disown/re-claim flicker repeats the SAME pair and must
+ * cost nothing, while a NEW pair (a live container's bit landing on any identity,
+ * or the peer's identity being claimed at all) is exactly the datum. The caller RVA
+ * separates the sweep's call site from the join-family sites (20.288 R4).
+ * Read-only: nothing is dereferenced; the blob VALUE is the handle the resv_rec /
+ * resv_ident lines correlate against.
+ */
+void emit_resvclaim(std::size_t index, const char* fn, std::uint64_t call,
+                    std::uint64_t rdx, std::uint64_t r8,
+                    std::uintptr_t callerRva) noexcept {
+    const auto bit = static_cast<std::uint32_t>(rdx & 0xFFFFFFFFULL);
+    const std::uint64_t key = (r8 << 8) ^ bit;
+    if (!leave_key_first_seen(index, key)) {
+        return;
+    }
+    std::array<char, 224> t{};
+    const int w = std::snprintf(t.data(), t.size(),
+        "ev=mtrace stage=resv_claim fn=%s call=%llu caller_rva=0x%llX bit=%u "
+        "blob=0x%llX first_seen=1",
+        fn, static_cast<unsigned long long>(call),
+        static_cast<unsigned long long>(callerRva),
+        static_cast<unsigned>(bit),
+        static_cast<unsigned long long>(r8));
+    if (w > 0) { emit(t.data(), static_cast<std::size_t>(w)); }
+}
+
+/**
+ * THE IMAGE-ARRIVAL OBSERVER (20.288 R1): 0x1403CB720 stores the delivered image
+ * pointer (rdx) at [rcx+0x10EB0] and is fed ONLY by the dispatched descriptor
+ * handler 0x1416E73A0, so a firing IS an image arrival. Keyed on (object, image)
+ * so a REFRESHED image for the same object is a new line, not silence. On the fork
+ * ZERO firings is the pre-named negative "the fork never delivers the image"; a
+ * firing names the object and hands the image pointer to the format lane.
+ * Read-only: the 16-byte fingerprint read is SEH-guarded.
+ */
+void emit_imageset(std::size_t index, const char* fn, std::uint64_t call,
+                   std::uint64_t rcx, std::uint64_t rdx) noexcept {
+    const std::uint64_t key = rcx ^ rdx;
+    if (!leave_key_first_seen(index, key)) {
+        return;
+    }
+    std::array<char, 320> t{};
+    int w = std::snprintf(t.data(), t.size(),
+        "ev=mtrace stage=image_set fn=%s call=%llu obj=0x%llX image=0x%llX fp=",
+        fn, static_cast<unsigned long long>(call),
+        static_cast<unsigned long long>(rcx),
+        static_cast<unsigned long long>(rdx));
+    if (w > 0 && rdx != 0ULL) {
+        std::uint8_t fp[16] = {};
+        if (gate_wwatch::safe_read(reinterpret_cast<const void*>(rdx), fp,
+                                   sizeof(fp))) {
+            for (std::size_t b = 0; b < sizeof(fp); ++b) {
+                w += std::snprintf(t.data() + w, t.size() - w, "%02x",
+                                   static_cast<unsigned>(fp[b]));
+            }
+        } else {
+            w += std::snprintf(t.data() + w, t.size() - w, "unreadable");
+        }
+        w += std::snprintf(t.data() + w, t.size() - w, " first_seen=1");
+        emit(t.data(), static_cast<std::size_t>(w));
+    }
 }
 
 /** Byte-offset helper so the field arithmetic below reads like the offset table. */
@@ -1939,13 +2043,21 @@ void emit_resvtable(std::size_t index, const char* fn, std::uint64_t call) noexc
 }
 
 void run_probe(std::size_t index, Probe probe, const char* fn, const char* when,
-               std::uint64_t call, const void* rcx) noexcept {
+               std::uint64_t call, const void* rcx, std::uint64_t rdx,
+               std::uint64_t r8, std::uintptr_t callerRva) noexcept {
     switch (probe) {
         case Probe::manager:
             emit_manager_probe(index, fn, when, call, rcx);
             break;
         case Probe::gatebit:
             emit_gatebit(index, fn, call, rcx);
+            break;
+        case Probe::resvclaim:
+            emit_resvclaim(index, fn, call, rdx, r8, callerRva);
+            break;
+        case Probe::imageset:
+            emit_imageset(index, fn, call,
+                          reinterpret_cast<std::uint64_t>(rcx), rdx);
             break;
         case Probe::alloc:
             emit_alloc_probe(fn, when, call, rcx);
@@ -2015,7 +2127,9 @@ std::uint64_t __fastcall observe(void* rcx, void* rdx, void* r8, void* r9,
     // cold path (single-digit to low-tens of calls per boot), and a budget-gated probe is
     // precisely how three earlier boots lost their answer to a cap spent by noise.
     if (siteMatch) {
-        run_probe(Index, kTargets[Index].probe, kTargets[Index].name, "enter", call, rcx);
+        run_probe(Index, kTargets[Index].probe, kTargets[Index].name, "enter", call, rcx,
+                  reinterpret_cast<std::uint64_t>(rdx),
+                  reinterpret_cast<std::uint64_t>(r8), callerRva);
         if (kTargets[Index].probe == Probe::stackargs
             || kTargets[Index].probe == Probe::gatebit) {
             emit_stackargs(kTargets[Index].name, call, a5, a6, a7, a8);
@@ -2066,7 +2180,9 @@ std::uint64_t __fastcall observe(void* rcx, void* rdx, void* r8, void* r9,
     // The LEAVE probe is what turns a snapshot into a measurement: `fill` either moved
     // supply into mgr+0xC118 across this call or it did not, and the delta says which.
     if (siteMatch) {
-        run_probe(Index, kTargets[Index].probe, kTargets[Index].name, "leave", call, rcx);
+        run_probe(Index, kTargets[Index].probe, kTargets[Index].name, "leave", call, rcx,
+                  reinterpret_cast<std::uint64_t>(rdx),
+                  reinterpret_cast<std::uint64_t>(r8), callerRva);
         if (kTargets[Index].probe == Probe::resvtable) {
             emit_resvtable(Index, kTargets[Index].name, call);
         }

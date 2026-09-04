@@ -159,6 +159,15 @@ struct Session {
      * must advance first. This flag remembers what the last shipped body contained.
      */
     bool activityPeerWasPublished{};
+    /**
+     * Keepalives since the last membership reseed on this link (FINDINGS 20.287/20.288).
+     * Counted only on the private activity link's own keepalive, inside the
+     * membership_reseed_interval gate; when it reaches the interval the membership
+     * snapshot is re-published under a fresh revision so the client's claim path
+     * re-fires under the current container state. Zero-initialized like every
+     * Session field, so the default setting (interval 0) never touches it.
+     */
+    std::uint32_t activityReseedCounter{};
     /** Latest shared-account generation this peer has received. */
     std::uint64_t accountGeneration{};
     /** Newest shared-account generation owed as a full cross-peer refresh. */

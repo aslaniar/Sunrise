@@ -372,6 +372,44 @@ bool consume_activity_keepalive(Session& session,
                          core::log::Level::info,
                          "ev=gameplay stage=membership result=republished reason=region");
     }
+    // membership_reseed_interval (FINDINGS 20.287/20.288): force a FRESH membership revision
+    // every Nth keepalive on this stable channel, so the client's claim path re-fires under
+    // the session's CURRENT container state. The peer's reservation record OR-accumulates
+    // the container bit at claim time; the membership landing is the one observed trigger
+    // that re-enters that path (20.280). republish() is the same primitive the region path
+    // uses to defeat the client's repeat-drop; acknowledged() is the same stability guard
+    // the region path uses, so an empty channel cannot advance revisions on every poll.
+    // Off-path (interval 0): this block never runs and every byte is unchanged.
+    {
+        const std::uint32_t reseedInterval =
+            core::settings::get().server.membershipReseedInterval;
+        if (reseedInterval != 0) {
+            if (session.activityReseedCounter
+                >= (std::numeric_limits<std::uint32_t>::max)() - 1U) {
+                session.activityReseedCounter = 0;
+            }
+            ++session.activityReseedCounter;
+            if (session.activityReseedCounter >= reseedInterval
+                && state::activity::membership::acknowledged(session.activitySessionId)
+                && state::activity::membership::republish(session.activitySessionId)) {
+                session.activityReseedCounter = 0;
+                std::array<char, 128> reseedLine{};
+                const int reseedWritten = std::snprintf(
+                    reseedLine.data(),
+                    reseedLine.size(),
+                    "ev=gameplay stage=membership_reseed result=republished "
+                    "interval=%u session=%llu",
+                    static_cast<unsigned>(reseedInterval),
+                    static_cast<unsigned long long>(session.activitySessionId));
+                if (reseedWritten > 0) {
+                    core::log::write(core::log::Channel::server,
+                                     core::log::Level::info,
+                                     {reseedLine.data(),
+                                      static_cast<std::size_t>(reseedWritten)});
+                }
+            }
+        }
+    }
     // Membership only becomes publishable after the client sends its identity, so it joins the
     // keepalive instead of the join reply.
     state::activity::membership::PendingMutation refresh{};

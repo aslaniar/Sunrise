@@ -165,6 +165,25 @@ struct Settings {
      */
     bool membershipPeerTransportIdentity{false};
     /**
+     * Re-publishes the membership snapshot under a FRESH revision every Nth keepalive on
+     * each private activity link (0 = off, the default; the off path is byte-identical).
+     *
+     * WHY (FINDINGS 20.287/20.288): the client's claim path OR-accumulates the required
+     * container bit into a reservation record's word at claim time. The peer's record
+     * carries only the bit of whichever claim path first touched it (bit 5 = container
+     * -1), while the guard demands a live container's bit (6/7). A later claim under a
+     * live container would add the bit and satisfy the guard - the record accumulates.
+     * The membership landing is the one observed trigger that re-enters that claim path
+     * (20.280: membership t=328223 -> record birth t=328234), so re-delivering it under
+     * the session's CURRENT container state is the lever this boot measures.
+     *
+     * Uses the same republish() primitive the region path uses to defeat the client's
+     * repeat-drop (20.48); without the fresh revision the re-sent body is ignored.
+     * Armed only when the channel is stable (membership acknowledged), mirroring the
+     * region path's own guard, so an empty channel cannot advance revisions on every poll.
+     */
+    std::uint32_t membershipReseedInterval{0};
+    /**
      * Publish a minimal player profile block on every player row of a membership snapshot
      * instead of the absent flag (FINDINGS 20.177 RESULT 5). The block is the decoder-correct
      * minimum: an empty profile that sets the client's profile-present state without identity
