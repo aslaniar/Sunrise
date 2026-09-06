@@ -40,6 +40,10 @@ constexpr std::size_t kMemberMachineLengthOffset = 112;
 constexpr std::size_t kMemberMachineOffset = 120;
 /** Join id, member field 3. */
 constexpr std::size_t kMemberJoinIdOffset = 136;
+/** p2-186: the member's second identity (protobuf field 8, `idB`) - the true offset from
+ *  the descriptor copier's walk (the +152 landing, validated against every hash-validated
+ *  model offset and the 184 stride; p2-185's 144 was 8 bytes low). */
+constexpr std::size_t kMemberIdBOffset = 152;
 /** Element count of the repeated player-slot field, member field 10. */
 constexpr std::size_t kMemberPlayerCountOffset = 168;
 /** See kMemberPlayerCountOffset. */
@@ -312,6 +316,12 @@ void build_session_state(const MembershipUpdate& body, SessionState& output,
         write_integer(
             output, entry + kMemberMachineOffset, member.machineId, sizeof(std::uint64_t));
         write_integer(output, entry + kMemberJoinIdOffset, member.joinId, sizeof(std::uint64_t));
+        // p2-186: the member's idB (protobuf field 8) lands at entry+152 - derived from the
+        // descriptor copier's walk (0x1416E2350: field address = walker + entry[8] +
+        // entry[9] signed, advancing by size; walker starts at entry+8 - the walk matches
+        // every hash-validated model offset AND sums to the 184 stride exactly). p2-185's
+        // entry+144 was 8 bytes low, which diverged the state hash (outcome (c)).
+        write_integer(output, entry + kMemberIdBOffset, member.idB, sizeof(std::uint64_t));
         if (member.ownsPlayerSlot) {
             write_integer(output,
                           entry + kMemberPlayerCountOffset,

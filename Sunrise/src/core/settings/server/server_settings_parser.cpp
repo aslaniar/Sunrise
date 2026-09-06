@@ -107,7 +107,11 @@ bool Parser::server_settings(server::Settings& output) noexcept {
     bool hasMembershipPeerRetryCap = false;
     bool hasMembershipPeerRowFlags = false;
     bool hasMembershipPeerTransportIdentity = false;
+    bool hasMembershipPeerRearmAfterAcks = false;
+    bool hasMembershipPeerDutyCycleMs = false;
     bool hasMembershipReseedInterval = false;
+    bool hasMembershipSelfPeerRow = false;
+    bool hasMembershipRowCharacterOverride = false;
     bool hasPublishPlayerProfile = false;
     bool hasGameplay = false;
     bool hasActivation = false;
@@ -323,6 +327,22 @@ bool Parser::server_settings(server::Settings& output) noexcept {
                 return false;
             }
             hasMembershipPeerTransportIdentity = true;
+        } else if (key == "membership_peer_rearm_after_acks") {
+            std::uint64_t value = 0;
+            if (hasMembershipPeerRearmAfterAcks || !unsigned_integer(value)
+                || value > 0xFFFFFFFFULL) {
+                return false;
+            }
+            output.membershipPeerRearmAfterAcks = static_cast<std::uint32_t>(value);
+            hasMembershipPeerRearmAfterAcks = true;
+        } else if (key == "membership_peer_duty_cycle_ms") {
+            std::uint64_t value = 0;
+            if (hasMembershipPeerDutyCycleMs || !unsigned_integer(value)
+                || value > 0xFFFFFFFFULL) {
+                return false;
+            }
+            output.membershipPeerDutyCycleMs = static_cast<std::uint32_t>(value);
+            hasMembershipPeerDutyCycleMs = true;
         } else if (key == "membership_reseed_interval") {
             std::uint64_t value = 0;
             if (hasMembershipReseedInterval || !unsigned_integer(value)
@@ -331,6 +351,20 @@ bool Parser::server_settings(server::Settings& output) noexcept {
             }
             output.membershipReseedInterval = static_cast<std::uint32_t>(value);
             hasMembershipReseedInterval = true;
+        } else if (key == "membership_self_peer_row") {
+            if (hasMembershipSelfPeerRow || !boolean(output.membershipSelfPeerRow)) {
+                return false;
+            }
+            hasMembershipSelfPeerRow = true;
+        } else if (key == "membership_row_character_override") {
+            std::uint64_t value = 0;
+            // unsigned_value: JSON integer OR a quoted hex token ("0x9EAA...") - the soid
+            // is unwritable as a decimal literal without transcription risk.
+            if (hasMembershipRowCharacterOverride || !unsigned_value(value)) {
+                return false;
+            }
+            output.membershipRowCharacterOverride = value;
+            hasMembershipRowCharacterOverride = true;
         } else if (key == "publish_player_profile") {
             if (hasPublishPlayerProfile || !boolean(output.publishPlayerProfile)) {
                 return false;

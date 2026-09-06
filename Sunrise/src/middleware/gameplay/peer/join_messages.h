@@ -66,12 +66,22 @@ struct JoinRefuse {
 
 /**
  * One machine identity as the join request's identity table carries it.
- * MEASURED (p2-85 captures, FINDINGS 20.128): behind the admission prefix (211 bits in) the
- * table holds, in this order, an 8-bit entry tag (0x08 observed on both machines), a NetAddr
- * pair (32-bit address in network order, 16-bit port low byte first - the descriptor's own
- * grammar), four 6-byte placeholder groups, the SAME address and port again, and a machine
- * identity blob whose first qword differs per machine and is stable for the whole boot.
- * Both machines name their own address in the first entry, which is the decoder's self-check.
+ * MEASURED (p2-85 captures, FINDINGS 20.128): behind the admission prefix (211 bits
+ * from the BODY start, 237 from the container start) the table holds, in this order,
+ * an 8-bit entry tag (0x08 observed on both machines), a NetAddr pair (32-bit address
+ * in network order, 16-bit port low byte first - the descriptor's own grammar), four
+ * 6-byte placeholder groups, a SECOND NetAddr pair, and a machine identity blob whose
+ * first qword differs per machine and is stable for the whole boot.
+ *
+ * The TWO PAIRS LEGITIMATELY DIVERGE (p2-188, both machines' captures decoded
+ * offline): the mac's first pair names 192.168.1.164 - its address BEFORE the
+ * 2026-09-05 network move - while the second names the current 192.168.1.7; the
+ * rig's pairs agree because its address never changed. The client caches the
+ * address across network changes in the first pair. Requiring the pairs to be
+ * identical (the old rule) refused the mac's identity in TWO consecutive boots
+ * and starved the relay retarget of the mac's machine id. The decoder now returns
+ * both pairs; the consumer's self-check accepts EITHER pair matching the
+ * datagram's source.
  */
 struct JoinMachineIdentity {
     /** First entry's tag byte. 0x08 on every capture so far. */
@@ -80,6 +90,11 @@ struct JoinMachineIdentity {
     std::uint32_t address{};
     /** First entry's port, decoded low byte first (the descriptor's port grammar). */
     std::uint16_t port{};
+    /** The second pair's address. May differ from the first (p2-188: the mac's
+     *  cached pre-move address vs the current one). */
+    std::uint32_t address2{};
+    /** The second pair's port, same grammar as the first. */
+    std::uint16_t port2{};
     /** The identity blob's first qword, read low byte first like the descriptor's machineId. */
     std::uint64_t machineId{};
     /** The same 8 wire bytes read big-endian first, kept so a boot can disambiguate the order
@@ -91,8 +106,9 @@ struct JoinMachineIdentity {
  * Reads the machine identity table behind one admission prefix.
  * @param reader Reader positioned directly behind `read_join_request`'s prefix.
  * @param output Receives the decoded identity.
- * @return True when the tag, both NetAddr pairs, and the identity qword were present and
- *         mutually consistent (the repeated address and port equal the first pair).
+ * @return True when the tag, both NetAddr pairs, and the identity qword were present.
+ *         The pairs are NOT required to be equal (p2-188: the first pair may carry a
+ *         stale cached address); the consumer decides which pair is authoritative.
  */
 [[nodiscard]] bool read_join_machine_identity(encoding::bits::Reader& reader,
                                               JoinMachineIdentity& output) noexcept;

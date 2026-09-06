@@ -215,7 +215,12 @@ constexpr std::uint64_t kByteMask = 0xFF;
     if (!body.write_length_delimited(kMemberAddress, member.address)
         || !body.write_length_delimited(kMemberMachineId, machineId)
         || !body.write_varint(kMemberJoinId, member.joinId)
-        || !body.write_varint(kMemberIdB, kMemberIdEmpty)) {
+        // p2-186: field 8 carries the member's session-scope identity (the fork's sessionId) -
+        // landed at member-entry +152 by the copier walk; the session apply copies it into the
+        // session's identity blob, which the join gate's lookup compares against a join's own
+        // sessionId (the one-qword compare). p2-185 published it at the wrong MODEL offset and
+        // diverged the hash; the wire here was always the value's carrier.
+        || !body.write_varint(kMemberIdB, member.idB)) {
         return false;
     }
     if (member.ownsPlayerSlot && !body.write_varint(kMemberPlayerSlot, member.playerSlot)) {

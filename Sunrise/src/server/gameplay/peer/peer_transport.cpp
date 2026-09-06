@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdio>
@@ -20,6 +21,7 @@
 #include "../endpoint/gameplay_endpoint.h"
 #include "../gameplay_log.h"
 #include "../group/group_host.h"
+#include "../../../core/settings/settings.h"
 
 namespace sunrise::server::gameplay::peer {
 
@@ -81,9 +83,79 @@ std::array<gp::PeerLink, gp::kAssociationCapacity> g_peers;
 /** Channel ids this host hands out. The peer refuses one that does not increase. */
 std::uint32_t g_channelId{0};
 
+/**
+ * The join identity each connected peer's own join decoded, endpoint-keyed.
+ *
+ * The join lookup retarget (relayJoinTargetIdentity) retargets the relayed join's
+ * sessionId at a value the RECIPIENT's gate can match. Every client sends the fork
+ * its own type-0x0A join, so answer_join records the join's identity halves here;
+ * a peer that has not joined yet has no entry and its relayed copy stays verbatim.
+ * Entries are overwritten per endpoint on every re-join, so a stale row cannot
+ * survive a reconnect.
+ *
+ * ARM HISTORY (measured, p2-188b + p2-189):
+ * - arm 1, the join machine id (field6=0 activity identity): REFUTED - the gate's
+ *   6-slot lookup refused it and the join processor never ran.
+ * - arm 2, the recipient's real account key (field6!=0): the FALLBACK, not the
+ *   next move - the walked slots are not proven to hold it.
+ * - arm 3 (CURRENT): the recipient's CURRENT JOINID - the value under which its
+ *   own client binds its session. PROVEN inside the gate's walked records on
+ *   both machines (p2-189: binder2's stack args = the machine's own joinId,
+ *   binder ctx pointers = the walked slots, cof_soid granted that key index 2;
+ *   p2-187 census: key=joinId vs blob=joinId, match=1).
+ *
+ * The per-caller sesscmp triples at a refusal decide the next arm, not this
+ * table's contents; see the setting's comment for the full arm history.
+ */
+struct PeerJoinIdentity {
+    gp::Endpoint endpoint{};
+    std::uint64_t machineId{};
+    /** The joinId the peer's OWN join request carried - arm 3's retarget value. */
+    std::uint64_t joinId{};
+    bool present{};
+};
+std::array<PeerJoinIdentity, gp::kAssociationCapacity> g_peerJoinIdentities;
+
 /** @return True when both endpoints name the same address and port. */
 [[nodiscard]] bool same_endpoint(const gp::Endpoint& left, const gp::Endpoint& right) noexcept {
     return left.address == right.address && left.port == right.port;
+}
+
+/** Records one peer's decoded join identity (machine id + its own joinId). Callers hold no lock. */
+void remember_join_identity(const gp::Endpoint& from, std::uint64_t machineId,
+                            std::uint64_t joinId) noexcept {
+    if (machineId == 0 && joinId == 0) {
+        return;
+    }
+    AcquireSRWLockExclusive(&g_lock);
+    for (PeerJoinIdentity& entry : g_peerJoinIdentities) {
+        if (!entry.present || same_endpoint(entry.endpoint, from)) {
+            entry.endpoint = from;
+            entry.machineId = machineId;
+            entry.joinId = joinId;
+            entry.present = true;
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_lock);
+}
+
+/**
+ * @return The joinId one endpoint's OWN join request carried (arm 3's retarget
+ * value - the value under which that recipient's client binds its session), or
+ * zero when the peer has not joined. Callers hold no lock.
+ */
+[[nodiscard]] std::uint64_t peer_join_id(const gp::Endpoint& endpoint) noexcept {
+    AcquireSRWLockShared(&g_lock);
+    std::uint64_t joinId = 0;
+    for (const PeerJoinIdentity& entry : g_peerJoinIdentities) {
+        if (entry.present && same_endpoint(entry.endpoint, endpoint)) {
+            joinId = entry.joinId;
+            break;
+        }
+    }
+    ReleaseSRWLockShared(&g_lock);
+    return joinId;
 }
 
 /** @return Peer for one endpoint, or null. Callers already hold the lock. */
@@ -383,6 +455,12 @@ void answer_connect(const gp::Endpoint& from,
 void answer_join(const gp::Endpoint& from,
                  const wire::JoinRequest& request,
                  std::uint64_t machineId) noexcept {
+    // Record the sender's own join identity for the relay's lookup retarget before any
+    // admission decision: the identity is the peer's, not the admission's. The joinId
+    // half is arm 3's retarget value - the value under which the SENDER's client binds
+    // its own session (the value the sender's gate walk must match when a PEER's join
+    // is relayed back to it).
+    remember_join_identity(from, machineId, request.joinId);
     const std::uint64_t hostSession = endpoint::identity().onlineSessionId;
     wire::RefuseReason reason = wire::RefuseReason::notFound;
     if (wire::admit(request, hostSession, reason)) {
@@ -524,6 +602,195 @@ void capture_join_container(const gp::Endpoint& from,
 }
 
 /**
+ * Rewrites one relayed join container's sessionId field to the retarget value.
+ *
+ * Wire layout (peer_container.cpp + join_messages.cpp, all fixed widths):
+ *   marker(1) + header [follows(1) + id(6) + declaredSize(18)] = 26 bits, then the
+ *   admission prefix protocolVersion(16) + minimumBuild(32) + maximumBuild(32) +
+ *   executableType(3) = 83 bits, then the sessionId as eight 8-bit groups assembled
+ *   low byte first (read_raw_u64) - so the field's first bit sits at absolute bit 109.
+ * VERIFIED against the p2-182 capture: the fork's own admit decode of that container
+ * (session=0x7F7EAE4DD8A942DB join=0x338F19050FD86611) re-derives bit-exact from
+ * exactly this offset, and the prefix fields match line-for-line.
+ * Everything around the field is copied bit-exact; the value replaces the sender's
+ * session id, so the receiving client's join gate lookup can match a session its
+ * slots hold (see relayJoinTargetIdentity's comment for the arm the value comes from).
+ * @param containerPayload Whole decrypted container payload (marker .. terminator).
+ * @param machineId Retarget value, written low byte first like read_raw_u64 reads.
+ * @param output Buffer receiving the rewritten container.
+ * @return True when the container parsed and was rewritten. False leaves the output
+ *         untouched and the caller falls back to the verbatim forward.
+ */
+[[nodiscard]] bool rewrite_join_session_id(std::span<const std::byte> containerPayload,
+                                           std::uint64_t machineId,
+                                           std::span<std::byte> output) noexcept {
+    static constexpr std::uint8_t kMarkerWidth = 1;
+    static constexpr std::uint64_t kContainerMarker = 1;
+    static constexpr std::uint8_t kFollowsWidth = 1;
+    static constexpr std::uint8_t kIdWidth = 6;
+    static constexpr std::uint8_t kSizeWidth = 18;
+    static constexpr std::uint8_t kProtocolWidth = 16;
+    static constexpr std::uint8_t kBuildWidth = 32;
+    static constexpr std::uint8_t kExecutableWidth = 3;
+    static constexpr std::size_t kSessionIdBitOffset =
+        kMarkerWidth + kFollowsWidth + kIdWidth + kSizeWidth
+        + kProtocolWidth + 2 * kBuildWidth + kExecutableWidth;
+
+    bits::Reader reader(containerPayload);
+    std::uint64_t marker = 0;
+    std::uint64_t follows = 0;
+    std::uint64_t id = 0;
+    std::uint64_t declaredSize = 0;
+    if (!reader.read(kMarkerWidth, marker) || marker != kContainerMarker || !reader.read(kFollowsWidth, follows)
+        || follows == 0 || !reader.read(kIdWidth, id)
+        || id != static_cast<std::uint64_t>(wire::JoinId::request)
+        || !reader.read(kSizeWidth, declaredSize)
+        || !reader.skip(kProtocolWidth) || !reader.skip(kBuildWidth) || !reader.skip(kBuildWidth)
+        || !reader.skip(kExecutableWidth)) {
+        return false;
+    }
+
+    if (containerPayload.size() > output.size()) {
+        return false;
+    }
+    std::copy(containerPayload.begin(), containerPayload.end(), output.begin());
+    // The 64 sessionId bits ride low byte first (read_raw_u64's order), each byte
+    // most-significant-bit first in the stream - write_raw_u64's exact inverse.
+    for (std::size_t index = 0; index < 8; ++index) {
+        const unsigned char group = static_cast<unsigned char>((machineId >> (index * 8)) & 0xFFU);
+        for (std::size_t bit = 0; bit < 8; ++bit) {
+            const std::size_t position = kSessionIdBitOffset + index * 8 + bit;
+            const std::size_t byteIndex = position / 8;
+            const unsigned char mask = static_cast<unsigned char>(0x80U >> (position % 8));
+            const unsigned char byteValue = std::to_integer<unsigned char>(output[byteIndex]);
+            const unsigned char replacement = ((group >> (7 - bit)) & 1U) != 0
+                                                  ? static_cast<unsigned char>(byteValue | mask)
+                                                  : static_cast<unsigned char>(byteValue & ~mask);
+            output[byteIndex] = std::byte{replacement};
+        }
+    }
+    return true;
+}
+
+/**
+ * THE JOIN RELAY, re-targeted (p2-183; RE_output/claims/connection-layer-join-delivery.md):
+ * forwards one client's whole OOB join container to every OTHER connected peer as a
+ * STANDALONE CONTAINER DATAGRAM - the channel the join lives on in both directions.
+ * The client sends its own joins as OOB containers (this host receives them in
+ * consume_container as whole payloads), and the client's connection-layer switch
+ * 0x1416E0940 is reachable ONLY from the OOB container consumer 0x1416E2A90 - so the
+ * p2-181 reliable-queue delivery could never reach the join gate. Two defects, both
+ * fixed here: the channel (OOB datagram via send_transport, like connect-responses)
+ * and the declared size (the client's own header carries 1536; the old relay declared
+ * 6144, outside any registry range check).
+ *
+ * The sender's container is forwarded BYTE-VERBATIM: marker, message header
+ * (id 10, declared size 0x600), body and terminator are a client-authored join - the
+ * receiving client's OOB parse rebuilds its packet record from the same wire fields
+ * the original sender produced (instance nonce, the +0x10 session key the join gate
+ * 0x1416E0460 looks sessions up by). The per-link transport envelope (channel id,
+ * sequences, encryption) is added by send_transport, exactly as for the
+ * connect-responses this host already delivers and clients accept.
+ * @param from Peer endpoint the join arrived from (excluded from the relay).
+ * @param containerPayload Whole decrypted OOB container payload (marker .. terminator).
+ */
+void relay_join_body(const gp::Endpoint& from,
+                     std::span<const std::byte> containerPayload) noexcept {
+    if (containerPayload.empty()) {
+        report(core::log::Level::warn,
+               "ev=gameplay stage=join_relay result=skip reason=empty");
+        return;
+    }
+    /** The OOB gateway caps one container at 5120 bytes (peer_container.h); the observed
+     *  join container is ~149. Bound the relay at the capture bound - any join that fits
+     *  the client's own framing fits this. */
+    static constexpr std::size_t kRelayMaxBytes = kJoinCaptureBytes;
+    if (containerPayload.size() > kRelayMaxBytes) {
+        report(core::log::Level::warn,
+               "ev=gameplay stage=join_relay result=skip reason=size bytes=%zu",
+               containerPayload.size());
+        return;
+    }
+
+    // Collect targets under the lock; send outside it (send_transport writes and the
+    // 09-05 lesson keeps blocking calls out of held locks).
+    std::array<gp::Endpoint, gp::kAssociationCapacity> targets{};
+    std::size_t targetCount = 0;
+    {
+        AcquireSRWLockExclusive(&g_lock);
+        for (const gp::PeerLink& peer : g_peers) {
+            if (peer.stage == gp::PeerStage::absent || same_endpoint(peer.endpoint, from)) {
+                continue;
+            }
+            targets[targetCount++] = peer.endpoint;
+        }
+        ReleaseSRWLockExclusive(&g_lock);
+    }
+
+    unsigned sentPeers = 0;
+    unsigned retargeted = 0;
+    // THE RELAY CHANNEL (relayJoinEngineChannel, p2-191): the join gate walks the
+    // container of the packet's OWN connection ([ctx+0x28], disasm-verified). The
+    // dtls association's client-side container is nearly empty (p2-190f: one slot,
+    // blob 0 - every key value refused there); the rich container (the client's own
+    // landing bindings, forkSession blob matching) lives on the ENGINE association.
+    // False (default) = the old dtls-first path; true = engine association first,
+    // dtls fallback.
+    const bool retarget = core::settings::get().server.gameplay.relayJoinTargetIdentity;
+    const bool engineChannel = core::settings::get().server.gameplay.relayJoinEngineChannel;
+    // Channel-selected send: engine-first when the container fix is on, else the
+    // legacy order. Same payload either way - only the carrier association changes.
+    const auto send_relay = [engineChannel](const gp::Endpoint& to,
+                                             std::span<const std::byte> payload) {
+        return engineChannel
+                   ? (association::send_payload(to, payload) || dtls::send_payload(to, payload))
+                   : send_transport(to, payload);
+    };
+    for (std::size_t i = 0; i < targetCount; ++i) {
+        // One datagram per peer, no retry here: the OOB channel is best-effort and the
+        // peer re-joins on any silence (FINDINGS 20.119), so a lost relay re-arms within
+        // the channel's own rebuild cycle.
+        std::uint64_t retargetValue = 0;
+        if (retarget) {
+            retargetValue = peer_join_id(targets[i]);
+        }
+        if (retargetValue != 0) {
+            std::array<std::byte, kJoinCaptureBytes> rewritten{};
+            if (rewrite_join_session_id(containerPayload, retargetValue, rewritten)) {
+                const bool sent = send_relay(
+                    targets[i],
+                    std::span<const std::byte>(rewritten.data(), containerPayload.size()));
+                if (sent) {
+                    ++sentPeers;
+                    ++retargeted;
+                }
+                report(core::log::Level::info,
+                       "ev=gameplay stage=join_relay_target result=%s peer=%u "
+                       "retarget=0x%016llX bytes=%zu",
+                       sent ? "sent" : "fail",
+                       static_cast<unsigned>(targets[i].port),
+                       static_cast<unsigned long long>(retargetValue),
+                       containerPayload.size());
+                continue;
+            }
+            report(core::log::Level::warn,
+                   "ev=gameplay stage=join_relay_target result=verbatim reason=parse peer=%u",
+                   static_cast<unsigned>(targets[i].port));
+        }
+        if (send_relay(targets[i], containerPayload)) {
+            ++sentPeers;
+        }
+    }
+    report(core::log::Level::info,
+           "ev=gameplay stage=join_relay result=%s peers=%u retargeted=%u bytes=%zu channel=%s",
+           sentPeers != 0 ? "sent" : "none",
+           sentPeers,
+           retargeted,
+           containerPayload.size(),
+           engineChannel ? "engine" : "dtls");
+}
+
+/**
  * Consumes one out-of-band message container.
  * @param from Peer endpoint.
  * @param payload Whole decrypted payload.
@@ -546,6 +813,10 @@ void consume_container(const gp::Endpoint& from,
         if (!present) {
             return;
         }
+        // The join relay (FINDINGS 20.309) forwards the join message's own bits - from
+        // the end of this header to the end of the container - so the whole chain below
+        // is captured BEFORE any body decode moves the reader.
+        bits::Reader bodyReader = reader;
         if (header.id == static_cast<std::uint8_t>(wire::ConnectId::ping)) {
             if (!answer_ping(from, reader)) {
                 return;
@@ -589,10 +860,17 @@ void consume_container(const gp::Endpoint& from,
                 // source is a wrong parse and publishes nothing (fail-safe to the stand-in).
                 wire::JoinMachineIdentity identity{};
                 const bool identified = wire::read_join_machine_identity(reader, identity);
-                const bool selfcheck = identified && identity.address == from.address
+                // The self-check accepts EITHER NetAddr pair: the first may carry the
+                // machine's cached pre-network-move address while the second names the
+                // current one (p2-188: mac .164 stale / .7 current; the rig's agree).
+                const bool firstPair = identity.address == from.address
                                        && identity.port == from.port;
+                const bool secondPair = identity.address2 == from.address
+                                        && identity.port2 == from.port;
+                const bool selfcheck = identified && (firstPair || secondPair);
                 report(core::log::Level::info,
                        "ev=gameplay stage=identity result=%s tag=%u addr=0x%08X port=%u "
+                       "addr2=0x%08X port2=%u "
                        "machine=0x%016llX machine_rev=0x%016llX selfcheck=%s",
                        !identified ? "absent"
                        : selfcheck ? "ok"
@@ -600,11 +878,27 @@ void consume_container(const gp::Endpoint& from,
                        static_cast<unsigned>(identity.entryTag),
                        identity.address,
                        static_cast<unsigned>(identity.port),
+                       identity.address2,
+                       static_cast<unsigned>(identity.port2),
                        static_cast<unsigned long long>(identity.machineId),
                        static_cast<unsigned long long>(identity.machineIdReversed),
                        selfcheck ? "ok" : "fail");
                 answer_join(from, request,
                             identified && selfcheck ? identity.machineId : 0);
+                // THE JOIN RELAY (FINDINGS 20.309, settings-gated, default off = the off
+                // path is byte-identical): forward the WHOLE join body - the admission
+                // prefix, the identity table and the address/player tables - to every
+                // other connected peer's reliable outbound queue. The receiving client's
+                // host-side join gate then processes the peer's join and creates the
+                // peer's reservation record inside a proper container, which stamps the
+                // record's participant-mask bit from the container's field (0/1 -> bits
+                // 6/7) instead of the containerless birth (field -1 -> bit 5) that every
+                // boot measures and the guard can never match.
+                if (core::settings::get().server.gameplay.relayPeerJoin) {
+                    // p2-183: the WHOLE container payload (marker .. terminator) goes out
+                    // verbatim on the OOB datagram channel - see relay_join_body.
+                    relay_join_body(from, payload);
+                }
             }
             // The rest of the request is address and player tables this host does not decode,
             // so no later message in this container can be located.

@@ -103,11 +103,35 @@ struct SweepSlot final {
     std::uint64_t unackedPeerBodies{};
     /**
      * Set once the cap trips and the peer row is withdrawn for this session.
-     * STICKY for the session's lifetime: withdrawing publishes a solo body, the client
-     * acknowledges that, and clearing the flag on an acknowledgement would immediately
-     * re-add the peer and start the storm again.
+     * STICKY BY DEFAULT: withdrawing publishes a solo body, the client acknowledges that,
+     * and clearing the flag on an acknowledgement would immediately re-add the peer and
+     * start the storm again. That is why a naive "clear on ack" is WRONG.
+     *
+     * FINDINGS 20.298 R7 / 20.299: sticky-forever is also wrong, in the other direction.
+     * The client never acknowledges a peer-bearing body (20.48), so ANY finite cap latches
+     * off and the session then runs DRY - in p2-175, 104 of 128 peer-available snapshots
+     * (81%) sent no peer row at all, and 20.297 R2's verdict was read off that silence.
+     * The fix is neither "never" nor "on every ack" but a RATE-LIMITED RE-ARM: see
+     * `acksSinceWithdrawal` and `membership_peer_rearm_after_acks`.
      */
     bool peerWithdrawn{};
+    /**
+     * Tick of the last peer-row publication for this session (duty-cycle gate,
+     * FINDINGS 20.307 R4b). 0 = never published. Only consulted when
+     * `membership_peer_duty_cycle_ms` is non-zero; under that regime the
+     * retry/withdrawal budget above is disabled (the pacing is the rate limit).
+     */
+    std::uint64_t lastPeerPublishTick{};
+    /**
+     * Acknowledged bodies seen since this session's peer row was withdrawn.
+     *
+     * Only counts while `peerWithdrawn` is set. When it reaches
+     * `membership_peer_rearm_after_acks` (0 = off, the default and today's byte-identical
+     * behaviour) the peer row is re-armed once and both counters reset, so the peer is
+     * retried PERIODICALLY instead of never - at a bounded rate that cannot reproduce the
+     * p2(111) storm, because each re-arm still costs the full cap before it withdraws again.
+     */
+    std::uint64_t acksSinceWithdrawal{};
     /**
      * Peer-bearing bodies published while the peer's transport identity was not yet
      * knowable, i.e. the activity layer reached the peer row before the gameplay layer

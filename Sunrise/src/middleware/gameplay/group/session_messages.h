@@ -155,6 +155,12 @@ struct MembershipMember {
     /** Join id the peer sent in its join request. The peer looks itself up by address and refuses
      *  the update when this does not echo the id its own join carries. Zero is the empty id. */
     std::uint64_t joinId{};
+    /** The member's SECOND identity (protobuf field 8, `idB`). MEASURED (p2-184/185): this
+     *  field lands at the client's member-entry +144, which the session apply copies into the
+     *  session's identity blob (+0x57C) - the value the join gate's lookup compares the
+     *  join's sessionId against (one qword, 0x141A83C00). It must carry the SESSION's id;
+     *  the old constant zero (kMemberIdEmpty) left the blob empty and the lookup failing. */
+    std::uint64_t idB{};
     MemberState state{MemberState::established};
     /** True publishes the three values below and makes the consumer resolve the peer link. */
     bool connectionPresent{};

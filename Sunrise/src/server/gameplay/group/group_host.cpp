@@ -357,6 +357,7 @@ void mark_session_dirty(std::uint64_t sessionId) noexcept {
     descriptor::write_net_addr(host.address, host.port, hostAddress);
     wire::SnapshotComposition composition{};
     if (!wire::compose_membership_snapshot(record.sessionId,
+                                           record.sessionId,
                                            g_membershipRevision.fetch_add(1) + 1,
                                            hostAddress,
                                            recipient,

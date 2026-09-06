@@ -30,6 +30,7 @@ void fill_member(MembershipMember& member,
 /** Builds the complete membership snapshot one recipient peer receives. */
 bool compose_membership_snapshot(
     std::uint64_t hostMachineId,
+    std::uint64_t sessionId,
     std::uint32_t revision,
     const std::array<std::byte, descriptor::kNetAddrSize>& hostAddress,
     std::size_t recipientIndex,
@@ -52,6 +53,11 @@ bool compose_membership_snapshot(
     // finished, both read `established`, which is what stops it re-sending that report.
     fill_member(
         output.members[0], hostAddress, hostMachineId, recipient.joinId, recipientState);
+    // p2-185: EVERY row carries the session's id as its second identity (protobuf field 8) -
+    // the session apply copies the first member's into the session's identity blob, which the
+    // join gate's lookup compares against a relayed join's sessionId. Session-wide value,
+    // identical on every row.
+    output.members[0].idB = sessionId;
 
     for (std::size_t index = 0; index < peers.size(); ++index) {
         const SnapshotPeer& peer = peers[index];
@@ -59,6 +65,7 @@ bool compose_membership_snapshot(
         // The peer's own machine id - real or stand-in, the caller's decision - now that the
         // join-request identity table names it (FINDINGS 20.128).
         fill_member(member, peer.address, peer.machineId, peer.joinId, peer_state(peer.joinComplete));
+        member.idB = sessionId;
         if (peer.hasPlayer) {
             member.ownsPlayerSlot = true;
             member.playerSlot = peer.playerSlot;

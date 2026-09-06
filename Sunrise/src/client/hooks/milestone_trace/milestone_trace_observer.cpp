@@ -58,6 +58,10 @@ enum class Probe : std::uint8_t {
     /** The callee returns an INDEX in eax, or -1 for refused. Log the 32-bit value and
      *  say plainly which it is - the declared width, per the 0x80000001 retraction. */
     retidx,
+    /** The lookup WALKER's LEAVE: rax = the found slot pointer, or 0 on a complete miss.
+     *  Logs the returned slot's bound id (+0x1C7C0) and gate-state (+0x1AEF8, the 6..9
+     *  window) - the join gate's own lookup outcome, attributed (p2-193b). */
+    walkleave,
     /** rcx is the object whose [rcx]+0x6C38 is the PARTICIPANT TABLE. Dump the three
      *  gate bitmasks and, per present participant, the two per-record gate bytes - i.e.
      *  the ENTIRE five-condition construction gate of 20.229, in one place. */
@@ -127,6 +131,45 @@ enum class Probe : std::uint8_t {
      *  each firing IS an image arrival: object, image pointer, and the first 16 bytes
      *  of the image as a fingerprint. Novelty-gated on the object pointer. Enter-only. */
     imageset,
+    /** THE SESSION-STATE OBSERVER (p2-182, adoption-condition.md): the callee is the
+     *  session-slot getter 0x140C26490 (rcx = slot idx, rax = the session object). On
+     *  LEAVE, read [slot+0x1AEF8] (state; 6..9 = LIVE HOSTED SESSION - the join
+     *  machinery's first precondition), [slot+0x850]/[slot+0x854] (THE CONTAINER
+     *  FIELDS the reservation disown reads) and [slot+0x1C7C0] (session id).
+     *  Change-gated on the whole (state, container, c854) tuple, so a per-tick getter
+     *  costs a handful of lines and every state transition is loud. */
+    sessstate,
+    /** THE JOIN-GATE PACKET-RECORD OBSERVER (p2-184, connection-layer-join-delivery.md):
+     *  the callee 0x1416E0460 is the connection-layer JOIN GATE; r8 is the PACKET RECORD
+     *  the OOB consumer built (word[+0] = the instance nonce the handler compares against
+     *  0x1416C1260(), dword[+4] flags, dword[+8] member count, qword[+0x10]/[+0x18] the
+     *  16-byte session key the lookup matches). On ENTER, dump the record's first 0x20
+     *  bytes - novelty-gated on the whole tuple, so a per-join record costs one line and
+     *  a CHANGED record (nonce/flags/key) is loud. Enter-only, read-only. */
+    pktdump,
+    /** THE LOOKUP-COMPARE OBSERVER (p2-187, widened p2-189): the callee is the
+     *  EQUALITY HELPER 0x141A83C00 (a one-qword compare: rcx = the key buffer, rdx = the
+     *  blob buffer). On ENTER, read BOTH first qwords PLUS THE CALLER RVA - the helper
+     *  is SHARED (the join gate's walker, the by-id lookup, the candidate table all
+     *  call it), so a (key, blob) pair alone cannot be attributed to the gate's walk.
+     *  p2-188b's lesson: the novelty gate on (key, blob) hid the refusal's own
+     *  comparisons entirely. The gate is now the (caller RVA, key, blob) TRIPLE.
+     *  Enter-only, read-only. */
+    sesscmp,
+    /** THE GATE-WALK MAP (p2-189, the binder decode): the callee is the session
+     *  LOOKUP WALKER 0x14177A0B0 (rcx = the container whose qwords +0x00..+0x28 are
+     *  the SIX machine-context slot pointers; rdx = the key buffer). On ENTER, read
+     *  each slot pointer and its [slot+0x1C7C0] bound-session field - THE MAP the
+     *  join gate's lookup actually walks. Change-gated on the whole (key, six-index)
+     *  fingerprint, so a walk that binds nothing new is silent. Enter-only. */
+    walkmap,
+    /** THE BLOB-STAMP OBSERVER (p2-189): the callee is the session APPLY 0x1416C5280
+     *  (rcx = the source config object, rdx = the destination session object). Its
+     *  tail copies source +0xC8..+0xD8 into dest +0x57C..+0x58C - THE identity blob
+     *  window the gate's compare reads. On ENTER, read [src+0xC8]/[src+0xD0] (the
+     *  soid about to be stamped) and [dst+0x57C] (the pre-state). Change-gated on
+     *  (dst, soid). Enter-only. */
+    applystamp,
 };
 
 struct Target {
@@ -359,6 +402,47 @@ constexpr std::uintptr_t kRegistryCount = 0x170;
 constexpr std::uintptr_t kRegistrySlots = 0x178;
 constexpr std::uintptr_t kCreateLoopRva = 0x13086E0;   ///< the peer-creation loop
 constexpr std::uintptr_t kPbCreateRva = 0x16EE180;     ///< creator; args (out,kind,index,flags)
+// p2-181: THE RESERVATION-PLANE INSTRUMENTS (establishment-decode.md). The join gate +
+// the reserve + the join-request handler + the registered session-plane handler: the
+// path that creates the peer's reservation record WITH container stamping (the
+// birthright every boot measures as missing - bit 5 from field -1 instead of 6/7).
+constexpr std::uintptr_t kJoinGateRva = 0x175C7C0;     ///< the host-side join gate
+constexpr std::uintptr_t kJoinReserveRva = 0x1769230;  ///< the reserve (kind 2)
+constexpr std::uintptr_t kJoinHandlerRva = 0x178DE60;  ///< the join-request handler
+constexpr std::uintptr_t kJoinMsgRva = 0x17E5A10;      ///< the registered plane handler
+// p2-182 (the adoption-condition boot): the rest of the host-side join/admit chain
+// per RE_output/claims/adoption-condition.md + FINDINGS 20.108 / DOOR. All five are
+// .pdata-exact function starts; prologues are push/sub-only with no RIP-relative
+// operand inside the first 5 bytes (the Detours relocation span), byte-checked 09-06.
+constexpr std::uintptr_t kJoinType0ARva = 0x16E0460;   ///< connection-layer type 0x0A join handler
+constexpr std::uintptr_t kJoinProcessorRva = 0x17806C0;///< the join processor (needs session 6..9)
+constexpr std::uintptr_t kAdmitRva = 0x1777EC0;        ///< admit (the adoption writer)
+constexpr std::uintptr_t kAddCandidatesRva = 0x1792080;///< ADD-CANDIDATES (candidates +0xC8)
+constexpr std::uintptr_t kSessSlotGetterRva = 0xC26490;///< session-slot getter (rcx = idx, rax = slot)
+// p2-184 (the nonce front): the instance NONCE getter 0x1416C1260 - the value the join
+// gate compares the packet record's word[+0] against. Its shape (verified-by-reading):
+// FNV-1a (lowercased, 0x1402F6A60) of a runtime string global (0x142003448), truncated
+// to 16 bits, XOR'd with a word that is either 0x4A-derived (the alternate branch reads
+// a stored dword at 0x142003400) or 0x4A/0x128 fallbacks. Runtime values - hence the
+// exit-side retwatch instrument instead of a static answer.
+constexpr std::uintptr_t kInstNonceRva = 0x16C1260;    ///< the instance-nonce getter (ret: ax)
+// p2-187 (the live-blob front): the lookup's EQUALITY HELPER - the one-qword compare the
+// session lookup uses. The helper sits in a .pdata GAP (verified-by-reading: 10 real
+// bytes, mov rcx,[rcx] / cmp rcx,[rdx] / sete al, no RIP-relative operand - the Detours
+// relocation is whole-instruction safe); verify_hook_rvas lists it NOT-CODE (review, not
+// a gate failure) because .pdata has no entry - the disassembly above is the provenance.
+constexpr std::uintptr_t kEqHelperRva = 0x1A83C00;     ///< the one-qword equality helper
+// p2-189 (the binder decode): the two SESSION-TO-CONNECTION BINDERS and the session
+// create-or-find pair they call, plus the walker whose map the join gate reads. All
+// six pdata-backed function starts (verify_hook_rvas resolves each).
+constexpr std::uintptr_t kBinder1Rva = 0x1772440;      ///< binder 1: [ctx+0x1C7C0] = index-keyed create-or-find
+constexpr std::uintptr_t kBinder2Rva = 0x1773200;      ///< binder 2: [ctx+0x1C7C0] = session-id-keyed create-or-find
+constexpr std::uintptr_t kCofIndexRva = 0x1795A40;     ///< create-or-find, index-keyed (clean finder)
+constexpr std::uintptr_t kCofSoidRva = 0x17951A0;      ///< create-or-find, session-id-keyed (obfuscated finder)
+constexpr std::uintptr_t kWalkMapRva = 0x177A0B0;      ///< the lookup walker (6 slots, one-qword compare each)
+constexpr std::uintptr_t kWalkLeaveRva = 0x177A0B0;    ///< the SAME walker - its LEAVE hook is the lookup's attributed outcome
+constexpr std::uintptr_t kApplyStampRva = 0x16C5280;   ///< the session apply (stamps the +0x57C blob window)
+
 constexpr std::uintptr_t kEntMakeRva = 0x170F190;      ///< calls idx_alloc at +0x3E
 constexpr std::uintptr_t kAuthARva = 0x12ABCA0;        ///< predicate half A
 constexpr std::uintptr_t kAuthBRva = 0x12AEE50;        ///< predicate half B (deref != 0)
@@ -482,7 +566,14 @@ constexpr std::uintptr_t kType30SchemaKeyPtr = 0x1FA42B8;
 /** The type-30 key is independently known; it is this instrument's self-test. */
 constexpr std::uint32_t kType30SchemaKeyOracle = 0x80808683;
 
-constexpr std::size_t kTargetsSize = 48;
+// *** 56, NOT 55: THIS NUMBER MUST EQUAL THE INITIALIZER COUNT BELOW. ***
+// std::array<Target, N> VALUE-INITIALISES any missing element, so a table with one fewer
+// entry than N yields a silent {name=nullptr, rva=0} target - and the install loop then
+// detours RVA 0, writing into the PE header. That CRASHED THE CLIENT DURING LOGIN on
+// 2026-09-05 when the image_set entry was commented out and this constant was left at 48.
+// It compiled cleanly because kIndexOf returns early on a match and never reads the null
+// entry. The static_assert below now makes the compiler catch it instead of a boot.
+constexpr std::size_t kTargetsSize = 64;
 constexpr std::array<Target, kTargetsSize> kTargets{{
     // The entity receive cluster. 0x141718510 is the ENTRY and has ZERO static references
     // of any kind in the whole image (20.209) - its caller is the open question, so it gets
@@ -497,6 +588,48 @@ constexpr std::array<Target, kTargetsSize> kTargets{{
     // The activity-message ROUTER: fires for every svc-9 message and names the type, so
     // this is the census that tells us which carriers exist at all.
     {"act_router",  kActRouterRva, 32, OutParam::none, true, Probe::none},
+    // p2-181: the reservation plane - does the peer's join reach the client's host-side
+    // gate, does the reserve run, and with which container field? The birthright boot.
+    {"join_gate",   kJoinGateRva,  24},
+    {"join_reserve", kJoinReserveRva, 24},
+    {"join_handler", kJoinHandlerRva, 24},
+    {"join_msg",    kJoinMsgRva,  24},
+    // p2-182: the rest of the host-side join/admit chain (adoption-condition.md).
+    // All per-join class (rare); budgets cover many boots. sess_state is the
+    // session-state reader - its LEAVE probe is change-gated, never count-gated.
+    // p2-184: join_type0a upgraded with Probe::pktdump - the enter hook now also
+    // dumps the packet record the OOB consumer built (nonce/flags/count/session key).
+    {"join_type0a", kJoinType0ARva, 24, OutParam::none, false, Probe::pktdump},
+    {"join_processor", kJoinProcessorRva, 24},
+    {"admit",       kAdmitRva,     24},
+    {"add_candidates", kAddCandidatesRva, 24},
+    {"sess_state",  kSessSlotGetterRva, 24, OutParam::none, false, Probe::sessstate},
+    // p2-184: inst_nonce is the nonce getter's own return (leave, change-gated via
+    // retwatch); join_type0a's record dump lives on ITS original entry above (upgraded
+    // to Probe::pktdump) - together they show BOTH sides of the failed comparison.
+    {"inst_nonce",  kInstNonceRva, 12, OutParam::none, false, Probe::retwatch},
+    // p2-187: the lookup's one-qword compare, BOTH sides live (the key = the join's
+    // sessionId; the blob = the receiver session's live identity). Novelty-gated on the
+    // pair - a match (the fix working) and every mismatch are both loud.
+    {"sess_cmp",    kEqHelperRva, 24, OutParam::none, false, Probe::sesscmp},
+    // p2-189 (the binder decode): the session-to-connection BINDERS and the
+    // create-or-find pair they call. The binders carry Probe::stackargs so BOTH the
+    // enter line (ctx/flags/key + caller_rva) and the stack args 5-8 (the binder's
+    // extra parameters, including the second binder's 64-bit session id) are on one
+    // line family. The create-or-finds carry Probe::retidx - the returned session
+    // index (or -1) on LEAVE is the binding's outcome; their enter lines name the
+    // key they were asked for. All six are cold paths (init + per-binding).
+    {"binder1",     kBinder1Rva,  24, OutParam::none, false, Probe::stackargs},
+    {"binder2",     kBinder2Rva,  24, OutParam::none, false, Probe::stackargs},
+    {"cof_index",   kCofIndexRva, 16, OutParam::none, false, Probe::retidx},
+    {"cof_soid",    kCofSoidRva,  16, OutParam::none, false, Probe::retidx},
+    // p2-189: the gate-walk map - the SIX machine-context slots the join gate's
+    // lookup walks, each with its [+0x1C7C0] bound-session field, read at the walk
+    // itself (change-gated on the (key, six-index) fingerprint).
+    {"walk_map",    kWalkMapRva,  16, OutParam::none, false, Probe::walkmap},
+    // p2-189: the blob stamp - the apply that writes the +0x57C identity window,
+    // with the soid it is stamping and the destination's pre-state (change-gated).
+    {"apply_stamp", kApplyStampRva, 16, OutParam::none, false, Probe::applystamp},
     // The 0x89 sobject record decoder and the event-ring commit the queue path ends in.
     {"sobj_decode", kSobjDecodeRva,  8},
     {"ring_commit", kRingCommitRva,  8},
@@ -545,7 +678,19 @@ constexpr std::array<Target, kTargetsSize> kTargets{{
     // 20.288 R6: the two claim/arrival observers. Budgets are irrelevant - both probes
     // novelty-gate themselves; the budgets only cap the generic enter lines.
     {"resv_claim",   kResvClaimRva, 8, OutParam::none, false, Probe::resvclaim, 0, true},
-    {"image_set",    kImageSetRva, 8, OutParam::none, false, Probe::imageset, 0, true},
+    // *** RETIRED 2026-09-05: THIS HOOK FROZE THE CLIENT AT TOWER ENTRY. ***
+    // image_set fired ZERO times in p2-175, p2-176 and p2-177, then fired exactly once on
+    // the p2-178 build and never returned: `stage=enter fn=image_set call=1` was the last
+    // line in the log, no matching leave, no further census, main thread dead. That is the
+    // signature this file's own Target comment records for p2-145 attempt 1 (a bad
+    // dereference inside a detour), reproduced twice on 2026-09-05.
+    // It is disabled rather than debugged because its front is PARKED (20.291 retired the
+    // image/mask road on an unevidenced premise + a 3.5x object-size contradiction), so it
+    // buys nothing for the sustained-row contract while costing every boot that touches it.
+    // Re-enable ONLY with the hang understood - the enter path is emit -> creation-gate read
+    // -> argv dump (dump_rcx=false here) -> probe -> original, so the probe or the original
+    // is where it stops.
+    // {"image_set",    kImageSetRva, 8, OutParam::none, false, Probe::imageset, 0, true},
     // W2 (20.271 R5): the connection-ladder reader. Emits one line per whole-table state
     // CHANGE: every reservation record's two lifecycle states + identity prefix. Zero
     // writes into game memory; the accessor 0x1417CF0E0 is CALLED, not detoured.
@@ -679,6 +824,20 @@ std::array<std::atomic<std::uint64_t>, kTargets.size() + 1> g_lastProbe{};
 std::array<std::atomic<bool>, kTargets.size() + 1> g_hasProbe{};
 /** One spare novelty slot beyond the target list: the ptable probe's identity-card
  *  fingerprint gate (the cards change without the masks changing). */
+
+/** Every target must be a REAL hook: a value-initialised tail element (the std::array
+ *  size/initializer-count mismatch that crashed login on 2026-09-05) has name==nullptr
+ *  and rva==0, and the installer would detour RVA 0. Catch it at COMPILE time. */
+constexpr bool all_targets_populated() {
+    for (std::size_t i = 0; i < kTargets.size(); ++i) {
+        if (kTargets[i].name == nullptr || kTargets[i].rva == 0) { return false; }
+    }
+    return true;
+}
+static_assert(all_targets_populated(),
+              "kTargetsSize does not match the initializer count: a value-initialised "
+              "{nullptr, 0} target would be installed at RVA 0 and crash the client");
+
 constexpr std::size_t kCardGateSlot = kTargets.size();
 /**
  * The tracking-adder probe's per-target emission cap (p2-152). The canonical adder is
@@ -733,6 +892,35 @@ std::array<std::atomic<std::uint32_t>, 2> g_gatebitRequired{};
 std::array<std::atomic<std::uint64_t>, kTargets.size()> g_pubrestLastEnter{};
 std::array<std::atomic<std::uint64_t>, kTargets.size()> g_pubrestLastLeave{};
 std::array<std::atomic<bool>, kTargets.size()> g_pubrestSeen{};
+/**
+ * THE CREATION-PATH GATE-BYTE PROBE (FINDINGS 20.299 R2).
+ *
+ * WHY IT EXISTS: p2-177 set out to watch the gate byte across a body creation and COULD NOT.
+ * pgate is driven by PARTICIPANT-TABLE events, not by creation - it emitted 16 samples all
+ * run while pb_create ran to 3,774, and ZERO during a character switch. A probe gated on an
+ * event its own placement excludes is the 09-01 instrumentation postmortem's exact class.
+ *
+ * THE FIX, and note what it does NOT do: it adds NO NEW HOOK. pb_create and ent_make are
+ * already hooked. pgate already resolves and VALIDATES the participant table; it now caches
+ * that pointer, and the creation hooks read the gate bytes through it. No new RVA means
+ * nothing new for verify_hook_rvas.py to resolve and no added hook-depth risk.
+ *
+ * The cached pointer may be STALE by the time a create fires, so every dereference goes
+ * through gate_wwatch::safe_read - a fault returns false instead of killing the client.
+ */
+std::atomic<std::uintptr_t> g_participantTable{0};
+/** Budget for the creation-path gate dump: emits are per-CREATE and creates run to
+ *  thousands (3,774 in p2-177). Without a cap this would bury the log the way
+ *  public_row_gate did (FRONT_e2e-stack O9). */
+std::atomic<unsigned> g_gateByteEmits{0};
+constexpr unsigned kGateByteBudget = 400;
+/** Last (gateByte, maskA) signature emitted, PER PARTICIPANT INDEX.
+ *  PER-INDEX, not a single global: with two populated records the walk visits i=0 then i=1
+ *  every pass, so one shared signature never matches its own previous value and the probe
+ *  emits on EVERY create for EVERY record - burning the budget in seconds and reproducing
+ *  the log-flood this budget exists to prevent. Caught by replaying the trigger over the
+ *  p2-177 log before booting (the rule POSTMORTEM_2026-09-01 yielded, applied). */
+std::array<std::atomic<std::uint32_t>, kMaxParticipants> g_gateByteLastSig{};
 std::atomic<bool> g_installed{};
 std::atomic<std::uint64_t> g_total{};
 std::atomic<std::uint64_t> g_lastCensusMs{};
@@ -1364,6 +1552,10 @@ void emit_ptable(std::size_t index, const char* fn, std::uint64_t call,
     // above did not already perform - and the callee's arm_table is a two-atomic fast
     // path once armed, so the per-tick cost of 35k lifecycle calls is negligible.
     gate_wwatch::arm_table(table, selfIdx, peerIdx);
+    // Publish the VALIDATED table to the creation hooks (20.299 R2). This is the only place
+    // that resolves it with the obj sanity checks above, so the creation path borrows the
+    // validation rather than repeating it.
+    g_participantTable.store(table, std::memory_order_relaxed);
     // THE SLOT DUMP (20.282 follow-up): the card at +0x142 stayed zero while the field
     // decoded client-side, so the identity may land at a DIFFERENT slot offset (or at the
     // alternate claim source +0xEC). Dump each populated slot's first 0x300 bytes in three
@@ -2042,6 +2234,555 @@ void emit_resvtable(std::size_t index, const char* fn, std::uint64_t call) noexc
     }
 }
 
+/**
+ * THE SESSION-STATE OBSERVER (p2-182): called from the sess_state leave hook.
+ *
+ * The getter 0x140C26490 returns the session-slot object in rax. Every read below is
+ * field-proven (FINDINGS "DOOR"; adoption-condition.md): state at +0x1AEF8 (6..9 =
+ * LIVE HOSTED SESSION - the precondition the join machinery refuses without), the
+ * container fields +0x850/+0x854 (what the reservation disown reads; -1 = containerless),
+ * session id +0x1C7C0.
+ *
+ * CHANGE-GATED per slot pointer on the whole (state, container, c854) tuple, biased
+ * +2/+2/0 into non-negative lanes so a genuine first observation is never mistaken
+ * for the zero-initialised "nothing seen yet" state (the gateByte +1 rule).
+ * Budgeted separately from the detail budget so a per-tick getter cannot storm.
+ */
+constexpr unsigned kSessStateBudget = 64;
+constexpr std::size_t kSessSlotSeenMax = 8;  // 3 session slots exist; 8 is headroom.
+struct SessSlotSeen {
+    const void* ptr;
+    std::atomic<std::uint64_t> sig;
+};
+std::array<SessSlotSeen, kSessSlotSeenMax> g_sessSlotSeen{};
+std::atomic<unsigned> g_sessStateEmits{0};
+
+/**
+ * THE JOIN-GATE PACKET-RECORD OBSERVER (p2-184): called from the join_type0a enter
+ * hook. r8 is the packet record the OOB consumer built for this datagram: word[+0]
+ * = the instance nonce the handler compares against 0x1416C1260() (the p2-183 boot
+ * measured the mismatch silently dropping the join), dword[+4] flags, dword[+8]
+ * member count, qword[+0x10]/[+0x18] = the 16-byte session key the lookup matches.
+ * Dumps the record's first 0x20 bytes, NOVELTY-GATED on the whole tuple - one line
+ * per distinct record, a changed nonce/key is loud. Enter-only, read-only.
+ */
+constexpr unsigned kPktDumpBudget = 24;
+std::atomic<unsigned> g_pktDumpEmits{0};
+
+void emit_pktdump(const char* fn, std::uint64_t call, std::uint64_t recordPtr) noexcept {
+    if (recordPtr < 0x10000U || (recordPtr & 3U) != 0U) {
+        return;  // not a record pointer - refuse, never dereference (the 09-05 guard).
+    }
+    if (g_pktDumpEmits.load(std::memory_order_relaxed) >= kPktDumpBudget) {
+        return;
+    }
+    std::uint8_t rec[0x20] = {};
+    if (!gate_wwatch::safe_read(reinterpret_cast<const void*>(recordPtr), rec,
+                                sizeof(rec))) {
+        return;  // stale record - a fault here is expected, not an error.
+    }
+    std::uint32_t sig = 0;
+    static_assert(sizeof(rec) >= sizeof(sig) * 8, "record dump covers the signature");
+    for (std::size_t i = 0; i < sizeof(rec); i += 4) {
+        std::uint32_t word = 0;
+        for (std::size_t b = 0; b < 4; ++b) {
+            word |= static_cast<std::uint32_t>(rec[i + b]) << (b * 8U);
+        }
+        sig = sig * 31U + word;
+    }
+    // Novelty gate: one line per distinct record tuple (+1 so the all-zero record is
+    // never mistaken for the zero-initialised "nothing seen yet" state).
+    static std::atomic<std::uint32_t> g_pktLastSig{0};
+    if (g_pktLastSig.exchange(sig + 1U, std::memory_order_relaxed) == sig + 1U) {
+        return;
+    }
+    g_pktDumpEmits.fetch_add(1, std::memory_order_relaxed);
+    std::array<char, 256> t{};
+    const int w = std::snprintf(t.data(), t.size(),
+        "ev=mtrace stage=pktdump fn=%s call=%llu rec=0x%llX "
+        "nonce=0x%04X flags=0x%08X count=%u key16=%02X%02X%02X%02X%02X%02X%02X%02X"
+        "%02X%02X%02X%02X%02X%02X%02X%02X",
+        fn, static_cast<unsigned long long>(call),
+        static_cast<unsigned long long>(recordPtr),
+        static_cast<unsigned>(rec[0]) | (static_cast<unsigned>(rec[1]) << 8),
+        static_cast<unsigned>(rec[4]) | (static_cast<unsigned>(rec[5]) << 8)
+            | (static_cast<unsigned>(rec[6]) << 16)
+            | (static_cast<unsigned>(rec[7]) << 24),
+        static_cast<unsigned>(rec[8]) | (static_cast<unsigned>(rec[9]) << 8)
+            | (static_cast<unsigned>(rec[10]) << 16)
+            | (static_cast<unsigned>(rec[11]) << 24),
+        rec[0x10], rec[0x11], rec[0x12], rec[0x13],
+        rec[0x14], rec[0x15], rec[0x16], rec[0x17],
+        rec[0x18], rec[0x19], rec[0x1A], rec[0x1B],
+        rec[0x1C], rec[0x1D], rec[0x1E], rec[0x1F]);
+    if (w > 0) { emit(t.data(), static_cast<std::size_t>(w)); }
+}
+
+/**
+ * THE LOOKUP-COMPARE OBSERVER (p2-187): called from the sess_cmp enter hook.
+ * rcx = the key buffer (the join's sessionId, LE), rdx = the blob buffer (the
+ * receiver session's live identity window). Reads BOTH first qwords - the two
+ * sides of the comparison whose failure has blocked the join processor since
+ * p2-183 - novelty-gated per caller on the (caller, key, blob) triple (see the
+ * budget block below for the p2-189 flat-budget defect this fixes).
+ */
+constexpr unsigned kSessCmpPerCallerBudget = 32;
+constexpr unsigned kSessCmpCallerSlots = 12;   // distinct caller rvas tracked
+constexpr unsigned kSessCmpSeenPerCaller = 16; // direct-mapped seen-pair cache
+constexpr unsigned kSessCmpTotalBudget =
+    kSessCmpPerCallerBudget * kSessCmpCallerSlots;  // hard bound: 384
+
+/** 64-bit mix (the splitmix64 finalizer) - shared by the pair signature. */
+constexpr std::uint64_t mix_u64(std::uint64_t x) noexcept {
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    return x;
+}
+
+/**
+ * One caller rva's budget + first-seen pair cache. The p2-189 defect lived in the
+ * SINGLE global novelty slot: `exchange`-based dedup on one atomic only suppresses
+ * CONSECUTIVE repeats, so two alternating consumers (the two the boot named)
+ * deduped nothing and the landing's noise drained the flat budget before the
+ * relayed join. The gate is therefore per caller: each caller rva gets its own
+ * 16-triple budget and its own direct-mapped seen-pair cache; a cache collision
+ * over-EMITS (the entry is replaced) - never under-emits, because the missing
+ * readout is the failure this instrument exists to prevent (the 09-01 rule).
+ */
+struct SessCmpCallerSlot {
+    std::atomic<std::uintptr_t> rva{0};  // 0 = unclaimed
+    std::atomic<unsigned> emits{0};
+    std::atomic<std::uint64_t> seen[kSessCmpSeenPerCaller]{};  // 0 = empty
+    std::atomic<bool> exhaustedLogged{false};
+};
+static SessCmpCallerSlot g_sessCmpSlots[kSessCmpCallerSlots];
+std::atomic<unsigned> g_sessCmpEmits{0};
+
+/**
+ * THE WALK-COUPLED RESET (p2-190e): called from the join packet's own hook
+ * (join_type0a / pktdump - it fires exactly once per RECEIVED join, BEFORE the
+ * gate's walk of that packet). Clears every caller's first-seen pair cache AND
+ * its per-caller budget (p2-192: the budget counters were cumulative per BOOT,
+ * so the landing's own walks burned the gate-chain callers' 32 triples minutes
+ * before the relayed join arrived - the p2-154 class again: a budget measures
+ * the beginning of a boot; per-event budgets measure the event). The relayed
+ * join's walk always emits its COMPLETE compare set.
+ */
+/**
+ * THE WALK-RETURN OBSERVER (p2-193b): the walker's LEAVE hook - rax is the found
+ * slot pointer, or 0 on a complete miss. This IS the join gate's lookup outcome,
+ * attributed: the container is the same walker's enter line (walk_map), the
+ * outcome is THIS line. A non-null return names the slot and its bound id
+ * (+0x1C7C0) and gate-state (+0x1AEF8 - the 6..9 window the gate checks after a
+ * match). Reset per join packet (via sesscmp_reset_seen) so the relayed join's
+ * walk always emits.
+ */
+constexpr unsigned kWalkLeaveBudget = 24;
+struct WalkLeaveSeen {
+    std::uint64_t ret;
+    std::uint32_t bind;
+    std::uint32_t state;
+};
+static WalkLeaveSeen g_walkLeaveSeen[16];
+static std::atomic<unsigned> g_walkLeaveCount{0};
+static std::atomic<unsigned> g_walkLeaveEmits{0};
+
+void walkleave_reset() noexcept {
+    g_walkLeaveCount.store(0, std::memory_order_relaxed);
+    g_walkLeaveEmits.store(0, std::memory_order_relaxed);
+}
+
+void emit_walkleave(const char* fn, std::uint64_t call, std::uint64_t ret) noexcept {
+    if (g_walkLeaveEmits.load(std::memory_order_relaxed) >= kWalkLeaveBudget) {
+        return;
+    }
+    std::uint32_t bind = 0;
+    std::uint32_t state = 0;
+    if (ret >= 0x10000U && (ret & 7U) == 0U) {
+        if (!gate_wwatch::safe_read(reinterpret_cast<const void*>(ret + 0x1C7C0),
+                                    &bind, sizeof(bind))) {
+            return;  // transient - a fault here is expected, not an error.
+        }
+        if (!gate_wwatch::safe_read(reinterpret_cast<const void*>(ret + 0x1AEF8),
+                                    &state, sizeof(state))) {
+            return;
+        }
+    }
+    const std::uint64_t sig = ret ^ (static_cast<std::uint64_t>(bind) << 8)
+                            ^ (static_cast<std::uint64_t>(state) << 40);
+    const unsigned count = g_walkLeaveCount.fetch_add(1, std::memory_order_relaxed);
+    WalkLeaveSeen& slot = g_walkLeaveSeen[count % 16];
+    for (unsigned i = 0; i < 16; ++i) {
+        const WalkLeaveSeen& seen = g_walkLeaveSeen[i];
+        if (i < count % 16 && seen.ret == ret && seen.bind == bind
+            && seen.state == state) {
+            return;  // this outcome already emitted - the novelty gate.
+        }
+    }
+    g_walkLeaveSeen[count % 16] = {ret, bind, state};
+    g_walkLeaveEmits.fetch_add(1, std::memory_order_relaxed);
+    std::array<char, 256> t{};
+    const int w = std::snprintf(
+        t.data(), t.size(),
+        "ev=mtrace stage=walk_leave fn=%s call=%llu ret=0x%llX bind=%u state=%u "
+        "outcome=%s",
+        fn, static_cast<unsigned long long>(call),
+        static_cast<unsigned long long>(ret), bind, state,
+        ret == 0U ? "MISS" : (state >= 6U && state <= 9U ? "FOUND-LIVE"
+                                                          : "FOUND-STATE-OUT"));
+    if (w > 0) { emit(t.data(), static_cast<std::size_t>(w)); }
+}
+
+void sesscmp_reset_seen() noexcept {
+    walkleave_reset();
+    g_sessCmpEmits.store(0, std::memory_order_relaxed);
+    for (SessCmpCallerSlot& slot : g_sessCmpSlots) {
+        slot.emits.store(0, std::memory_order_relaxed);
+        slot.exhaustedLogged.store(false, std::memory_order_relaxed);
+        for (auto& entry : slot.seen) {
+            entry.store(0, std::memory_order_relaxed);
+        }
+    }
+}
+
+
+void emit_sesscmp(const char* fn, std::uint64_t call, std::uint64_t keyPtr,
+                  std::uint64_t blobPtr, std::uintptr_t callerRva) noexcept {
+    // THE p2-190c DEFECT FIX: the old guard required (ptr & 7) == 0 - but the GATE'S OWN
+    // blob pointers are [rec+0x57C] (&7=4) and [rec+0x94E] (&7=6), so every compare on
+    // the gate's chain was silently refused and the walked container was never measured
+    // (the observed consumers were all OTHER callers of the shared helper). x86-64 reads
+    // 8 bytes at any alignment; keep only the wild-pointer floor.
+    if (keyPtr < 0x10000U || blobPtr < 0x10000U) {
+        return;  // not user-space pointers - refuse, never dereference (the 09-05 guard).
+    }
+    std::uint64_t keyQ = 0;
+    std::uint64_t blobQ = 0;
+    if (!gate_wwatch::safe_read(reinterpret_cast<const void*>(keyPtr), &keyQ,
+                                sizeof(keyQ))
+        || !gate_wwatch::safe_read(reinterpret_cast<const void*>(blobPtr), &blobQ,
+                                   sizeof(blobQ))) {
+        return;  // transient buffers - a fault here is expected, not an error.
+    }
+    // Find or claim this caller's slot. A full table falls back to slot 0 (shared
+    // overflow, still budgeted): the failure mode is FEWER lines, never a wrong one.
+    SessCmpCallerSlot* slot = nullptr;
+    for (SessCmpCallerSlot& candidate : g_sessCmpSlots) {
+        const std::uintptr_t claimed = candidate.rva.load(std::memory_order_relaxed);
+        if (claimed == callerRva) {
+            slot = &candidate;
+            break;
+        }
+        std::uintptr_t expected = 0;
+        if (claimed == 0
+            && candidate.rva.compare_exchange_strong(expected, callerRva,
+                                                     std::memory_order_relaxed)) {
+            slot = &candidate;
+            break;
+        }
+    }
+    if (slot == nullptr) {
+        slot = &g_sessCmpSlots[0];
+    }
+    if (slot->emits.load(std::memory_order_relaxed) >= kSessCmpPerCallerBudget) {
+        if (!slot->exhaustedLogged.exchange(true, std::memory_order_relaxed)) {
+            // One marker per caller when its budget exhausts - silence must name
+            // itself (the 09-03 class: an unexplained null indicts the instrument).
+            std::array<char, 160> t{};
+            const int w = std::snprintf(
+                t.data(), t.size(),
+                "ev=mtrace stage=sesscmp fn=%s call=%llu caller_rva=0x%llX "
+                "result=budget_exhausted triples=%u",
+                fn, static_cast<unsigned long long>(call),
+                static_cast<unsigned long long>(callerRva), kSessCmpPerCallerBudget);
+            if (w > 0) { emit(t.data(), static_cast<std::size_t>(w)); }
+        }
+        return;
+    }
+    // Per-caller first-seen pair gate, direct-mapped on the pair's mix. The
+    // (caller, key, blob) attribution stays: the same pair by a DIFFERENT caller
+    // still emits, because which container the gate walks IS the question.
+    // p2-190e DEFECT FIX: the old mix was keyQ ^ blobQ - which is ZERO whenever
+    // the pair MATCHES, so every matching compare collided with the (0,0) init
+    // pair's signature and was silently suppressed. THE MATCHES - the only
+    // events this front exists to observe - were hidden. The synthetic
+    // collision arm caught rotl(key,1)^blob still aliasing for key=all-ones,
+    // so the two fields are hashed INDEPENDENTLY before combining (order-
+    // sensitive: mix(key) ^ rotl(blob,1) - a matching pair aliases (0,0) only
+    // for keys where mix(k)==rotl(k,1), not structurally).
+    std::uint64_t pairSig = mix_u64(keyQ) ^ ((blobQ << 1) | (blobQ >> 63));
+    if (pairSig == 0) { pairSig = 1; }  // the true (0,0)-sig pair maps to 0.
+    const std::size_t seenIdx =
+        static_cast<std::size_t>((pairSig >> 29) % kSessCmpSeenPerCaller);
+    std::uint64_t expected = 0;
+    if (!slot->seen[seenIdx].compare_exchange_strong(expected, pairSig,
+                                                     std::memory_order_relaxed)) {
+        if (slot->seen[seenIdx].load(std::memory_order_relaxed) == pairSig) {
+            return;  // this caller already emitted this pair - the novelty gate.
+        }
+        // Collision: a different pair lives here. Emit (over-emit) and replace -
+        // a suppressed new pair is the one failure mode that costs a boot.
+        slot->seen[seenIdx].store(pairSig, std::memory_order_relaxed);
+    }
+    if (g_sessCmpEmits.fetch_add(1, std::memory_order_relaxed)
+        >= kSessCmpTotalBudget) {
+        return;  // global hard bound - the pair cache does not count against it.
+    }
+    slot->emits.fetch_add(1, std::memory_order_relaxed);
+    std::array<char, 256> t{};
+    const int w = std::snprintf(t.data(), t.size(),
+        "ev=mtrace stage=sesscmp fn=%s call=%llu caller_rva=0x%llX key=0x%016llX "
+        "blob=0x%016llX match=%u",
+        fn, static_cast<unsigned long long>(call),
+        static_cast<unsigned long long>(callerRva),
+        static_cast<unsigned long long>(keyQ), static_cast<unsigned long long>(blobQ),
+        keyQ == blobQ ? 1U : 0U);
+    if (w > 0) { emit(t.data(), static_cast<std::size_t>(w)); }
+}
+
+/**
+ * THE GATE-WALK MAP (p2-189): rcx = the container whose qwords +0x00..+0x28 are the
+ * SIX machine-context slot pointers, rdx = the key buffer. Reads each slot pointer
+ * and its [+0x1C7C0] bound-session field - the map the join gate's lookup walks.
+ * Change-gated on the (key, six-index) fingerprint: a walk over unchanged bindings
+ * is silent, a new binding or a new key is loud.
+ */
+void emit_walkmap(const char* fn, std::uint64_t call, std::uint64_t container,
+                  std::uint64_t keyPtr) noexcept {
+    // THE CONTAINER-ID LOG (p2-191, the wide-scope attribution): every walker
+    // entry names its container pointer - the join gate walks [ctx+0x28] of the
+    // packet's OWN connection (disasm-verified), so the container ptr IS the
+    // context identity the landing-vs-relayed comparison needs.
+    static std::atomic<std::uint64_t> g_walkContainerLast{0};
+    if (container >= 0x10000U && (container & 7U) == 0U
+        && g_walkContainerLast.exchange(container, std::memory_order_relaxed)
+               != container) {
+        std::array<char, 160> t{};
+        const int w = std::snprintf(
+            t.data(), t.size(),
+            "ev=mtrace stage=walk_map fn=%s call=%llu result=container container=0x%llX",
+            fn, static_cast<unsigned long long>(call),
+            static_cast<unsigned long long>(container));
+        if (w > 0) { emit(t.data(), static_cast<std::size_t>(w)); }
+    }
+    // R2 (first-reject visibility): every early-return below used to be SILENT -
+    // the relayed join's walk was swallowed twice by these paths. Each reject
+    // class emits ONCE per container so silence is explainable.
+    if (container < 0x10000U || (container & 7U) != 0U) {
+        static std::atomic<std::uint64_t> g_walkRejectBad{0};
+        if (g_walkRejectBad.exchange(container | 1ULL, std::memory_order_relaxed)
+            != (container | 1ULL)) {
+            std::array<char, 160> t{};
+            const int w = std::snprintf(
+                t.data(), t.size(),
+                "ev=mtrace stage=walk_map fn=%s call=%llu result=reject reason=container "
+                "container=0x%llX",
+                fn, static_cast<unsigned long long>(call),
+                static_cast<unsigned long long>(container));
+            if (w > 0) { emit(t.data(), static_cast<std::size_t>(w)); }
+        }
+        return;
+    }
+    if (keyPtr >= 0x10000U && (keyPtr & 7U) == 0U) {
+        std::uint64_t keyQ = 0;
+        if (!gate_wwatch::safe_read(reinterpret_cast<const void*>(keyPtr), &keyQ,
+                                    sizeof(keyQ))) {
+            static std::atomic<std::uint64_t> g_walkRejectKey{0};
+            if (g_walkRejectKey.exchange(container, std::memory_order_relaxed)
+                != container) {
+                std::array<char, 160> t{};
+                const int w = std::snprintf(
+                    t.data(), t.size(),
+                    "ev=mtrace stage=walk_map fn=%s call=%llu result=reject reason=key "
+                    "container=0x%llX",
+                    fn, static_cast<unsigned long long>(call),
+                    static_cast<unsigned long long>(container));
+                if (w > 0) { emit(t.data(), static_cast<std::size_t>(w)); }
+            }
+            return;
+        }
+        // Per-slot safe reads; a slot pointer is only dereferenced when it looks sane.
+        std::uint64_t slots[6] = {};
+        std::uint32_t binds[6] = {};
+        std::uint64_t fingerprint = keyQ;
+        bool any_unreadable = false;
+        for (std::size_t i = 0; i < 6; ++i) {
+            std::uint64_t slotPtr = 0;
+            if (!gate_wwatch::safe_read(
+                    reinterpret_cast<const void*>(container + i * 8), &slotPtr,
+                    sizeof(slotPtr))) {
+                any_unreadable = true;
+                break;
+            }
+            slots[i] = slotPtr;
+            if (slotPtr >= 0x10000U && (slotPtr & 7U) == 0U) {
+                if (!gate_wwatch::safe_read(
+                        reinterpret_cast<const void*>(slotPtr + 0x1C7C0), &binds[i],
+                        sizeof(binds[i]))) {
+                    any_unreadable = true;
+                    break;
+                }
+            }
+            fingerprint ^= slots[i] ^ (binds[i] * (i + 1U));
+        }
+        if (any_unreadable) {
+            // R2: a container whose slots cannot be read is a REJECT, not silence -
+            // emit once per container (the p2-190f silent refusal of the relayed
+            // join's walk hid exactly this case).
+            static std::atomic<std::uint64_t> g_walkRejectSlots{0};
+            if (g_walkRejectSlots.exchange(container, std::memory_order_relaxed)
+                != container) {
+                std::array<char, 160> t{};
+                const int w = std::snprintf(
+                    t.data(), t.size(),
+                    "ev=mtrace stage=walk_map fn=%s call=%llu result=reject reason=slots "
+                    "container=0x%llX",
+                    fn, static_cast<unsigned long long>(call),
+                    static_cast<unsigned long long>(container));
+                if (w > 0) { emit(t.data(), static_cast<std::size_t>(w)); }
+            }
+            return;
+        }
+        // p2-193 (REVISED after the p2-194b landing stall): the state reads moved
+        // BEHIND the change gate - six extra guarded reads on the walker's hot
+        // path (35 consumers, hundreds of walks) stalled the mac's landing
+        // transition. The base fingerprint (key+slots+binds) gates as before;
+        // the states are read only when a line is about to emit.
+        static std::atomic<std::uint64_t> g_walkLastSig{0};
+        if (g_walkLastSig.exchange(fingerprint, std::memory_order_relaxed)
+            == fingerprint) {
+            return;  // unchanged map - the change gate.
+        }
+        std::uint32_t states[6] = {};
+        for (std::size_t i = 0; i < 6; ++i) {
+            if (slots[i] >= 0x10000U && (slots[i] & 7U) == 0U
+                && !gate_wwatch::safe_read(
+                        reinterpret_cast<const void*>(slots[i] + 0x1AEF8), &states[i],
+                        sizeof(states[i]))) {
+                states[i] = 0xFFFFFFFFU;  // unreadable - named, not silent.
+            }
+        }
+        std::array<char, 640> t{};
+        const int w = std::snprintf(
+            t.data(), t.size(),
+            "ev=mtrace stage=walk_map fn=%s call=%llu key=0x%016llX "
+            "bind0=%d bind1=%d bind2=%d bind3=%d bind4=%d bind5=%d "
+            "slot0=0x%llX st0=%u slot1=0x%llX st1=%u slot2=0x%llX st2=%u "
+            "slot3=0x%llX st3=%u slot4=0x%llX st4=%u slot5=0x%llX st5=%u",
+            fn, static_cast<unsigned long long>(call),
+            static_cast<unsigned long long>(keyQ), binds[0], binds[1], binds[2],
+            binds[3], binds[4], binds[5],
+            static_cast<unsigned long long>(slots[0]), states[0],
+            static_cast<unsigned long long>(slots[1]), states[1],
+            static_cast<unsigned long long>(slots[2]), states[2],
+            static_cast<unsigned long long>(slots[3]), states[3],
+            static_cast<unsigned long long>(slots[4]), states[4],
+            static_cast<unsigned long long>(slots[5]), states[5]);
+        if (w > 0) { emit(t.data(), static_cast<std::size_t>(w)); }
+    }
+}
+
+/**
+ * THE BLOB-STAMP OBSERVER (p2-189): rcx = the source config object, rdx = the
+ * destination session object. The apply's tail copies source +0xC8..+0xD8 into
+ * dest +0x57C..+0x58C - the identity window the gate's compare reads. Reads the
+ * soid about to be stamped and the destination's PRE-state, change-gated on
+ * (dst, soid) so one line per destination per soid.
+ */
+void emit_applystamp(const char* fn, std::uint64_t call, std::uint64_t src,
+                     std::uint64_t dst) noexcept {
+    if (src < 0x10000U || (src & 7U) != 0U || dst < 0x10000U || (dst & 7U) != 0U) {
+        return;
+    }
+    std::uint64_t soidA = 0;
+    std::uint64_t soidB = 0;
+    std::uint64_t preBlob = 0;
+    if (!gate_wwatch::safe_read(reinterpret_cast<const void*>(src + 0xC8), &soidA,
+                                sizeof(soidA))
+        || !gate_wwatch::safe_read(reinterpret_cast<const void*>(src + 0xD0), &soidB,
+                                   sizeof(soidB))
+        || !gate_wwatch::safe_read(reinterpret_cast<const void*>(dst + 0x57C),
+                                   &preBlob, sizeof(preBlob))) {
+        return;  // transient buffers - a fault here is expected, not an error.
+    }
+    const std::uint64_t sig = dst ^ soidA ^ soidB ^ 2U;
+    static std::atomic<std::uint64_t> g_applyLastSig{0};
+    if (g_applyLastSig.exchange(sig, std::memory_order_relaxed) == sig) {
+        return;  // unchanged (dst, soid) - the change gate.
+    }
+    std::array<char, 288> t{};
+    const int w = std::snprintf(t.data(), t.size(),
+        "ev=mtrace stage=applystamp fn=%s call=%llu dst=0x%llX soidA=0x%016llX "
+        "soidB=0x%016llX preBlob=0x%016llX",
+        fn, static_cast<unsigned long long>(call),
+        static_cast<unsigned long long>(dst),
+        static_cast<unsigned long long>(soidA),
+        static_cast<unsigned long long>(soidB),
+        static_cast<unsigned long long>(preBlob));
+    if (w > 0) { emit(t.data(), static_cast<std::size_t>(w)); }
+}
+
+void emit_sessstate(const char* fn, std::uint64_t call, std::uint64_t slotPtr) noexcept {
+    const void* slot = reinterpret_cast<const void*>(slotPtr);
+    if (slotPtr < 0x10000U || (slotPtr & 3U) != 0U) {
+        return;  // not a slot pointer - refuse, never dereference (the 09-05 guard).
+    }
+    if (g_sessStateEmits.load(std::memory_order_relaxed) >= kSessStateBudget) {
+        return;
+    }
+    SessSlotSeen* seen = nullptr;
+    for (auto& s : g_sessSlotSeen) {
+        if (s.ptr == slot) {
+            seen = &s;
+            break;
+        }
+        if (s.ptr == nullptr) {
+            // Claim an empty entry. The CAS on the signature is the race guard; the
+            // computed signature (>= 2) never equals the claim marker (1), so the
+            // first real observation still emits.
+            std::uint64_t claim = 0;
+            if (s.sig.compare_exchange_strong(claim, 1, std::memory_order_relaxed)) {
+                s.ptr = slot;
+                seen = &s;
+                break;
+            }
+        }
+    }
+    if (seen == nullptr) {
+        return;  // more distinct slots than tracked - only the first kSessSlotSeenMax.
+    }
+    std::int32_t state = 0;
+    std::int32_t c850 = 0;
+    std::uint32_t c854 = 0;
+    std::int32_t sid = 0;
+    if (!gate_wwatch::safe_read(reinterpret_cast<const void*>(slotPtr + 0x1AEF8), &state,
+                                sizeof(state))
+        || !gate_wwatch::safe_read(reinterpret_cast<const void*>(slotPtr + 0x850), &c850,
+                                   sizeof(c850))
+        || !gate_wwatch::safe_read(reinterpret_cast<const void*>(slotPtr + 0x854), &c854,
+                                   sizeof(c854))
+        || !gate_wwatch::safe_read(reinterpret_cast<const void*>(slotPtr + 0x1C7C0), &sid,
+                                   sizeof(sid))) {
+        return;  // stale slot - a fault here is expected, not an error.
+    }
+    const std::uint64_t sig = 1U
+        + static_cast<std::uint64_t>(static_cast<std::uint32_t>(state) + 2U)
+        + (static_cast<std::uint64_t>(static_cast<std::uint32_t>(c850) + 2U) << 16)
+        + (static_cast<std::uint64_t>(c854) << 32);
+    if (seen->sig.exchange(sig, std::memory_order_relaxed) == sig) {
+        return;  // unchanged tuple - the change gate.
+    }
+    g_sessStateEmits.fetch_add(1, std::memory_order_relaxed);
+    std::array<char, 192> t{};
+    const int w = std::snprintf(t.data(), t.size(),
+        "ev=mtrace stage=sessstate fn=%s call=%llu sess=0x%llX state=%d "
+        "c850=%d c854=%u sid=%d",
+        fn, static_cast<unsigned long long>(call),
+        static_cast<unsigned long long>(slotPtr), state, c850, c854, sid);
+    if (w > 0) { emit(t.data(), static_cast<std::size_t>(w)); }
+}
+
 void run_probe(std::size_t index, Probe probe, const char* fn, const char* when,
                std::uint64_t call, const void* rcx, std::uint64_t rdx,
                std::uint64_t r8, std::uintptr_t callerRva) noexcept {
@@ -2059,6 +2800,31 @@ void run_probe(std::size_t index, Probe probe, const char* fn, const char* when,
             emit_imageset(index, fn, call,
                           reinterpret_cast<std::uint64_t>(rcx), rdx);
             break;
+        case Probe::pktdump:
+            // r8 is the packet record (rcx = connection ctx, rdx = connection obj).
+            // THE WALK-COUPLED RESET (p2-190e): a join packet just arrived - clear
+            // the sesscmp first-seen caches BEFORE the gate walks this packet, so
+            // the relayed join's walk emits its complete compare set (unconditional:
+            // must fire even when the pktdump's own budget/refusal gates would
+            // early-return).
+            sesscmp_reset_seen();
+            emit_pktdump(fn, call, reinterpret_cast<std::uint64_t>(r8));
+            break;
+        case Probe::sesscmp:
+            // rcx = the key buffer, rdx = the blob buffer (the one-qword compare's args).
+            emit_sesscmp(fn, call, reinterpret_cast<std::uint64_t>(rcx),
+                         reinterpret_cast<std::uint64_t>(rdx), callerRva);
+            break;
+        case Probe::walkmap:
+            // rcx = the container (six slot pointers), rdx = the key buffer.
+            emit_walkmap(fn, call, reinterpret_cast<std::uint64_t>(rcx),
+                         reinterpret_cast<std::uint64_t>(rdx));
+            break;
+        case Probe::applystamp:
+            // rcx = the source config, rdx = the destination session object.
+            emit_applystamp(fn, call, reinterpret_cast<std::uint64_t>(rcx),
+                            reinterpret_cast<std::uint64_t>(rdx));
+            break;
         case Probe::alloc:
             emit_alloc_probe(fn, when, call, rcx);
             break;
@@ -2069,7 +2835,106 @@ void run_probe(std::size_t index, Probe probe, const char* fn, const char* when,
     }
 }
 
+/**
+ * Dump every populated participant record's GATE BYTE at a creation call (20.299 R2).
+ *
+ * Called from the pb_create / ent_make enter hooks - the moment the client is actually
+ * building an entity, which is precisely when pgate is silent. Emits `stage=gatebyte`.
+ *
+ * SAFETY: the cached table can be stale; every read goes through safe_read and a fault
+ * ends the dump quietly. CHANGE-GATED and budgeted so thousands of creates cannot storm.
+ */
+void dump_gate_bytes(const char* fn, std::uint64_t call) noexcept {
+    const auto table = g_participantTable.load(std::memory_order_relaxed);
+    if (table == 0U) {
+        // pgate has not run yet, so no validated table exists to read.
+        // MEASURED BLIND SPOT (fixture replay over p2-177 before this shipped): the first
+        // create fires at t=74388 and the first pgate at t=77670, so creates in that ~3.3 s
+        // window emit NOTHING. That is acceptable - the participant table does not meaningfully
+        // exist before the membership landing that drives pgate - but it means "no gatebyte
+        // line early in a boot" is a KNOWN GAP, not a measurement that the byte stayed zero.
+        return;
+    }
+    if (g_gateByteEmits.load(std::memory_order_relaxed) >= kGateByteBudget) {
+        return;
+    }
+    std::uint32_t maskA = 0;
+    std::uint32_t maskB = 0;
+    if (!gate_wwatch::safe_read(reinterpret_cast<const void*>(table + kMaskA), &maskA,
+                                sizeof(maskA))
+        || !gate_wwatch::safe_read(reinterpret_cast<const void*>(table + kMaskB), &maskB,
+                                   sizeof(maskB))) {
+        return;  // stale table - a fault here is expected, not an error.
+    }
+    for (unsigned i = 0; i < kMaxParticipants; ++i) {
+        if (((maskB >> i) & 1U) == 0U) {
+            continue;
+        }
+        std::uint8_t gateByte = 0;
+        std::uint64_t rec8 = 0;
+        if (!gate_wwatch::safe_byte(
+                reinterpret_cast<const void*>(table + i * kRecStride + kRecGateByte),
+                &gateByte)
+            || !gate_wwatch::safe_read(
+                reinterpret_cast<const void*>(table + i * kRecStride + 8U), &rec8,
+                sizeof(rec8))) {
+            return;
+        }
+        const bool condA = ((maskA >> i) & 1U) != 0U;
+        // Signature = (index, gate byte, maskA bit). Unchanged state stays silent so the
+        // budget is spent on the TRANSITION we are here to catch - a nonzero gate byte.
+        // +1 so a genuine first observation of (gateByte=0, maskA=0) is never mistaken for
+        // the zero-initialised "nothing seen yet" state.
+        const std::uint32_t sig =
+            1U + ((static_cast<std::uint32_t>(gateByte) << 1) | (condA ? 1U : 0U));
+        if (g_gateByteLastSig[i].exchange(sig, std::memory_order_relaxed) == sig) {
+            continue;
+        }
+        g_gateByteEmits.fetch_add(1, std::memory_order_relaxed);
+        std::array<char, 224> t{};
+        const int w = std::snprintf(t.data(), t.size(),
+            "ev=mtrace stage=gatebyte fn=%s call=%llu i=%u rec8=0x%llX maskA_bit=%u "
+            "f38=0x%02X bit4=%u",
+            fn, static_cast<unsigned long long>(call), i,
+            static_cast<unsigned long long>(rec8), condA ? 1U : 0U,
+            gateByte, ((gateByte >> 4) & 1U));
+        if (w > 0) { emit(t.data(), static_cast<std::size_t>(w)); }
+    }
+}
+
+/** Compile-time name -> target index, so the creation-path gate read binds to EXACTLY
+ *  pb_create and ent_make. A runtime prefix test here would also match ent_recv /
+ *  ent_header and mis-attribute the lines (caught in review, 20.299 R2 follow-up). */
+constexpr std::size_t kIndexOf(const char* name) {
+    for (std::size_t i = 0; i < kTargets.size(); ++i) {
+        const char* a = kTargets[i].name;
+        const char* b = name;
+        while (*a != '\0' && *a == *b) { ++a; ++b; }
+        if (*a == '\0' && *b == '\0') { return i; }
+    }
+    return kTargets.size();  // no match: the if constexpr below is then never taken
+}
+
+// COMPILE-TIME PROOF of the creation-path binding (20.299 R2 follow-up). A silent
+// mis-resolution here would attach the gate read to the WRONG hook - and this file's own
+// Target comment records a client FROZEN AT TOWER ENTRY by exactly that class of mistake
+// (a mis-declared field dereferenced inside a detour, p2-145 attempt 1). Let the compiler
+// prove the binding instead of trusting it.
+static_assert(kIndexOf("pb_create") < kTargets.size(), "pb_create target missing");
+static_assert(kIndexOf("ent_make") < kTargets.size(), "ent_make target missing");
+static_assert(kIndexOf("pb_create") != kIndexOf("ent_make"), "creation targets collided");
+static_assert(kTargets[kIndexOf("pb_create")].name[0] == 'p'
+              && kTargets[kIndexOf("pb_create")].name[1] == 'b',
+              "kIndexOf resolved pb_create to the wrong target");
+static_assert(kTargets[kIndexOf("ent_make")].name[0] == 'e'
+              && kTargets[kIndexOf("ent_make")].name[4] == 'm',
+              "kIndexOf resolved ent_make to the wrong target");
+// (a negative-case assert was tried here and is NOT constant-evaluable in this TU; the
+//  POSITIVE asserts above are the ones that matter - they prove the binding resolves to the
+//  intended targets, which is the mis-attribution this guard exists to prevent.)
+
 /** The generic observer. `Index` gives each target its own trampoline and counters. */
+
 template <std::size_t Index>
 std::uint64_t __fastcall observe(void* rcx, void* rdx, void* r8, void* r9,
                                  void* a5, void* a6, void* a7, void* a8,
@@ -2101,6 +2966,21 @@ std::uint64_t __fastcall observe(void* rcx, void* rdx, void* r8, void* r9,
             reinterpret_cast<unsigned long long>(r8), reinterpret_cast<unsigned long long>(r9));
         if (written > 0) {
             emit(text.data(), static_cast<std::size_t>(written));
+        }
+    }
+    // THE CREATION-PATH GATE-BYTE READ (20.299 R2). Deliberately OUTSIDE the detail budget
+    // for the same reason the argv dump is: the enter budget (32) is spent long before the
+    // interesting creates arrive - p2-177 reached 3,774 creates with only 16 pgate samples,
+    // so a read gated on the enter budget would reproduce the very blind spot this fixes.
+    // Name-matched to the two creation targets only; every other hooked target skips it.
+    {
+        // Exact names, not prefix tricks: "ent_make" has '_' at index 3, and a loose
+        // e/n test would also catch "ent_recv" and "ent_header". Matching the wrong
+        // targets here would silently mis-attribute every gatebyte line.
+        constexpr std::size_t kPbCreateIdx = kIndexOf("pb_create");
+        constexpr std::size_t kEntMakeIdx = kIndexOf("ent_make");
+        if constexpr (Index == kPbCreateIdx || Index == kEntMakeIdx) {
+            dump_gate_bytes(kTargets[Index].name, call);
         }
     }
     // The argv dump is deliberately OUTSIDE the detail budget: the budget is consumed by
@@ -2198,11 +3078,25 @@ std::uint64_t __fastcall observe(void* rcx, void* rdx, void* r8, void* r9,
             || kTargets[Index].probe == Probe::c4query) {
             emit_retwatch(Index, kTargets[Index].name, call, result);
         }
+        if (kTargets[Index].probe == Probe::sessstate) {
+            // THE LEAVE side is the measurement: rax is the session-slot object the
+            // getter just resolved. Enter-side emits nothing (no pairing needed - the
+            // slot pointer identifies the session, so the change gate is stateless
+            // across enter/leave).
+            emit_sessstate(kTargets[Index].name, call, result);
+        }
         if (kTargets[Index].probe == Probe::member) {
             emit_member_probe(kTargets[Index].name, call, result);
         }
         if (kTargets[Index].probe == Probe::retidx) {
             emit_retidx(kTargets[Index].name, call, result);
+        }
+        if (kTargets[Index].probe == Probe::walkmap) {
+            // THE WALK-RETURN OBSERVER lives on the SAME target row as walk_map's
+            // enter probe (p2-193b): ONE detour on the walker, enter+leave. The
+            // separate second row on the same RVA froze the rig's client
+            // (dual detours on one function start are an unsupported install).
+            emit_walkleave(kTargets[Index].name, call, result);
         }
         if (kTargets[Index].probe == Probe::registry) {
             // The count DELTA across the call is the proof that registration happened.

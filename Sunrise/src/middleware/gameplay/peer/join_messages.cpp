@@ -64,10 +64,12 @@ bool read_join_machine_identity(bits::Reader& reader, JoinMachineIdentity& outpu
     if (!reader.read(32, address2) || !reader.read(16, port2)) {
         return false;
     }
-    // The second pair repeats the first on every capture; a divergence means the layout moved.
-    if (address2 != address || port2 != port) {
-        return false;
-    }
+    // The second pair is NOT required to equal the first (p2-188: the mac's first pair
+    // carries its cached pre-network-move address while the second names the current
+    // one; the rig's pairs agree). Both are returned; the consumer's self-check picks
+    // whichever matches the datagram's source.
+    candidate.address2 = static_cast<std::uint32_t>(address2);
+    candidate.port2 = static_cast<std::uint16_t>(((port2 & 0xFFU) << 8) | ((port2 >> 8) & 0xFFU));
     if (candidate.entryTag != 0x08) {
         return false;
     }

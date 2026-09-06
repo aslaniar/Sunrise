@@ -112,8 +112,22 @@ struct Settings {
     /**
      * Pins the sweep to ONE reading instead of walking, so a candidate can be confirmed
      * without a rebuild between rounds. Negative sweeps as usual; 0..5 selects the reading
-     * in TrailingVariant order (mask_mask, count_mask, packed_mask, count_count,
-     * packed_packed, solo).
+     * in TrailingVariant order.
+     *
+     * *** THE ORDER BELOW IS THE LIVE ONE. The previous comment here listed the p2(42)-era
+     * names (mask_mask, count_mask, packed_mask, count_count, packed_packed, solo), which
+     * have NOT matched this enum since it was reordered - proven against the 20.53 capture,
+     * whose log prints exactly those old names. Reading pin numbers off the stale list is a
+     * live footgun: FINDINGS 20.298 R6. ***
+     *   0 packed_masks      (0x00020002 / 3 / 3 / 1)  <- also the default initializer
+     *   1 count_masks       (2 / 3 / 3 / 1)
+     *   2 packed_masks_seq  (0x00020002 / 3 / 3 / 3)
+     *   3 count_masks_seq   (2 / 3 / 3 / 3)
+     *   4 all_mask          (3 / 3 / 3 / 3)  *** "the historical reading, and it FROZE" ***
+     *   5 solo              (no peer row - the terminal positive control)
+     * NOTE the pin is NOT gated on `membership_sweep`: it is read unconditionally
+     * (activity_membership_push.cpp). Sweep off + pin 0 == the default, by coincidence of
+     * ordering, not by design.
      */
     std::int32_t membershipSweepPin{-1};
     /**
@@ -182,7 +196,59 @@ struct Settings {
      * Armed only when the channel is stable (membership acknowledged), mirroring the
      * region path's own guard, so an empty channel cannot advance revisions on every poll.
      */
+    /**
+     * Acknowledged bodies to wait before RE-ARMING a withdrawn peer row (0 = off, the
+     * default; the off path is byte-identical to every build before 2026-09-04).
+     *
+     * WHY (FINDINGS 20.298 R7, 20.299): the client never acknowledges a peer-bearing body
+     * (20.48), so `membership_peer_retry_cap` ALWAYS trips eventually and `peerWithdrawn`
+     * is sticky - after which the session sends no peer row for the rest of its life. In
+     * p2-175 that was 104 of 128 peer-available snapshots (81%) sending nothing, and
+     * 20.297 R2's "outcome (c)" verdict was measured against that silence.
+     *
+     * Raising the cap does NOT fix it (2 -> 10 only delayed the latch; measured p2-176).
+     * Removing the cap reproduces the p2(111) body storm that blocked a Tower load. This
+     * knob is the third option: after N acknowledged bodies the peer row is re-armed ONCE,
+     * so the peer is retried periodically at a bounded rate. Each re-arm still costs the
+     * full retry cap before withdrawing again, so the storm ceiling is unchanged.
+     */
+    std::uint32_t membershipPeerRearmAfterAcks{0};
+    /**
+     * THE DUTY-CYCLE GATE (FINDINGS 20.306/20.307, settings-gated, default 0 = the
+     * off path is byte-identical): when non-zero, the peer row is published at most
+     * once per this many milliseconds, and the retry/withdrawal budget is DISABLED
+     * for that session (the pacing bounds the rate, which is the cap's whole job;
+     * stacking both re-introduces the sticky withdrawal whose re-arm is unreachable
+     * - 20.300 R5 - and kills sustainment).
+     *
+     * WHY: each peer-row-driven composition change resets the client's re-landing,
+     * and the landing completes only after a ~12-18 s quiet window (20.307 R3: at
+     * body cadence - 46-101 peer bodies at 1.4-5 s gaps - the three paired boots
+     * p2-176/178/179 never re-landed, while p2-175's two-body boot re-landed 1.9 s
+     * after its 20-hit engagement burst ended). A ~30 s duty cycle gives every
+     * re-landing its quiet window AND keeps the row sustained - what the
+     * replication/transition front needs.
+     */
+    std::uint32_t membershipPeerDutyCycleMs{0};
     std::uint32_t membershipReseedInterval{0};
+    /**
+     * C3 probe knob (character-data-lookup-brief.md C3 / FINDINGS 20.294 R5): publish a
+     * CRAFTED self-peer row - the local session's OWN identity in member slot 1 - bypassing
+     * foreign_member_identity's same_client/same_account refusals. This recreates the
+     * p2(42)/20.53 condition (a full row naming the local player rendered a second guardian
+     * server-only) on today's fork. Default false; the off path is byte-identical.
+     */
+    bool membershipSelfPeerRow{false};
+    /**
+     * C3 probe knob: the character soid the crafted self-peer row NAMES. When nonzero,
+     * the row encoder replaces whichever identity field currently carries the account's
+     * ACTIVE character soid (state account snapshot + find_character_index) with this
+     * value, and logs stage=crafted_character with the pre/post values and the field
+     * name. When NO field carries the active character soid, the encoder logs
+     * result=no_character_field and publishes the row unchanged - that negative is
+     * itself the C3 answer (the row does not name the character at all). Default 0 = off.
+     */
+    std::uint64_t membershipRowCharacterOverride{0};
     /**
      * Publish a minimal player profile block on every player row of a membership snapshot
      * instead of the absent flag (FINDINGS 20.177 RESULT 5). The block is the decoder-correct

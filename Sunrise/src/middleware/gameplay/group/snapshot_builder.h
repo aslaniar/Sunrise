@@ -77,6 +77,7 @@ struct SnapshotComposition {
  */
 [[nodiscard]] bool compose_membership_snapshot(
     std::uint64_t hostMachineId,
+    std::uint64_t sessionId,
     std::uint32_t revision,
     const std::array<std::byte, descriptor::kNetAddrSize>& hostAddress,
     std::size_t recipientIndex,

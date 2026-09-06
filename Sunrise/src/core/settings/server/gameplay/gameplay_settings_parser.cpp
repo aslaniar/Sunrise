@@ -58,6 +58,9 @@ bool Parser::gameplay_settings(gameplay::Settings& output) noexcept {
     bool hasPoolC4MarkPush = false;
     bool hasSearchSelfHost = false;
     bool hasPublishJoinMachineIds = false;
+    bool hasRelayPeerJoin = false;
+    bool hasRelayJoinTargetIdentity = false;
+    bool hasRelayJoinEngineChannel = false;
     bool hasActivityHostRegionBound = false;
     bool hasMembershipPeerSameRegionAdvert = false;
     bool hasActivityRegionSurvivesChurn = false;
@@ -154,6 +157,21 @@ bool Parser::gameplay_settings(gameplay::Settings& output) noexcept {
                 return false;
             }
             hasPublishJoinMachineIds = true;
+        } else if (key == "relay_peer_join") {
+            if (hasRelayPeerJoin || !boolean(candidate.relayPeerJoin)) {
+                return false;
+            }
+            hasRelayPeerJoin = true;
+        } else if (key == "relay_join_target_identity") {
+            if (hasRelayJoinTargetIdentity || !boolean(candidate.relayJoinTargetIdentity)) {
+                return false;
+            }
+            hasRelayJoinTargetIdentity = true;
+        } else if (key == "relay_join_engine_channel") {
+            if (hasRelayJoinEngineChannel || !boolean(candidate.relayJoinEngineChannel)) {
+                return false;
+            }
+            hasRelayJoinEngineChannel = true;
         } else if (key == "activity_host_region_bound") {
             if (hasActivityHostRegionBound || !boolean(candidate.activityHostRegionBound)) {
                 return false;

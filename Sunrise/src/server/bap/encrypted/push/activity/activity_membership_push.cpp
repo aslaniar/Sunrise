@@ -7,6 +7,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdio>
+#include <optional>
 #include <string_view>
 
 #include "../../../../../middleware/bap/activity_message/replicate_membership.h"
@@ -16,9 +17,11 @@
 #include "../../../../gameplay/gameplay_advertisement.h"
 #include "../../../../../state/activity/runtime.h"
 #include "../../../../../state/activity/membership/activity_membership_query.h"
+#include "../../../../../state/runtime/runtime.h"
 #include "../../../../../core/settings/settings.h"
 #include "../../../../gameplay/group/group_host.h"
 #include "../../../../gameplay/group/group_host_sessions.h"
+#include "../snapshot/internal.h"
 #include "activity_arrival.h"
 #include "membership_sweep.h"
 #include "activity_notification_frame.h"
@@ -184,8 +187,87 @@ make_wire_snapshot(std::uint64_t sessionId,
     // contact attempt can ever name anyone.
     state::activity::membership::Identity peerIdentity{};
     state::activity::ForeignPeerReason peerReason{};
-    const bool havePeer =
-        state::activity::foreign_member_identity(sessionId, peerIdentity, peerReason);
+    const core::settings::server::Settings& pushSettings = core::settings::get().server;
+    const bool craftedSelfPeer = pushSettings.membershipSelfPeerRow;
+    bool havePeer = false;
+    if (craftedSelfPeer) {
+        // C3 (BOOT_BRIEF_p2-174, FINDINGS 20.294 R5): recreate the p2(42)/20.53 condition -
+        // a full row naming the LOCAL player - on today's fork, settings-gated. The
+        // same_client/same_account refusals are bypassed by construction: this row names self
+        // on purpose, and the boot's question is what the client's body-builder does with a
+        // row whose CHARACTER field is overridden (membership_row_character_override).
+        peerIdentity.memberKey = snapshot.identity.memberKey;
+        peerIdentity.smallOpaque = snapshot.identity.smallOpaque;
+        peerIdentity.signedOpaque = snapshot.identity.signedOpaque;
+        peerIdentity.joinIdentity = snapshot.identity.joinIdentity;
+        peerIdentity.accountSoid = snapshot.identity.accountSoid;
+        peerIdentity.opaqueSoid = snapshot.identity.opaqueSoid;
+        peerIdentity.secondaryOpaque = snapshot.identity.secondaryOpaque;
+        havePeer = true;
+        std::array<char, core::log::kLineCapacity> craftedLine{};
+        const int craftedWritten = std::snprintf(
+            craftedLine.data(), craftedLine.size(),
+            "ev=membership stage=crafted_peer result=ok key=0x%016llx acct=0x%016llx "
+            "f3=0x%016llx f5=0x%016llx f6=0x%016llx",
+            static_cast<unsigned long long>(peerIdentity.memberKey),
+            static_cast<unsigned long long>(peerIdentity.accountSoid),
+            static_cast<unsigned long long>(peerIdentity.joinIdentity),
+            static_cast<unsigned long long>(peerIdentity.opaqueSoid),
+            static_cast<unsigned long long>(peerIdentity.secondaryOpaque));
+        if (craftedWritten > 0) {
+            core::log::write(core::log::Channel::server, core::log::Level::info,
+                             {craftedLine.data(), static_cast<std::size_t>(craftedWritten)});
+        }
+        if (pushSettings.membershipRowCharacterOverride != 0) {
+            // The character field is KNOWN, not guessed: the fork's own membership route
+            // maps parsed.field5 -> identity.opaqueSoid and logs it as character=
+            // (activity_membership_route.cpp:33/77-83). Replace field5 directly, with a
+            // sanity check against the account's FULL character list (not just the
+            // selected one - the server's selection can diverge from the client's played
+            // character, 20.64's lesson). A field5 outside the list is logged and the row
+            // publishes unchanged - that is a locator-negative to record, not a C3
+            // answer by itself.
+            const core::settings::AccountKey accountKey = core::settings::local_account();
+            const state::AccountState account = state::account_snapshot(accountKey);
+            bool knownCharacter = false;
+            for (std::size_t index = 0; index < account.characterCount; ++index) {
+                if (account.characters[index].soid == peerIdentity.opaqueSoid) {
+                    knownCharacter = true;
+                    break;
+                }
+            }
+            if (knownCharacter) {
+                const std::uint64_t before = peerIdentity.opaqueSoid;
+                peerIdentity.opaqueSoid = pushSettings.membershipRowCharacterOverride;
+                std::array<char, core::log::kLineCapacity> overrideLine{};
+                const int written = std::snprintf(
+                    overrideLine.data(), overrideLine.size(),
+                    "ev=membership stage=crafted_character result=ok field=field5 "
+                    "pre=0x%016llx post=0x%016llx",
+                    static_cast<unsigned long long>(before),
+                    static_cast<unsigned long long>(peerIdentity.opaqueSoid));
+                if (written > 0) {
+                    core::log::write(core::log::Channel::server, core::log::Level::info,
+                                     {overrideLine.data(), static_cast<std::size_t>(written)});
+                }
+            } else {
+                std::array<char, core::log::kLineCapacity> missLine{};
+                const int written = std::snprintf(
+                    missLine.data(), missLine.size(),
+                    "ev=membership stage=crafted_character result=field5_not_known_"
+                    "character f5=0x%016llx accountChars=%u - row published UNCHANGED",
+                    static_cast<unsigned long long>(peerIdentity.opaqueSoid),
+                    static_cast<unsigned>(account.characterCount));
+                if (written > 0) {
+                    core::log::write(core::log::Channel::server, core::log::Level::warn,
+                                     {missLine.data(), static_cast<std::size_t>(written)});
+                }
+            }
+        }
+    } else {
+        havePeer =
+            state::activity::foreign_member_identity(sessionId, peerIdentity, peerReason);
+    }
     // 20.74.4 DELIVERY FIX: the foreign member row arrives at the other host only when THIS
     // body also carries THAT host's citizen advertisement - its join endpoint. Without it
     // every host fixup-releases the row (reason=1) because a peer with no address is not
@@ -296,17 +378,56 @@ make_wire_snapshot(std::uint64_t sessionId,
         variant = decision.variant;
     }
     const TrailingValues values = trailing_values(variant);
-    // An acknowledgement means the last body landed, so the retry budget starts over. The
-    // withdrawal flag is NOT cleared here: after a withdrawal the solo body gets acknowledged,
-    // and clearing on that would re-add the peer and restart the storm the cap exists to stop.
+    // An acknowledgement means the last body landed, so the retry budget starts over.
+    //
+    // The withdrawal flag is NOT cleared on a bare acknowledgement: after a withdrawal the
+    // SOLO body is what gets acknowledged, and clearing on that would re-add the peer
+    // immediately and restart the storm the cap exists to stop (p2(111) blocked a Tower
+    // load that way). That is why "clear on ack" is the wrong fix.
+    //
+    // THE RATE-LIMITED RE-ARM (FINDINGS 20.298 R7 / 20.299, settings-gated, default OFF so
+    // the off path is byte-identical): sticky-forever is wrong in the other direction. The
+    // client never acknowledges a peer-bearing body (20.48), so the cap always trips and the
+    // session then runs dry - 81% of p2-175's peer-available snapshots sent nothing, and
+    // 20.297 R2's verdict was measured against that silence. With the knob set, N
+    // acknowledged bodies re-arm the peer ONCE. Each re-arm still pays the full retry cap
+    // before withdrawing again, so the storm ceiling is unchanged.
     if (retry != nullptr && state::activity::membership::acknowledged(sessionId)) {
         retry->unackedPeerBodies = 0;
+        if (retry->peerWithdrawn && serverSettings.membershipPeerRearmAfterAcks != 0) {
+            ++retry->acksSinceWithdrawal;
+            if (retry->acksSinceWithdrawal >= serverSettings.membershipPeerRearmAfterAcks) {
+                retry->peerWithdrawn = false;
+                retry->acksSinceWithdrawal = 0;
+                std::array<char, 192> rearm{};
+                const int rearmLine =
+                    std::snprintf(rearm.data(),
+                                  rearm.size(),
+                                  "ev=activity stage=membership_peer result=rearmed "
+                                  "after_acks=%u session=%llu",
+                                  serverSettings.membershipPeerRearmAfterAcks,
+                                  static_cast<unsigned long long>(sessionId));
+                if (rearmLine > 0) {
+                    core::log::write(core::log::Channel::server,
+                                     core::log::Level::warn,
+                                     {rearm.data(), static_cast<std::size_t>(rearmLine)});
+                }
+            }
+        }
     }
     bool publishPeer = havePeer && values.peerPresent && (retry == nullptr
                                                           || !retry->peerWithdrawn);
+    // The retry/withdrawal budget runs only in the legacy regime. Under the duty
+    // cycle the pacing IS the rate limit: bodies are peer-bearing at most once per
+    // window, so no storm can build, and stacking the sticky withdrawal on top
+    // would end sustainment after ~cap windows (the re-arm is unreachable, 20.300
+    // R5). FINDINGS 20.306/20.307.
+    const bool dutyCycled = serverSettings.membershipPeerDutyCycleMs != 0;
     if (publishPeer && retry != nullptr && serverSettings.membershipPeerRetryCap != 0
+        && !dutyCycled
         && retry->unackedPeerBodies >= serverSettings.membershipPeerRetryCap) {
         retry->peerWithdrawn = true;
+        retry->acksSinceWithdrawal = 0;  // the re-arm window starts AT the withdrawal
         publishPeer = false;
         std::array<char, 192> withdrawn{};
         const int withdrawnLine =
@@ -321,6 +442,39 @@ make_wire_snapshot(std::uint64_t sessionId,
             core::log::write(core::log::Channel::server,
                              core::log::Level::warn,
                              {withdrawn.data(), static_cast<std::size_t>(withdrawnLine)});
+        }
+    }
+    // THE DUTY-CYCLE GATE (FINDINGS 20.306/20.307 R4b, settings-gated, 0 = off =
+    // byte-identical): publish the peer row at most once per window. Between
+    // windows the row is omitted, which gives the client's re-landing its quiet
+    // window (~12-18 s measured, 20.307 R3) instead of starving it at body
+    // cadence. A paced-out body is an INTENTIONAL omission, not a refusal: it
+    // must not cost retry budget (there is no budget in this regime anyway) and
+    // it must log, so the boot can tell paced silence from withdrawn silence.
+    if (publishPeer && retry != nullptr && dutyCycled) {
+        const std::uint64_t nowTick = GetTickCount64();
+        if (retry->lastPeerPublishTick != 0
+            && nowTick - retry->lastPeerPublishTick
+                   < static_cast<std::uint64_t>(
+                       serverSettings.membershipPeerDutyCycleMs)) {
+            publishPeer = false;
+            std::array<char, 192> paced{};
+            const int pacedLine =
+                std::snprintf(paced.data(),
+                              paced.size(),
+                              "ev=activity stage=membership_peer result=paced "
+                              "since_ms=%llu window=%u session=%llu",
+                              static_cast<unsigned long long>(
+                                  nowTick - retry->lastPeerPublishTick),
+                              serverSettings.membershipPeerDutyCycleMs,
+                              static_cast<unsigned long long>(sessionId));
+            if (pacedLine > 0) {
+                core::log::write(core::log::Channel::server,
+                                 core::log::Level::debug,
+                                 {paced.data(), static_cast<std::size_t>(pacedLine)});
+            }
+        } else {
+            retry->lastPeerPublishTick = nowTick;
         }
     }
     if (publishPeer) {
@@ -413,11 +567,12 @@ make_wire_snapshot(std::uint64_t sessionId,
         wire.trailingSecond = values.second;
         wire.trailingThird = values.third;
         wire.trailingFourth = values.fourth;
-        if (retry != nullptr) {
+        if (retry != nullptr && !dutyCycled) {
             // A body sent while the peer's address is merely not-yet-knowable is charged to
             // its own bounded counter, so the withdrawal cap still bounds REFUSALS while the
             // admission race gets room to resolve. Past the wait cap the body is charged
             // normally again: an admission that never lands must not publish forever.
+            // (Duty-cycled regime: no budget is charged at all - see the cap-check guard.)
             if (transportPending && retry->peerAddressWaits < kPeerAddressWaitCap) {
                 ++retry->peerAddressWaits;
             } else {

@@ -166,7 +166,10 @@ bool append_world_population_notifications(
         if (scratch.responsePayload.size() >= kQueueEventBodySize) {
             write_u32_be(scratch.responsePayload, 0, 0);
             write_u32_be(scratch.responsePayload, 4, kProbeSessionIndex);
-            write_u32_be(scratch.responsePayload, 8, kSobjectMessageEventType);
+            // p2-173: the eventType is the routing-key probe (BOOT_BRIEF_p2-173.md).
+            // The knob, not the constant: worldPopulationCarrier=17 names the sim-event
+            // type the client's own participant-image apply re-posts (20.293 R0).
+            write_u32_be(scratch.responsePayload, 8, serverSettings.worldPopulationCarrier);
             write_u32_be(scratch.responsePayload, 12,
                          static_cast<std::uint32_t>(
                              service::entity_baseline::kSobjectMessageSize));

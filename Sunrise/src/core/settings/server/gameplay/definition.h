@@ -127,6 +127,72 @@ struct Settings {
      */
     bool publishJoinMachineIds{false};
     /**
+     * THE JOIN RELAY (FINDINGS 20.309, settings-gated, default off = the off path is
+     * byte-identical): when a client's type-0x0A join request arrives, forward the
+     * whole join body to every OTHER connected peer's reliable outbound queue, so
+     * each client's host-side join gate (0x14178DE60) processes the peer's join and
+     * creates the peer's reservation record inside a proper container - stamping the
+     * record's participant-mask bit from the container's field (0/1 -> bits 6/7)
+     * instead of the containerless birth (field -1 -> bit 5) every boot measures.
+     */
+    bool relayPeerJoin{false};
+    /**
+     * THE JOIN LOOKUP RETARGET (20.319 static arc, connection-layer-join-delivery.md):
+     * when the relay forwards one client's join to another peer, rewrite the COPY's
+     * sessionId field to a value the RECIPIENT's own join gate can match, instead of
+     * forwarding the sender's copy verbatim.
+     *
+     * Measured basis (p2-187, sess_cmp on the lookup's equality helper 0x141A83C00):
+     * the client's join gate looks the join's sessionId up against the sessions bound
+     * to its receiving connection's contexts (walker 0x14177A0B0, six slots, each
+     * [ctx+0x1C7C0]-bound), and a join naming any other value is refused "unknown
+     * session" (greppable) before the join processor ever runs. The mac refused the
+     * relayed join at exactly that gate.
+     *
+     * THE VALUE (arm history, measured - never by assumption, the 09-01 rule):
+     * arm 1, the recipient's JOIN IDENTITY machine id (read_join_machine_identity's
+     * qword, the field6=0 activity identity): REFUTED by measurement (p2-188b - the
+     * gate's 6-slot lookup refused it; the join processor never ran; that value
+     * appeared as a live session blob NOWHERE).
+     *
+     * arm 2, the recipient's REAL account key (the field6!=0 activity identity,
+     * 0xD3DABDA3AF16F99E on the mac): the FALLBACK, not the next move - the walked
+     * slots are not proven to hold it.
+     *
+     * arm 3 (CURRENT): the recipient's CURRENT JOINID - the value under which its own
+     * client binds its session, the joinId its own join request carried. PROVEN inside
+     * the gate's walked records on BOTH machines (p2-189: binder2's stack args = the
+     * machine's own joinId; binder ctx pointers = the walked slots; cof_soid granted
+     * that key index 2; walk_map {0,-1,1,-1,-1,2}; p2-187 census: key=joinId vs
+     * blob=joinId, match=1). The fork holds it live on every admitted row (the
+     * membership machinery refuses updates that do not echo it).
+     *
+     * If the retargeted join is still refused, the per-caller sesscmp triples AT the
+     * refusal walk (the widened instrument) name the gate's walked container directly
+     * and decide the next arm without another value-arming boot.
+     *
+     * A recipient with no decoded identity falls back to the verbatim forward. False
+     * keeps the byte-verbatim relay (HARD RULES, p2(62) - bisectable without a
+     * rebuild). Default off.
+     */
+    bool relayJoinTargetIdentity{false};
+    /**
+     * THE JOIN-RELAY CHANNEL (p2-191, the container fix): which OOB association
+     * carries the RELAYED join to each peer. False (default, byte-identical) =
+     * the old path: dtls records first, the engine association only as fallback.
+     * True = the ENGINE association first, dtls fallback.
+     *
+     * WHY IT MATTERS (p2-190f's complete walk readout): the join gate walks the
+     * container of the packet's OWN connection ([ctx+0x28], disasm-verified). The
+     * fork's dtls association's client-side container is nearly empty (one slot,
+     * blob 0) so every key value refused there; the rich container - the one the
+     * client's own landing machinery binds (binder1/binder2) and whose
+     * forkSession blob matched (p2-190f: key=blob match=1) - lives on the
+     * ENGINE association, the client's native transport. Delivering the join
+     * there walks the primed container.
+     */
+    bool relayJoinEngineChannel{false};
+    /**
      * Bind the activity-host session to the (group session, region) instead of to whichever
      * client's activity source pushed last (FINDINGS 20.130).
      *

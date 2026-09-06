@@ -488,14 +488,21 @@ bool consume_activity_keepalive(Session& session,
     const int count =
         std::snprintf(line.data(),
                       line.size(),
+                      // session=%llu is DECIMAL on purpose (FINDINGS 20.298 R2, 20.299 R5):
+                      // it is the join key against `stage=wire_snapshot session=` and
+                      // `membership_peer result=withdrawn session=`, which both print
+                      // decimal. Before this line NOTHING carried session id and member key
+                      // together, so "which session is the rig's" was INFERRED and every
+                      // attribution claim inherited that gap.
                       "ev=activity stage=keepalive result=%s bytes=%zu membership=%u key=0x%llX "
-                      "slot=%u "
+                      "session=%llu slot=%u "
                       "spawn_state=%d teleport_state=%d teleport_slice=%d token=%u revision=%u "
                       "advert=%u",
                       published ? "ok" : "fail",
                       framedSize,
                       hasMembership ? 1U : 0U,
                       static_cast<unsigned long long>(session.activityMemberKey),
+                      static_cast<unsigned long long>(session.activitySessionId),
                       static_cast<unsigned>(session.accountKey),
                       reportedSpawnState,
                       reportedTeleportState,
