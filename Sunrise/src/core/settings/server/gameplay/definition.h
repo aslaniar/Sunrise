@@ -68,6 +68,29 @@ struct Settings {
      */
     bool entityIndexAllocation{false};
     /**
+     * Initiate the view-establishment handshake: the host sends its own view (id 40)
+     * once per admitted peer at the first publish. The fork has only ever answered;
+     * a client that never receives a host view never establishes its own, and the
+     * entity external body stays unregistered (the 20.323/20.324 arc).
+     */
+    bool activityViewInitiate{false};
+    /**
+     * Designate each client to START hosting its own activity session (activity
+     * message type 9, body [mode 1][activity session id][value 4], once per join
+     * burst). The client's apply runs its per-session host state-machine step -
+     * the activity-plane lever for the receiver-object construction after the
+     * group-plane view road closed (20.326: the client drops id 40 at the switch,
+     * no consumer on any plane). An unknown session id is a client-side no-op.
+     */
+    bool activityStartHostPush{false};
+    /**
+     * Log the raw leading bytes of every UPSTREAM (svc8) activity message body -
+     * the client's own activity-message serialization, the one source for the
+     * object layout the DOWN dispatcher consumes (the 20.323 ingress arc). Off
+     * keeps the accept/skip lines byte-count only.
+     */
+    bool activityUpstreamDump{false};
+    /**
      * Push one type-21 (entity-index grant) notification per join, carrying the
      * joiner's lease as the 1024-byte free-slot mask the client's entity manager
      * feeds its index allocator from (claims K/M, RE_output/claims/

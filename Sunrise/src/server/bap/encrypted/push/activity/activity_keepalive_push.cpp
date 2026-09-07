@@ -18,6 +18,7 @@
 #include "activity_arrival.h"
 #include "activity_global_state_push.h"
 #include "activity_membership_push.h"
+#include "activity_message_push.h"
 #include "activity_roster_push.h"
 #include "internal.h"
 
@@ -276,6 +277,16 @@ bool consume_activity_keepalive(Session& session,
             session, scratch, response, written, framedSize, nextSendNonce, published);
     }
     session.activityKeepaliveDueTick = now + kKeepaliveIntervalMs;
+    // p2-202 (the p2-201 retry variant, pre-named in BOOT_BRIEF_p2-201): the burst-time type-9
+    // designation lands during the client's world load, before its activity-session record can
+    // exist, and the client's session lookup degrades to a silent no-op. While armed, every
+    // keepalive frame carries the designation again; an already-hosting session is edge-guarded
+    // client-side (the apply is a state-machine step) and an unknown session is still a no-op,
+    // so the re-send cannot corrupt state - it can only hit the window the burst missed.
+    if (core::settings::get().server.gameplay.activityStartHostPush) {
+        published = append_start_activity_host_notification(
+            scratch, session.activitySessionId, key, nextSendNonce, scratch.framed, framedSize);
+    }
     published = append_global_state_notification(
         scratch, session.activitySessionId, key, nextSendNonce, scratch.framed, framedSize);
     if (session.activityJoinedForeignSession) {

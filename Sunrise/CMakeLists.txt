@@ -450,6 +450,7 @@ add_library(steam_api64 SHARED
     src/middleware/bap/activity_message/activity_entity_slot_request_parser.cpp
     src/middleware/bap/activity_message/activity_entity_index_allocation_encoder.cpp
     src/middleware/bap/activity_message/activity_entity_index_grant_encoder.cpp
+    src/middleware/bap/activity_message/activity_start_activity_host_encoder.cpp
     src/middleware/bap/activity_message/activity_peer_contact_encoder.cpp
     src/middleware/bap/activity_message/activity_entity_slots_decoder.cpp
     src/middleware/bap/activity_message/activity_entity_authority_parser.cpp
@@ -598,6 +599,7 @@ add_library(steam_api64 SHARED
     src/middleware/gameplay/group/notice_messages.cpp
     src/server/gameplay/group/group_migration_receipts.cpp
     src/server/gameplay/peer/external_shadow.cpp
+    src/server/gameplay/peer/external_send.cpp
     src/server/gameplay/physics/authority/motion_validator.cpp
     src/server/gameplay/physics/backend/navigation_backend.cpp
     src/server/gameplay/physics/backend/navigation_backend_queries.cpp
@@ -763,6 +765,7 @@ add_executable(sunrise-server
     src/middleware/bap/activity_message/activity_entity_slot_request_parser.cpp
     src/middleware/bap/activity_message/activity_entity_index_allocation_encoder.cpp
     src/middleware/bap/activity_message/activity_entity_index_grant_encoder.cpp
+    src/middleware/bap/activity_message/activity_start_activity_host_encoder.cpp
     src/middleware/bap/activity_message/activity_peer_contact_encoder.cpp
     src/middleware/bap/activity_message/activity_entity_slots_decoder.cpp
     src/middleware/bap/activity_message/activity_entity_slots_encoder.cpp
@@ -1074,6 +1077,7 @@ add_executable(sunrise-server
     src/middleware/gameplay/group/notice_messages.cpp
     src/server/gameplay/group/group_migration_receipts.cpp
     src/server/gameplay/peer/external_shadow.cpp
+    src/server/gameplay/peer/external_send.cpp
     src/server/gameplay/physics/authority/motion_validator.cpp
     src/server/gameplay/physics/backend/navigation_backend.cpp
     src/server/gameplay/physics/backend/navigation_backend_queries.cpp

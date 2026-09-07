@@ -100,6 +100,30 @@ append_entity_index_allocation_notification(
     std::size_t& written) noexcept;
 
 /**
+ * Appends one start_activity_host (type 9) svc9 notification and advances its
+ * local nonce once. The body is the 13-byte raw struct the client's decode
+ * variant reads directly (mode 1, activity session id, value dword 4). The
+ * client's apply runs its per-session host state-machine step; an unknown
+ * session id is a client-side no-op. Gated behind the activityStartHostPush
+ * settings switch so the default burst stays byte-identical.
+ * @param scratch Lock-owned transform buffers.
+ * @param sessionId Activity session id echoed in the envelope AND carried in the body.
+ * @param key Active AES-GCM session key.
+ * @param nonce Local send nonce advanced only after the complete notification exists.
+ * @param response Lock-owned complete-frame staging storage.
+ * @param written Existing staged byte count, updated only after the notification exists.
+ * @return True when the notification encodes atomically.
+ */
+[[nodiscard]] bool
+append_start_activity_host_notification(
+    Scratch& scratch,
+    std::uint64_t sessionId,
+    std::span<const std::byte, state::kAesKeySize> key,
+    std::array<std::byte, state::kBapNonceSize>& nonce,
+    std::span<std::byte> response,
+    std::size_t& written) noexcept;
+
+/**
  * Appends one entity-index-grant (type 21) svc9 notification and advances its
  * local nonce once. The body is the 1029-byte free-slot mask the client's entity
  * manager consumes directly (claims K/M in

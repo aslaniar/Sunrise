@@ -6,6 +6,7 @@
 
 #include "../../../../../core/settings/settings.h"
 #include "../../../../../middleware/bap/activity_message/activity_join_result_encoder.h"
+#include "../../../../../middleware/bap/activity_message/activity_start_activity_host_encoder.h"
 #include "../../../../../middleware/bap/activity_message/activity_entity_index_allocation_encoder.h"
 #include "../../../../../middleware/bap/activity_message/activity_entity_index_grant_encoder.h"
 #include "../../../../../middleware/bap/activity_message/entity_slots.h"
@@ -21,6 +22,7 @@ namespace service = middleware::bap::activity_message;
 namespace entity_index_allocation = middleware::bap::activity_message::entity_index_allocation;
 namespace entity_index_grant = middleware::bap::activity_message::entity_index_grant;
 namespace peer_contact = middleware::bap::activity_message::peer_contact;
+namespace start_activity_host = middleware::bap::activity_message::start_activity_host;
 
 /** Activity message type 4 accepts a pending join before any later push. */
 constexpr std::uint32_t kJoinResultMessageType = 4;
@@ -169,6 +171,21 @@ bool append_join_notifications(Scratch& scratch,
         if (encoded) {
             middleware::secure_channel::advance_nonce(nonce);
         }
+    }
+    // Type 9 closes the burst when armed: the host designates this client to START hosting its
+    // own activity session. The client's apply (0x140E0EE40 -> 0x140C208D0 -> 0x140C11B60) runs
+    // the per-session state-machine step for the named session; a session id the client does not
+    // hold makes its lookup return null and the whole message is a no-op, so a wrong id degrades
+    // to silence. Its own switch so the burst stays byte-identical when off (20.326 R6c: the
+    // group-plane view road is closed; the activity-plane host designation is the remaining
+    // lever for the client's receiver-object construction).
+    if (encoded && core::settings::get().server.gameplay.activityStartHostPush) {
+        encoded = append_start_activity_host_notification(scratch,
+                                                          activity.sessionId,
+                                                          key,
+                                                          nonce,
+                                                          response,
+                                                          written);
     }
     // S2-0 (spec §3.4): after the unchanged join burst, one static-entity baseline push
     // on the configured carrier, then the patch-epoch bump. Nothing is emitted while
@@ -420,6 +437,57 @@ bool append_entity_index_grant_notification(
             "ev=activity stage=index_grant push bytes=%u mode=%s",
             static_cast<unsigned>(messageSize),
             flat ? "flat" : "raw");
+        if (logged > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::info,
+                             {line.data(), static_cast<std::size_t>(logged)});
+        }
+    } else {
+        clear_prefix(response.subspan(initialWritten), written - initialWritten);
+        written = initialWritten;
+        nonce = initialNonce;
+    }
+    SecureZeroMemory(&initialNonce, sizeof initialNonce);
+    return encoded;
+}
+
+/**
+ * Appends one start_activity_host (activity type 9) svc9 notification and advances its local
+ * nonce once. The body is the raw 13-byte struct the client's decode variant reads directly:
+ * mode byte 1, the activity session id in native order, the value dword 4 in native order.
+ * The client's apply runs its per-session host state-machine step; an unknown session id is a
+ * client-side no-op. Gated behind activityStartHostPush so the default burst is byte-identical.
+ */
+bool append_start_activity_host_notification(
+    Scratch& scratch,
+    std::uint64_t sessionId,
+    std::span<const std::byte, state::kAesKeySize> key,
+    std::array<std::byte, state::kBapNonceSize>& nonce,
+    std::span<std::byte> response,
+    std::size_t& written) noexcept {
+    const std::size_t initialWritten = written;
+    auto initialNonce = nonce;
+    std::size_t messageSize = 0;
+    const bool encoded =
+        start_activity_host::encode(sessionId, scratch.responseBody, messageSize)
+        && append_notification_frame(scratch,
+                                     sessionId,
+                                     start_activity_host::kMessageType,
+                                     std::span(scratch.responseBody).first(messageSize),
+                                     key,
+                                     nonce,
+                                     response,
+                                     written);
+    clear_prefix(scratch.responseBody, messageSize);
+    if (encoded) {
+        middleware::secure_channel::advance_nonce(nonce);
+        std::array<char, 128> line{};
+        const int logged = std::snprintf(
+            line.data(),
+            line.size(),
+            "ev=activity stage=start_host push session=0x%llX bytes=%u",
+            static_cast<unsigned long long>(sessionId),
+            static_cast<unsigned>(messageSize));
         if (logged > 0) {
             core::log::write(core::log::Channel::server,
                              core::log::Level::info,
