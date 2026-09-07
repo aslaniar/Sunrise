@@ -84,6 +84,16 @@ struct Settings {
      */
     bool activityStartHostPush{false};
     /**
+     * Push the type-51 (bubble_host_startup_info) handshake per join burst,
+     * echoing the recipient client's own SteamNetworkingIdentity (captured
+     * from its matchmaking advertisement). The client's validator memcmps
+     * the decoded field-2 against the client's own row byte-exact — the
+     * token is per-session and must be captured, never derived. The femu-
+     * validated wire form is in RE_output/claims/type51-bubble-startup-
+     * startup-spec.md (W8); the apply-half semantics are the boot's question.
+     */
+    bool activityBubbleStartup{false};
+    /**
      * Log the raw leading bytes of every UPSTREAM (svc8) activity message body -
      * the client's own activity-message serialization, the one source for the
      * object layout the DOWN dispatcher consumes (the 20.323 ingress arc). Off

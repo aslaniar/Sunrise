@@ -1,5 +1,11 @@
 #include "matchmaking_route.h"
 
+#include <array>
+#include "../activity_message/activity_identity_store.h"
+
+namespace activity_identity =
+    sunrise::server::bap::encrypted::activity_message::activity_identity;
+
 #include <Windows.h>
 #include "../../../../middleware/gameplay/descriptor/join_descriptor.h"
 #include "../../../gameplay/endpoint/gameplay_endpoint.h"
@@ -202,10 +208,70 @@ void log_request_body(std::span<const std::byte> body) noexcept {
     return middleware::gameplay::descriptor::build(join, output);
 }
 
+/**
+ * Extracts the client's SteamNetworkingIdentity from one advertisement
+ * descriptor and stores it for this account (the type-51 bubble-startup echo).
+ * The identity rides the descriptor as ASCII "steamid:<id>#<token>" followed
+ * by zero padding; the 0x56-byte form the client's validator memcmps carries
+ * the 0x06 version byte at [0x55]. The descriptor's own byte at that position
+ * is logged when it differs, so a form mismatch is a readout, not a silence.
+ * @param account The account slot the advertisement arrived on.
+ * @param descriptor The client's raw advertisement descriptor.
+ */
+void capture_activity_identity(core::settings::AccountKey account,
+                               std::span<const std::byte> descriptor) noexcept {
+    constexpr std::array<std::byte, 8> kNeedle{std::byte{0x73}, std::byte{0x74},
+                                               std::byte{0x65}, std::byte{0x61},
+                                               std::byte{0x6D}, std::byte{0x69},
+                                               std::byte{0x64}, std::byte{0x3A}};
+    const std::span<const std::byte, 8> needleSpan{kNeedle.data(), kNeedle.size()};
+    for (std::size_t base = 0; base + activity_identity::kIdentityBytes <= descriptor.size(); ++base) {
+        bool matched = true;
+        for (std::size_t k = 0; k < kNeedle.size(); ++k) {
+            if (descriptor[base + k] != needleSpan[k]) {
+                matched = false;
+                break;
+            }
+        }
+        if (!matched) {
+            continue;
+        }
+        std::array<std::byte, activity_identity::kIdentityBytes> identity{};
+        std::copy_n(descriptor.begin() + static_cast<std::ptrdiff_t>(base),
+                    activity_identity::kIdentityBytes, identity.begin());
+        const std::byte version = identity[0x55];
+        if (version != std::byte{0x06}) {
+            identity[0x55] = std::byte{0x06};
+            std::array<char, 96> line{};
+            const int logged = std::snprintf(
+                line.data(), line.size(),
+                "ev=identity stage=capture account=%u version_byte=%u (forced 6)",
+                static_cast<unsigned>(account), static_cast<unsigned>(version));
+            if (logged > 0) {
+                core::log::write(core::log::Channel::server, core::log::Level::info,
+                                 {line.data(), static_cast<std::size_t>(logged)});
+            }
+        }
+        if (activity_identity::store(account, identity)) {
+            std::array<char, 128> line{};
+            const int logged = std::snprintf(
+                line.data(), line.size(),
+                "ev=identity stage=capture result=stored account=%u bytes=%zu",
+                static_cast<unsigned>(account), activity_identity::kIdentityBytes);
+            if (logged > 0) {
+                core::log::write(core::log::Channel::server, core::log::Level::info,
+                                 {line.data(), static_cast<std::size_t>(logged)});
+            }
+        }
+        return;
+    }
+}
+
 } // namespace
 
 /** Prepares and encodes one kind-specific svc-43 response transaction. */
 bool encode_response(state::matchmaking::ContextHandle context,
+                     core::settings::AccountKey accountKey,
                      std::span<const std::byte> requestBody,
                      std::span<std::byte> output,
                      std::size_t& written,
@@ -220,6 +286,7 @@ bool encode_response(state::matchmaking::ContextHandle context,
     if (request.kind == service::RequestKind::advertisementUpdate) {
         if (request.advertisement.hasDescriptor) {
             log_descriptor("publish", request.advertisement.descriptor);
+            capture_activity_identity(accountKey, request.advertisement.descriptor);
         } else {
             log_request_body(requestBody);
         }

@@ -25,6 +25,7 @@ namespace sunrise::server::bap::encrypted::push::activity {
  */
 [[nodiscard]] bool append_join_notifications(Scratch& scratch,
                                              const activity_message::ActivityPlan& activity,
+                                             core::settings::AccountKey accountKey,
                                              std::span<const std::byte, state::kAesKeySize> key,
                                              std::array<std::byte, state::kBapNonceSize>& nonce,
                                              std::span<std::byte> response,
@@ -114,6 +115,16 @@ append_entity_index_allocation_notification(
  * @param written Existing staged byte count, updated only after the notification exists.
  * @return True when the notification encodes atomically.
  */
+[[nodiscard]] bool
+append_bubble_startup_notification(
+    Scratch& scratch,
+    std::uint64_t sessionId,
+    core::settings::AccountKey accountKey,
+    std::span<const std::byte, state::kAesKeySize> key,
+    std::array<std::byte, state::kBapNonceSize>& nonce,
+    std::span<std::byte> response,
+    std::size_t& written) noexcept;
+
 [[nodiscard]] bool
 append_start_activity_host_notification(
     Scratch& scratch,

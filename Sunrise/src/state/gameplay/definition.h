@@ -223,6 +223,16 @@ struct PeerLink {
     std::uint64_t lastTick{};
     /** Tick the last packet left at. The resend is paced against it. */
     std::uint64_t lastSend{};
+    /** The external-body dispatch probe (gameplayExternalBody gate). True from the first
+     * service() send after applicationReady until the peer's acknowledgement covers the
+     * packet that carried the body, or until the attempt budget runs out. */
+    bool externalPending{};
+    /** Packet sequence that carried the newest external body. */
+    std::uint16_t externalSequence{};
+    /** How many packets have carried the body (bounded; logged, never retried past the cap). */
+    std::uint8_t externalAttempts{};
+    /** Set once the probe reaches a terminal state (acked or gave up). Never re-arms. */
+    bool externalDone{};
 };
 
 /** Every direct association this process owns. */

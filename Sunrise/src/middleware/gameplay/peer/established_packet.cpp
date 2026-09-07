@@ -309,6 +309,7 @@ bool decode_established(std::span<const std::byte> payload,
     // The sentinel handler writes no bits, so the external body starts here when one exists.
     output.hasExternal = expectExternal;
     output.externalBitOffset = payload.size() * kByteBits - reader.remaining_bits();
+    output.trailingBits = reader.remaining_bits();
     return true;
 }
 
@@ -540,6 +541,30 @@ bool write_absent_filler(bits::Writer& writer) noexcept {
     // Two bits close a packet: the extended-presence bit, then the external-body present bit.
     // The reader consumes both, so both must be written even though both are zero.
     return writer.write(0, kFlagWidth) && writer.write(0, kFlagWidth);
+}
+
+/** Writes the packet tail with a present external body. */
+bool write_external_tail(bits::Writer& writer,
+                         std::span<const std::byte> body,
+                         std::size_t bodyBits) noexcept {
+    if (bodyBits > body.size() * kByteBits) {
+        return false;
+    }
+    // The external body is present; the filler trailer after it is not.
+    if (!writer.write(1, kFlagWidth)) {
+        return false;
+    }
+    bits::Reader reader(body);
+    while (bodyBits != 0) {
+        const auto width = static_cast<std::uint8_t>(
+            bodyBits < kByteBits ? bodyBits : kByteBits);
+        std::uint64_t value = 0;
+        if (!reader.read(width, value) || !writer.write(value, width)) {
+            return false;
+        }
+        bodyBits -= width;
+    }
+    return writer.write(0, kFlagWidth);
 }
 
 } // namespace sunrise::middleware::gameplay::peer

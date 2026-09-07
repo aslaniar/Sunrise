@@ -83,6 +83,9 @@ struct Admitted {
     bool activityHostPublished{};
     /** Set once a snapshot naming the peer's player is on that channel. The queue can refuse it. */
     bool playerPublished{};
+    /** Set once this record's view-establishment initiation has been queued (the host half
+     *  of the handshake; the 20.323/20.324 arc). Never re-sent. */
+    bool viewInitiated{};
     /** Set when the session's composition changed after this record's last queued snapshot, so
      *  it is owed a fresh complete one. Another peer joining or leaving, or another peer's
      *  player changing, marks every record of the session. */
@@ -521,6 +524,32 @@ void mark_session_dirty(std::uint64_t sessionId) noexcept {
         record.joinPublished = record.joinComplete;
         record.playerPublished = record.hasPlayer;
         record.snapshotOwed = false;
+    }
+    // THE VIEW-HANDSHAKE INITIATION (activity_view_initiate gate): once the peer's first
+    // snapshot is on its reliable channel it is fully joined, and a client that never
+    // receives a host view never establishes its own (the 20.323/20.324 arc: the handshake
+    // has deadlocked since the first boot - the fork only ever answered). The minimal
+    // initiator satisfies the client's own validator: kind 0 (<=5), optional absent (-1,
+    // which passes the >-2 rule), no list, and the token this session bound. The client's
+    // answer lands in bind_view, which binds and echoes it.
+    if (queued && core::settings::get().server.gameplay.activityViewInitiate
+        && !record.viewInitiated) {
+        wire::ViewEstablishment view{};
+        view.kind = 0;
+        view.hasOptionalValue = false;
+        view.hasList = false;
+        view.sessionToken = record.sessionId;
+        record.viewInitiated = true;
+        const bool viewSent = send_reliable(
+            record.sessionId,
+            record.endpoint,
+            wire::kViewMessageId,
+            wire::kViewMessageSize,
+            [&view](bits::Writer& writer) noexcept { return wire::write_view(writer, view); });
+        report(core::log::Level::info,
+               "ev=gameplay stage=view result=%s kind=0 token=0x%llX",
+               viewSent ? "initiated" : "initiate-fail",
+               static_cast<unsigned long long>(record.sessionId));
     }
     return queued;
 }

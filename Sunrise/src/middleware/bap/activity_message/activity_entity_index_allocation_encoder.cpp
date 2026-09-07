@@ -86,19 +86,31 @@ bool encode(std::span<const Member> members,
     }
     encoding::bits::Writer writer(output);
 
+    // THE TWO LEADING BITS the client's full decoder (0x1404D92A0) reads before
+    // the schema: its flag bit, then the resolver's schema gate. Without them
+    // the BLOCK-A count reads as 0 and the whole decode collapses (the 20.323/
+    // 20.324 femu arc: 15 of 14584 bits consumed, empty struct).
+    writer.write(1, 1);
+    writer.write(1, 1);
+
     // BLOCK A: present; the 256xu32 array carries the free-slot bitmap for the
     // joiner's lease range (v2, claim E fix).
     write_block_a(writer, freeSlots);
 
-    // BLOCK B: present; the wire carries every participant slot, each gated by its
-    // own presence bit, populated rows first in join order.
+    // BLOCK B: present; the wire carries every participant slot, each named by
+    // FIVE field-presence bits (id, sub, sub0, sub1, sub2 - schema node
+    // 0x80809446: pmap 320 = 64 x 5), populated rows first in join order. The
+    // populated row's leading "id present" bit is the first of its five.
     writer.write(1, 1);
     writer.write(kParticipantSlots, kBlockBCountWidth);
     for (std::size_t slot = 0; slot < kParticipantSlots; ++slot) {
         if (slot < members.size()) {
-            writer.write(1, 1);
             write_member(writer, members[slot]);
         } else {
+            writer.write(0, 1);
+            writer.write(0, 1);
+            writer.write(0, 1);
+            writer.write(0, 1);
             writer.write(0, 1);
         }
     }

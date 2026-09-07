@@ -87,22 +87,37 @@ constexpr std::array<AcceptedMessage, 12> kAcceptedMessages{{
 }
 
 /**
- * Records one accepted message that changes no host state.
+ * Records one accepted message that changes no host state. When the upstream
+ * dump gate is on, the leading payload bytes ride the line: the client's own
+ * activity-message serialization is the one source for the object layout the
+ * DOWN dispatcher consumes (the 20.323 ingress arc).
  * @param messageType Activity message type from the envelope.
  * @param name Binary name for that type.
- * @param payloadSize Declared payload bytes, which is the only thing that varies here.
+ * @param payload Declared payload bytes.
  */
 void report_accepted(std::uint32_t messageType,
                      const char* name,
-                     std::size_t payloadSize) noexcept {
+                     std::span<const std::byte> payload) noexcept {
+    const bool dump = core::settings::get().server.gameplay.activityUpstreamDump;
     std::array<char, core::log::kLineCapacity> line{};
-    const int written = std::snprintf(line.data(),
-                                      line.size(),
-                                      "ev=activity stage=message result=accept type=%u name=%s "
-                                      "bytes=%zu",
-                                      messageType,
-                                      name,
-                                      payloadSize);
+    const std::size_t dumpBytes = dump ? (std::min)(payload.size(), std::size_t{96}) : 0;
+    int written = std::snprintf(line.data(),
+                                line.size(),
+                                "ev=activity stage=message result=accept type=%u name=%s "
+                                "bytes=%zu payload=",
+                                messageType,
+                                name,
+                                payload.size());
+    for (std::size_t index = 0;
+         written > 0 && index < dumpBytes
+         && static_cast<std::size_t>(written) < line.size() - 4;
+         ++index) {
+        const int step = std::snprintf(line.data() + written,
+                                       line.size() - static_cast<std::size_t>(written),
+                                       "%02X",
+                                       std::to_integer<unsigned>(payload[index]));
+        written = step > 0 ? written + step : 0;
+    }
     if (written > 0) {
         core::log::write(core::log::Channel::server,
                          core::log::Level::debug,
@@ -498,11 +513,16 @@ bool process(std::uint64_t boundSessionId,
         return true;
     } else if (const char* name = accepted_name(request.messageType); name != nullptr) {
         // One-way with nothing to change here. Accepting is the whole contract.
-        report_accepted(request.messageType, name, request.payload.size());
+        report_accepted(request.messageType, name, request.payload);
         return true;
     } else {
         // Later message handlers are independent. An owned envelope is a safe no-op.
         report_message(request.messageType, request.accountHandle, "unhandled");
+        if (core::settings::get().server.gameplay.activityUpstreamDump) {
+            // The unhandled types are the ones whose wire format we do not know; their
+            // bytes are the census.
+            report_accepted(request.messageType, "unhandled", request.payload);
+        }
         return true;
     }
     // A message that cannot be staged is reported and dropped. Failing the frame would leave the

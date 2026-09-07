@@ -80,6 +80,14 @@ struct EstablishedPacket {
     /** Bit offset of the external gameplay handler body, once the view gate has opened. */
     std::size_t externalBitOffset{};
     bool hasExternal{};
+    /**
+     * Bits still unconsumed after both reliable queues (the packet tail: the external-present
+     * bit, any body, the filler bit, and padding). A tail of two bits plus padding is the
+     * absent form; a substantially larger nonzero tail means the peer IS sending an external
+     * body even though this side has no handler registered - the receive-side view-gate
+     * diagnostic for the gameplayExternalBody work.
+     */
+    std::size_t trailingBits{};
 };
 
 /** Bounded filler trailer after the external handler. */
@@ -163,5 +171,14 @@ struct FillerTrailer {
  * @return True when the absent-filler bit fit.
  */
 [[nodiscard]] bool write_absent_filler(encoding::bits::Writer& writer) noexcept;
+
+/**
+ * Writes the packet tail with a PRESENT external body: the external-present bit, the body
+ * bits verbatim, then the absent-filler bit. The caller must finish() the writer after this
+ * returns; finish() supplies the zero padding. Exactly bodyBits are copied from the span.
+ */
+[[nodiscard]] bool write_external_tail(encoding::bits::Writer& writer,
+                                       std::span<const std::byte> body,
+                                       std::size_t bodyBits) noexcept;
 
 } // namespace sunrise::middleware::gameplay::peer

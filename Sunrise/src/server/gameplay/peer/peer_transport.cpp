@@ -16,6 +16,9 @@
 #include "../../../middleware/gameplay/peer/join_messages.h"
 #include "../../../middleware/gameplay/peer/peer_container.h"
 #include "../../../middleware/gameplay/peer/reliable_assembly.h"
+#include "external_send.h"
+
+#include <mutex>
 #include "../association/association_host.h"
 #include "../dtls/dtls_host.h"
 #include "../endpoint/gameplay_endpoint.h"
@@ -45,6 +48,12 @@ namespace bits = middleware::encoding::bits;
 
 /** One out-of-band reply fits well inside a single unfragmented payload. */
 constexpr std::size_t kReplyCapacity = 1024;
+/**
+ * The external-body probe rides at most this many packets before it gives up. The peer
+ * acks every packet, so in practice the first attempt decides; the cap only bounds a
+ * peer that never acks.
+ */
+constexpr std::uint8_t kExternalAttemptCap = 4;
 /** Bit position of the payload marker inside its first byte. */
 constexpr unsigned kMarkerShift = 7;
 /** Bits in one byte. */
@@ -1047,6 +1056,16 @@ void consume_established(const gp::Endpoint& from,
         report(core::log::Level::debug, "ev=gameplay stage=packet result=drop reason=grammar");
         return;
     }
+    // THE RECEIVE-SIDE VIEW-GATE DIAGNOSTIC (gameplayExternalBody work): the tail bits the
+    // peer sent after its reliable queues. The absent form is exactly the two flag bits
+    // plus zero padding to the byte edge - between 2 and 9 bits. A larger tail means the
+    // peer IS sending an external body on this connection even though this side registered
+    // no handler.
+    if (packet.trailingBits > 9) {
+        report(core::log::Level::debug,
+               "ev=gameplay stage=tail result=external-bits bits=%zu",
+               packet.trailingBits);
+    }
     std::array<std::uint8_t, kMessageReportCapacity> delivered{};
     std::size_t deliveredCount = 0;
     unsigned stage = 0;
@@ -1061,6 +1080,9 @@ void consume_established(const gp::Endpoint& from,
     bool peerFound = false;
     bool guardAccepted = false;
     std::uint8_t expectedGuard = 0;
+    // The external probe's terminal state, captured under the lock, logged after it.
+    bool externalAcked = false;
+    std::uint16_t externalAckedSequence = 0;
     AcquireSRWLockExclusive(&g_lock);
     gp::PeerLink* peer = find_locked(from);
     std::array<wire::AssembledMessage, kMessageReportCapacity> bodies{};
@@ -1103,6 +1125,16 @@ void consume_established(const gp::Endpoint& from,
                 ++deliveredCount;
             }
         }
+        // The external body rode packet `externalSequence`; the peer's acknowledgement of
+        // that sequence is the delivery proof (the body is not on the reliable queue, so
+        // this is the only receipt it can earn). Clearing pending here stops the probe.
+        if (peer->externalPending
+            && wire::acknowledgement_covers(packet.ack, peer->externalSequence)) {
+            peer->externalPending = false;
+            peer->externalDone = true;
+            externalAcked = true;
+            externalAckedSequence = peer->externalSequence;
+        }
         stage = static_cast<unsigned>(peer->stage);
     }
     ReleaseSRWLockExclusive(&g_lock);
@@ -1115,6 +1147,12 @@ void consume_established(const gp::Endpoint& from,
                static_cast<unsigned>(packet.connectionSequenceLow2),
                static_cast<unsigned>(expectedGuard));
         return;
+    }
+    if (externalAcked) {
+        report(core::log::Level::info,
+               "ev=gameplay stage=external result=acked peer=%u seq=%u",
+               static_cast<unsigned>(from.port),
+               static_cast<unsigned>(externalAckedSequence));
     }
     for (std::size_t index = 0; index < deliveredCount; ++index) {
         report(core::log::Level::info,
@@ -1166,9 +1204,14 @@ void consume_established(const gp::Endpoint& from,
 /**
  * Builds and sends one acknowledgement-only packet.
  * @param peer Peer state copied under the lock before the send.
+ * @param external Present form: the encoded external body and its exact bit count. An
+ *     empty span writes the absent filler instead. The body is NOT reliable-queue
+ *     protected; delivery is proven by the peer acking the packet sequence it rode.
  * @return True when the packet left the endpoint.
  */
-[[nodiscard]] bool send_acknowledgement(const gp::PeerLink& peer) noexcept {
+[[nodiscard]] bool send_acknowledgement(const gp::PeerLink& peer,
+                                        std::span<const std::byte> external = {},
+                                        std::size_t externalBits = 0) noexcept {
     wire::AckState ack{};
     ack.outboundHead = peer.outboundHead;
     ack.outboundHeadPresent = peer.outboundHeadPresent;
@@ -1187,7 +1230,10 @@ void consume_established(const gp::Endpoint& from,
     std::size_t size = 0;
     // Only the 32-byte queue carries this host's messages; the 6-byte queue stays empty.
     if (!wire::write_head_and_ack(writer, guard, ack) || !wire::write_queue(writer, peer.outbound)
-        || !wire::write_empty_queue(writer) || !wire::write_absent_filler(writer)
+        || !wire::write_empty_queue(writer)
+        || (external.empty()
+                ? !wire::write_absent_filler(writer)
+                : !wire::write_external_tail(writer, external, externalBits))
         || !writer.finish(size)) {
         return false;
     }
@@ -1342,6 +1388,10 @@ bool link_identity(std::uint64_t sessionId,
 void service(std::uint64_t now) noexcept {
     std::array<gp::PeerLink, gp::kAssociationCapacity> owed{};
     std::size_t count = 0;
+    // The external-body gate is read once per slice; flipping the setting mid-slice is fine.
+    const bool externalGateOn = core::settings::get().server.activation.gameplayExternalBody;
+    std::array<bool, gp::kAssociationCapacity> externalGaveUp{};
+    std::array<std::uint16_t, gp::kAssociationCapacity> externalGaveUpSequence{};
     AcquireSRWLockExclusive(&g_lock);
     for (gp::PeerLink& peer : g_peers) {
         // An unacknowledged send queue keeps the packet going out until the peer confirms it.
@@ -1386,6 +1436,28 @@ void service(std::uint64_t now) noexcept {
             static_cast<std::uint16_t>((peer.outboundHead + 1) % kPacketSequenceModulus);
         peer.outboundHeadPresent = true;
         peer.lastTick = now;
+        // THE EXTERNAL-BODY DISPATCH PROBE (gameplayExternalBody gate): arm the body once
+        // the link is fully established, and ride it on this packet. The body is not
+        // reliable-queue protected, so delivery is proven only by the peer's ack of this
+        // sequence; the attempt budget keeps an unacked probe from running forever.
+        if (externalGateOn && peer.stage == gp::PeerStage::connected && peer.applicationReady
+            && !peer.externalDone && !peer.externalPending) {
+            peer.externalPending = true;
+        }
+        if (peer.externalPending && peer.externalAttempts < kExternalAttemptCap) {
+            // The sequence is stamped ONCE (the first packet that carries the body) and kept
+            // across retries: the ack of that packet is the delivery proof. Overwriting it per
+            // attempt raced the ack round-trip and gave up before the acks landed (p2-197).
+            if (peer.externalAttempts == 0) {
+                peer.externalSequence = peer.outboundHead;
+            }
+            ++peer.externalAttempts;
+        } else if (peer.externalPending) {
+            peer.externalPending = false;
+            peer.externalDone = true;
+            externalGaveUp[count] = true;
+            externalGaveUpSequence[count] = peer.externalSequence;
+        }
         if (keepaliveOnly) {
             // Debug, and one per second per peer: it is the only evidence the link is being held
             // open rather than merely quiet, and those two look identical from outside (L13).
@@ -1399,8 +1471,50 @@ void service(std::uint64_t now) noexcept {
     }
     ReleaseSRWLockExclusive(&g_lock);
     for (std::size_t index = 0; index < count; ++index) {
-        if (!send_acknowledgement(owed[index])) {
+        // THE EXTERNAL-BODY SEND: build the probe frame for any copy armed this slice.
+        // Fail-closed: the one-time self test must have passed, the build must succeed,
+        // and any failure sends the absent form instead - never a partial body.
+        std::span<const std::byte> external{};
+        std::size_t externalBits = 0;
+        if (owed[index].externalPending) {
+            static std::once_flag selftestOnce;
+            static bool selftestPassed = false;
+            std::call_once(selftestOnce, []() {
+                selftestPassed = external_send::self_test();
+                report(core::log::Level::info,
+                       "ev=gameplay stage=external_selftest result=%s",
+                       selftestPassed ? "pass" : "FAIL");
+            });
+            external_send::EncodedFrame body{};
+            if (selftestPassed && external_send::build_and_encode(body)) {
+                external = std::span<const std::byte>(body.bytes);
+                externalBits = body.bitCount;
+                report(core::log::Level::info,
+                       "ev=gameplay stage=external result=sent peer=%u seq=%u attempt=%u "
+                       "bits=%zu slot=%u",
+                       static_cast<unsigned>(owed[index].endpoint.port),
+                       static_cast<unsigned>(owed[index].externalSequence),
+                       static_cast<unsigned>(owed[index].externalAttempts),
+                       externalBits,
+                       static_cast<unsigned>(owed[index].externalSequence));
+            } else {
+                report(core::log::Level::info,
+                       "ev=gameplay stage=external result=buildfail peer=%u seq=%u",
+                       static_cast<unsigned>(owed[index].endpoint.port),
+                       static_cast<unsigned>(owed[index].externalSequence));
+            }
+        }
+        if (!send_acknowledgement(owed[index], external, externalBits)) {
             report(core::log::Level::debug, "ev=gameplay stage=ack result=fail");
+        }
+    }
+    for (std::size_t index = 0; index < count; ++index) {
+        if (externalGaveUp[index]) {
+            report(core::log::Level::info,
+                   "ev=gameplay stage=external result=gaveup peer=%u seq=%u attempts=%u",
+                   static_cast<unsigned>(owed[index].endpoint.port),
+                   static_cast<unsigned>(externalGaveUpSequence[index]),
+                   static_cast<unsigned>(kExternalAttemptCap));
         }
     }
 }

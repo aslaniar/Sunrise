@@ -142,7 +142,8 @@ bool process(const ServiceRoute& route,
         state::matchmaking::PendingMutation mutation{};
         bool hasMutation = false;
         const bool encoded = matchmaking::encode_response(
-            matchmakingContext, requestBody, output, written, mutation, hasMutation);
+            matchmakingContext, accountKey, requestBody, output, written, mutation,
+            hasMutation);
         if (hasMutation) {
             outcome.transaction = mutation;
         }

@@ -374,6 +374,7 @@ add_library(steam_api64 SHARED
     src/server/bap/encrypted/reply/bap_encrypted_reply.cpp
     src/server/bap/encrypted/activity_host_manager/activity_host_manager_route.cpp
     src/server/bap/encrypted/activity_message/activity_message_route.cpp
+    src/server/bap/encrypted/activity_message/activity_identity_store.cpp
     src/server/bap/encrypted/activity_message/patch_epoch/activity_patch_epoch_route.cpp
     src/server/bap/encrypted/activity_message/membership/activity_membership_route.cpp
     src/server/bap/encrypted/matchmaking/matchmaking_route.cpp
@@ -451,6 +452,7 @@ add_library(steam_api64 SHARED
     src/middleware/bap/activity_message/activity_entity_index_allocation_encoder.cpp
     src/middleware/bap/activity_message/activity_entity_index_grant_encoder.cpp
     src/middleware/bap/activity_message/activity_start_activity_host_encoder.cpp
+    src/middleware/bap/activity_message/activity_bubble_startup_encoder.cpp
     src/middleware/bap/activity_message/activity_peer_contact_encoder.cpp
     src/middleware/bap/activity_message/activity_entity_slots_decoder.cpp
     src/middleware/bap/activity_message/activity_entity_authority_parser.cpp
@@ -766,6 +768,7 @@ add_executable(sunrise-server
     src/middleware/bap/activity_message/activity_entity_index_allocation_encoder.cpp
     src/middleware/bap/activity_message/activity_entity_index_grant_encoder.cpp
     src/middleware/bap/activity_message/activity_start_activity_host_encoder.cpp
+    src/middleware/bap/activity_message/activity_bubble_startup_encoder.cpp
     src/middleware/bap/activity_message/activity_peer_contact_encoder.cpp
     src/middleware/bap/activity_message/activity_entity_slots_decoder.cpp
     src/middleware/bap/activity_message/activity_entity_slots_encoder.cpp
@@ -913,6 +916,7 @@ add_executable(sunrise-server
     src/server/bap/bap_route.cpp
     src/server/bap/encrypted/activity_host_manager/activity_host_manager_route.cpp
     src/server/bap/encrypted/activity_message/activity_message_route.cpp
+    src/server/bap/encrypted/activity_message/activity_identity_store.cpp
     src/server/bap/encrypted/activity_message/membership/activity_membership_route.cpp
     src/server/bap/encrypted/activity_message/patch_epoch/activity_patch_epoch_route.cpp
     src/server/bap/encrypted/activity_transaction/activity_transaction_notifications.cpp

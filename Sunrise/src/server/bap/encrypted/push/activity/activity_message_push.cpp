@@ -7,6 +7,8 @@
 #include "../../../../../core/settings/settings.h"
 #include "../../../../../middleware/bap/activity_message/activity_join_result_encoder.h"
 #include "../../../../../middleware/bap/activity_message/activity_start_activity_host_encoder.h"
+#include "../../../../../middleware/bap/activity_message/activity_bubble_startup_encoder.h"
+#include "../../activity_message/activity_identity_store.h"
 #include "../../../../../middleware/bap/activity_message/activity_entity_index_allocation_encoder.h"
 #include "../../../../../middleware/bap/activity_message/activity_entity_index_grant_encoder.h"
 #include "../../../../../middleware/bap/activity_message/entity_slots.h"
@@ -23,6 +25,8 @@ namespace entity_index_allocation = middleware::bap::activity_message::entity_in
 namespace entity_index_grant = middleware::bap::activity_message::entity_index_grant;
 namespace peer_contact = middleware::bap::activity_message::peer_contact;
 namespace start_activity_host = middleware::bap::activity_message::start_activity_host;
+namespace bubble_startup = middleware::bap::activity_message::bubble_startup;
+namespace activity_identity = sunrise::server::bap::encrypted::activity_message::activity_identity;
 
 /** Activity message type 4 accepts a pending join before any later push. */
 constexpr std::uint32_t kJoinResultMessageType = 4;
@@ -57,6 +61,7 @@ void clear_prefix(std::span<std::byte> buffer, std::size_t size) noexcept {
 /** Appends the ordered join-result and entity-slot svc9 notifications. */
 bool append_join_notifications(Scratch& scratch,
                                const activity_message::ActivityPlan& activity,
+                               core::settings::AccountKey accountKey,
                                std::span<const std::byte, state::kAesKeySize> key,
                                std::array<std::byte, state::kBapNonceSize>& nonce,
                                std::span<std::byte> response,
@@ -186,6 +191,22 @@ bool append_join_notifications(Scratch& scratch,
                                                           nonce,
                                                           response,
                                                           written);
+    }
+    // Type 51 closes the burst when armed: the host names this client the
+    // bubble-host startup, echoing the client's OWN SteamNetworkingIdentity
+    // (the validator memcmps the decoded field-2 against the client's own
+    // row byte-exact — the token is per-session and read from the client's
+    // matchmaking advertisement capture, never derived). An identity that
+    // was never captured leaves the echo out and the message undelivered
+    // (the fail-closed arm). Gated behind activity_bubble_startup.
+    if (encoded && core::settings::get().server.gameplay.activityBubbleStartup) {
+        encoded = append_bubble_startup_notification(scratch,
+                                                     activity.sessionId,
+                                                     accountKey,
+                                                     key,
+                                                     nonce,
+                                                     response,
+                                                     written);
     }
     // S2-0 (spec §3.4): after the unchanged join burst, one static-entity baseline push
     // on the configured carrier, then the patch-epoch bump. Nothing is emitted while
@@ -497,6 +518,69 @@ bool append_start_activity_host_notification(
         clear_prefix(response.subspan(initialWritten), written - initialWritten);
         written = initialWritten;
         nonce = initialNonce;
+    }
+    SecureZeroMemory(&initialNonce, sizeof initialNonce);
+    return encoded;
+}
+
+/**
+ * Appends one bubble_host_startup_info (activity type 51) svc9 notification and
+ * advances its local nonce once. The body is the femu-validated five-field
+ * protobuf (W8 in RE_output/claims/type51-bubble-startup-spec.md): two blob
+ * sub-messages (zeros + the recipient's own identity echo), two nonzero
+ * varint scalars, the 256-byte buffer — all ascending. The identity comes
+ * from the matchmaking advertisement capture; an uncaptured identity fails
+ * closed (the message is left out entirely).
+ */
+bool append_bubble_startup_notification(
+    Scratch& scratch,
+    std::uint64_t sessionId,
+    core::settings::AccountKey accountKey,
+    std::span<const std::byte, state::kAesKeySize> key,
+    std::array<std::byte, state::kBapNonceSize>& nonce,
+    std::span<std::byte> response,
+    std::size_t& written) noexcept {
+    const std::size_t initialWritten = written;
+    auto initialNonce = nonce;
+    std::size_t messageSize = 0;
+    std::array<std::byte, bubble_startup::kIdentityBytes> identity{};
+    const bool haveIdentity =
+        activity_identity::load(accountKey, identity);
+    const bool encoded =
+        haveIdentity
+        && bubble_startup::encode(identity, scratch.responseBody, messageSize)
+        && append_notification_frame(scratch,
+                                     sessionId,
+                                     bubble_startup::kMessageType,
+                                     std::span(scratch.responseBody).first(messageSize),
+                                     key,
+                                     nonce,
+                                     response,
+                                     written);
+    clear_prefix(scratch.responseBody, messageSize);
+    if (encoded) {
+        middleware::secure_channel::advance_nonce(nonce);
+        std::array<char, 128> line{};
+        const int logged = std::snprintf(
+            line.data(),
+            line.size(),
+            "ev=activity stage=bubble_startup push session=0x%llX bytes=%u",
+            static_cast<unsigned long long>(sessionId),
+            static_cast<unsigned>(messageSize));
+        if (logged > 0) {
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::info,
+                             {line.data(), static_cast<std::size_t>(logged)});
+        }
+    } else {
+        clear_prefix(response.subspan(initialWritten), written - initialWritten);
+        written = initialWritten;
+        nonce = initialNonce;
+        if (!haveIdentity) {
+            core::log::write(core::log::Channel::server, core::log::Level::debug,
+                             {"ev=activity stage=bubble_startup result=no_identity",
+                              sizeof("ev=activity stage=bubble_startup result=no_identity") - 1});
+        }
     }
     SecureZeroMemory(&initialNonce, sizeof initialNonce);
     return encoded;

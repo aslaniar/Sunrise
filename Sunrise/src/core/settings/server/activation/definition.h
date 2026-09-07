@@ -22,8 +22,10 @@ struct Settings {
     bool activityCompatibilityMirror{true};
     /**
      * The external common and channel wrapper on the gameplay packet.
-     * TODO: nothing reads this gate. The codec and receive shadow exist; the packet-outcome
-     * binding does not. Wire it to the established writer, not before.
+     * WIRED (2026-09-06, the entity dispatch probe): peer_transport's established writer
+     * consumes this gate - service() arms the probe per applicationReady link, attaches the
+     * one-record peer-create frame to the next packet, and the peer's ack of that packet's
+     * sequence closes it. The receive side logs the peer's own tail bits unconditionally.
      */
     bool gameplayExternalBody{false};
     /**
