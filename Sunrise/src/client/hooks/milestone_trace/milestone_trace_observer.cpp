@@ -163,6 +163,25 @@ enum class Probe : std::uint8_t {
      *  join gate's lookup actually walks. Change-gated on the whole (key, six-index)
      *  fingerprint, so a walk that binds nothing new is silent. Enter-only. */
     walkmap,
+    /** THE DISOWN OBSERVER (2026-09-06, thread 2): the callee 0x1417C4810 is the ONLY
+     *  writer of the participant mask - and it only CLEARS (btr on +0x3112 and +0x3114).
+     *  Args: edx = the BIT INDEX, r8d = the RECORD INDEX; the record is
+     *  0x1417CF0E0() + idx*0x41F0. Enter reads the mask BEFORE, leave reads it AFTER,
+     *  and the pair separates the two hypotheses nobody has ever separated: the peer's
+     *  bit was SET AND THEN CLEARED (20.277 R2's assumption) versus NEVER SET AT ALL
+     *  (equally consistent with mask=0x0000 in all 17 archives). Positive control: rec=0
+     *  is cleared every boot, so silence indicts the probe, not the world. */
+    disown,
+    /** THE PUMP-LADDER OBSERVER (row 7): the callee 0x1416D56C0 is the receive pump.
+     *  rcx = THE CONNECTION OBJECT whose [+0x1D18] is the ladder the rung gate reads.
+     *  Enter-only, ONE dword read, change-gated on (conn, ladder) - the question is
+     *  simply whether the pump is ever driven with the PEER's connection at all. */
+    pumplad,
+    /** THE RUNG-ADVANCE OBSERVER (row 7): the callee 0x1416BCFC0 is the advance the
+     *  pump calls when ladder == 4 && subtype != 8. rcx = the connection object.
+     *  Enter-only. If this fires for the fork's connection and never for the peer's,
+     *  the subtype is the gate; if it never fires at all, the pump never reaches it. */
+    rungadv,
     /** THE BLOB-STAMP OBSERVER (p2-189): the callee is the session APPLY 0x1416C5280
      *  (rcx = the source config object, rdx = the destination session object). Its
      *  tail copies source +0xC8..+0xD8 into dest +0x57C..+0x58C - THE identity blob
@@ -443,6 +462,21 @@ constexpr std::uintptr_t kWalkMapRva = 0x177A0B0;      ///< the lookup walker (6
 constexpr std::uintptr_t kWalkLeaveRva = 0x177A0B0;    ///< the SAME walker - its LEAVE hook is the lookup's attributed outcome
 constexpr std::uintptr_t kApplyStampRva = 0x16C5280;   ///< the session apply (stamps the +0x57C blob window)
 
+// ROW 7 - THE CONNECTED RUNG (2026-09-06). The chain that advances a peer's
+// connection ladder from established(4) to connected(5), decoded end to end:
+//   0x1416D56C0 (the receive pump) reads [conn+0x1D18] (THE LADDER) and the
+//   subtype produced by 0x1416E3140's rdx out-param, then at 0x1416D5F0A-F14:
+//       ladder == 4 EXACTLY  &&  subtype != 8   ->  call 0x1416BCFC0 (the advance)
+//   The peer's record sits at ladder 4 (resv_rec s1dc0=4) so it PASSES the ladder
+//   half; the subtype is the untested gate. NOTE the base offset: the guard's
+//   [rsi+0x1D18] and resv_rec's +0x1DC0 are THE SAME FIELD - CLAIM 2's rsi is
+//   base+0xA8+idx*0x41F0, and 0xA8+0x1D18 == 0x1DC0 (likewise 0xA8+0x3040 ==
+//   0x30E8). Both are DWORD-aligned, so no unaligned-field guard applies (R1).
+constexpr std::uintptr_t kDisownRva = 0x17C4810;       ///< the participant-mask CLEAR: btr on +0x3112/+0x3114 (the ONLY writer of either word)
+constexpr std::uintptr_t kPumpLadRva = 0x16D56C0;      ///< the receive pump - reads the ladder, gates the rung advance
+constexpr std::uintptr_t kEvtSubRva = 0x16E3140;       ///< produces the event SUBTYPE into its rdx out-param (the != 8 gate)
+constexpr std::uintptr_t kRungAdvRva = 0x16BCFC0;      ///< the connected-rung ADVANCE (ladder 4 -> 5)
+
 constexpr std::uintptr_t kEntMakeRva = 0x170F190;      ///< calls idx_alloc at +0x3E
 constexpr std::uintptr_t kAuthARva = 0x12ABCA0;        ///< predicate half A
 constexpr std::uintptr_t kAuthBRva = 0x12AEE50;        ///< predicate half B (deref != 0)
@@ -573,7 +607,7 @@ constexpr std::uint32_t kType30SchemaKeyOracle = 0x80808683;
 // 2026-09-05 when the image_set entry was commented out and this constant was left at 48.
 // It compiled cleanly because kIndexOf returns early on a match and never reads the null
 // entry. The static_assert below now makes the compiler catch it instead of a boot.
-constexpr std::size_t kTargetsSize = 64;
+constexpr std::size_t kTargetsSize = 68;
 constexpr std::array<Target, kTargetsSize> kTargets{{
     // The entity receive cluster. 0x141718510 is the ENTRY and has ZERO static references
     // of any kind in the whole image (20.209) - its caller is the open question, so it gets
@@ -634,6 +668,17 @@ constexpr std::array<Target, kTargetsSize> kTargets{{
     // p2-189: the blob stamp - the apply that writes the +0x57C identity window,
     // with the soid it is stamping and the destination's pre-state (change-gated).
     {"apply_stamp", kApplyStampRva, 16, OutParam::none, false, Probe::applystamp},
+    // ROW 7 + THREAD 2 (2026-09-06). Four rows on ONE decision chain (the WIDE-NET
+    // rule): does the pump see the peer's connection -> what ladder -> what subtype ->
+    // does the advance fire; plus the disown, which says whether the peer's participant
+    // bit was ever set. All four callees are event-driven with 2-8 callers (the walker's
+    // 35 is what made THAT one need a window); none is per-tick.
+    {"disown",    kDisownRva,   32, OutParam::none, false, Probe::disown},
+    {"pump_lad",  kPumpLadRva,  24, OutParam::none, false, Probe::pumplad},
+    // no-leave: enter-only by design - the subtype it produces is read through the
+    // generic out-param logger below (OutParam::rdx), which IS the leave-side read.
+    {"evt_sub",   kEvtSubRva,   24, OutParam::rdx,  false, Probe::none},
+    {"rung_adv",  kRungAdvRva,  16, OutParam::none, false, Probe::rungadv},
     // The 0x89 sobject record decoder and the event-ring commit the queue path ends in.
     {"sobj_decode", kSobjDecodeRva,  8},
     {"ring_commit", kRingCommitRva,  8},
@@ -2544,6 +2589,150 @@ void emit_walkleave(const char* fn, std::uint64_t call, std::uint64_t ret) noexc
     if (w > 0) { emit(t.data(), static_cast<std::size_t>(w)); }
 }
 
+/**
+ * ROW 7 / THREAD 2 OBSERVERS (2026-09-06). All three read the SAME record family the
+ * resv probe walks: base = 0x1417CF0E0(), record = base + idx*0x41F0. Field offsets are
+ * the resv probe's, which the 0xA8 base identity above proves are the guard's own.
+ * ALIGNMENT (R1): +0x3112 is a u16 at a 2-aligned offset and +0x1D18/+0x1DC0/+0x30E8 are
+ * dwords at 4-aligned offsets - every read below is sized to its field, and no
+ * qword-alignment test is applied to any of them (the BLIND-GUARD defect was exactly
+ * such a test applied to a field that is unaligned by design).
+ */
+constexpr std::uintptr_t kResvBaseRva = 0x17CF0E0;
+constexpr std::uintptr_t kResvStride = 0x41F0;
+constexpr std::uintptr_t kResvMask = 0x3112;
+constexpr std::uintptr_t kResvLadder = 0x1DC0;   // == the guard's [rsi+0x1D18]
+constexpr std::uintptr_t kResvEstab = 0x30E8;    // == the guard's [rsi+0x3040]
+constexpr std::uintptr_t kResvIdent = 0x3144;
+constexpr std::uintptr_t kConnLadder = 0x1D18;   // the ladder read from the CONNECTION ptr
+
+[[nodiscard]] std::uintptr_t resv_record(std::uint32_t idx) noexcept {
+    using ResvBaseFn = void* (*)() noexcept;
+    const auto accessor = reinterpret_cast<ResvBaseFn>(g_base + kResvBaseRva);
+    const auto base = reinterpret_cast<std::uintptr_t>(accessor());
+    if (base < 0x10000U || idx >= 62U) {
+        return 0;
+    }
+    return base + static_cast<std::uintptr_t>(idx) * kResvStride;
+}
+
+constexpr unsigned kDisownBudget = 32;
+std::atomic<unsigned> g_disownEmits{0};
+thread_local std::uint32_t t_disownRec = 0;
+thread_local std::uint32_t t_disownBit = 0;
+thread_local std::uint16_t t_disownBefore = 0;
+thread_local bool t_disownArmed = false;
+
+/** ENTER: capture (record, bit, mask BEFORE). The clear happens inside the callee. */
+void emit_disown_enter(std::uint32_t bitIndex, std::uint32_t recIndex) noexcept {
+    t_disownArmed = false;
+    if (g_disownEmits.load(std::memory_order_relaxed) >= kDisownBudget) {
+        static std::atomic<bool> exhaustedLogged{false};
+        if (!exhaustedLogged.exchange(true, std::memory_order_relaxed)) {
+            std::array<char, 128> t{};
+            const int w = std::snprintf(t.data(), t.size(),
+                "ev=mtrace stage=disown result=budget_exhausted cap=%u", kDisownBudget);
+            if (w > 0) { emit(t.data(), static_cast<std::size_t>(w)); }
+        }
+        return;
+    }
+    const std::uintptr_t rec = resv_record(recIndex);
+    if (rec == 0) { return; }
+    std::uint16_t before = 0;
+    if (!gate_wwatch::safe_read(reinterpret_cast<const void*>(rec + kResvMask),
+                                &before, sizeof(before))) {
+        return;
+    }
+    t_disownRec = recIndex;
+    t_disownBit = bitIndex;
+    t_disownBefore = before;
+    t_disownArmed = true;
+}
+
+/** LEAVE: the mask AFTER, plus the record's ladder/estab/identity for attribution. */
+void emit_disown_leave(const char* fn, std::uint64_t call, std::uintptr_t callerRva) noexcept {
+    if (!t_disownArmed) { return; }
+    t_disownArmed = false;
+    const std::uintptr_t rec = resv_record(t_disownRec);
+    if (rec == 0) { return; }
+    std::uint16_t after = 0;
+    std::uint32_t estab = 0;
+    std::uint32_t ladder = 0;
+    std::uint64_t ident = 0;
+    if (!gate_wwatch::safe_read(reinterpret_cast<const void*>(rec + kResvMask), &after, sizeof(after))
+        || !gate_wwatch::safe_read(reinterpret_cast<const void*>(rec + kResvEstab), &estab, sizeof(estab))
+        || !gate_wwatch::safe_read(reinterpret_cast<const void*>(rec + kResvLadder), &ladder, sizeof(ladder))
+        || !gate_wwatch::safe_read(reinterpret_cast<const void*>(rec + kResvIdent), &ident, sizeof(ident))) {
+        return;
+    }
+    g_disownEmits.fetch_add(1, std::memory_order_relaxed);
+    std::array<char, 256> t{};
+    const int w = std::snprintf(t.data(), t.size(),
+        "ev=mtrace stage=disown fn=%s call=%llu caller_rva=0x%llX rec=%u bit=%u "
+        "before=0x%04X after=0x%04X wasset=%d s30e8=%u s1dc0=%u ident=0x%016llX",
+        fn, static_cast<unsigned long long>(call),
+        static_cast<unsigned long long>(callerRva), t_disownRec, t_disownBit,
+        t_disownBefore, after,
+        // THE ANSWER, ON THE LINE: was the bit this call cleared actually SET?
+        static_cast<int>((t_disownBefore >> (t_disownBit & 0xFU)) & 1U),
+        estab, ladder, static_cast<unsigned long long>(ident));
+    if (w > 0) { emit(t.data(), static_cast<std::size_t>(w)); }
+}
+
+/** The pump's view of the ladder. ONE dword read, change-gated on (conn, ladder). */
+void emit_pumplad(std::size_t index, const char* fn, std::uint64_t call,
+                  std::uint64_t conn) noexcept {
+    if (conn < 0x10000U || (conn & 3U) != 0U) { return; }
+    std::uint32_t ladder = 0;
+    if (!gate_wwatch::safe_read(reinterpret_cast<const void*>(conn + kConnLadder),
+                                &ladder, sizeof(ladder))) {
+        return;
+    }
+    // probe_changed's initial state is 0, so a signature that computes to zero reads as
+    // "unchanged" and would swallow a real first observation.
+    std::uint64_t sig = (conn << 8) ^ (static_cast<std::uint64_t>(ladder) + 1U);
+    if (sig == 0) { sig = 1; }
+    if (!probe_changed(index, sig)) { return; }
+    std::array<char, 176> t{};
+    const int w = std::snprintf(t.data(), t.size(),
+        "ev=mtrace stage=pump_lad fn=%s call=%llu conn=0x%llX ladder=%u",
+        fn, static_cast<unsigned long long>(call),
+        static_cast<unsigned long long>(conn), ladder);
+    if (w > 0) { emit(t.data(), static_cast<std::size_t>(w)); }
+}
+
+constexpr unsigned kRungAdvBudget = 16;
+std::atomic<unsigned> g_rungAdvEmits{0};
+
+/** The advance itself: it only runs when ladder==4 AND subtype!=8, so every firing is
+ *  the event row 7 is waiting for - and WHICH connection it fires for is the answer. */
+void emit_rungadv(const char* fn, std::uint64_t call, std::uintptr_t callerRva,
+                  std::uint64_t conn) noexcept {
+    if (g_rungAdvEmits.load(std::memory_order_relaxed) >= kRungAdvBudget) {
+        static std::atomic<bool> exhaustedLogged{false};
+        if (!exhaustedLogged.exchange(true, std::memory_order_relaxed)) {
+            std::array<char, 128> t{};
+            const int w = std::snprintf(t.data(), t.size(),
+                "ev=mtrace stage=rung_adv result=budget_exhausted cap=%u", kRungAdvBudget);
+            if (w > 0) { emit(t.data(), static_cast<std::size_t>(w)); }
+        }
+        return;
+    }
+    std::uint32_t ladder = 0xFFFFFFFFU;
+    if (conn >= 0x10000U && (conn & 3U) == 0U) {
+        static_cast<void>(gate_wwatch::safe_read(
+            reinterpret_cast<const void*>(conn + kConnLadder), &ladder, sizeof(ladder)));
+    }
+    g_rungAdvEmits.fetch_add(1, std::memory_order_relaxed);
+    std::array<char, 176> t{};
+    const int w = std::snprintf(t.data(), t.size(),
+        "ev=mtrace stage=rung_adv fn=%s call=%llu caller_rva=0x%llX conn=0x%llX ladder=%d",
+        fn, static_cast<unsigned long long>(call),
+        static_cast<unsigned long long>(callerRva),
+        static_cast<unsigned long long>(conn), static_cast<int>(ladder));
+    if (w > 0) { emit(t.data(), static_cast<std::size_t>(w)); }
+}
+
 void sesscmp_reset_seen() noexcept {
     g_sessCmpEmits.store(0, std::memory_order_relaxed);
     for (SessCmpCallerSlot& slot : g_sessCmpSlots) {
@@ -2955,6 +3144,26 @@ void run_probe(std::size_t index, Probe probe, const char* fn, const char* when,
             emit_walkmap(fn, call, reinterpret_cast<std::uint64_t>(rcx),
                          reinterpret_cast<std::uint64_t>(rdx));
             break;
+        case Probe::disown:
+            // edx = the BIT INDEX, r8 = the RECORD INDEX (movsxd rbx, r8d in the callee).
+            // Enter captures the mask BEFORE; the leave dispatch emits the pair.
+            if (when[0] == 'e') {
+                emit_disown_enter(static_cast<std::uint32_t>(rdx),
+                                  static_cast<std::uint32_t>(r8));
+            }
+            break;
+        case Probe::pumplad:
+            // rcx = the connection object whose [+0x1D18] is the ladder.
+            if (when[0] == 'e') {
+                emit_pumplad(index, fn, call, reinterpret_cast<std::uint64_t>(rcx));
+            }
+            break;
+        case Probe::rungadv:
+            // rcx = the connection object being advanced to connected(5).
+            if (when[0] == 'e') {
+                emit_rungadv(fn, call, callerRva, reinterpret_cast<std::uint64_t>(rcx));
+            }
+            break;
         case Probe::applystamp:
             // rcx = the source config, rdx = the destination session object.
             emit_applystamp(fn, call, reinterpret_cast<std::uint64_t>(rcx),
@@ -3245,6 +3454,10 @@ std::uint64_t __fastcall observe(void* rcx, void* rdx, void* r8, void* r9,
         if (kTargets[Index].probe == Probe::registry) {
             // The count DELTA across the call is the proof that registration happened.
             emit_registry(kTargets[Index].name, "leave", call, rcx);
+        }
+        if (kTargets[Index].probe == Probe::disown) {
+            // The mask AFTER the btr - same row, enter+leave, ONE detour (p2-194a).
+            emit_disown_leave(kTargets[Index].name, call, callerRva);
         }
         if (kTargets[Index].probe == Probe::pktdump) {
             // THE JOIN WINDOW CLOSES HERE - last, so every leave-side probe above
