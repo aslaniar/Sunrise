@@ -55,6 +55,7 @@ bool Parser::gameplay_settings(gameplay::Settings& output) noexcept {
     bool hasEntityIndexAllocationCrossMember = false;
     bool hasActivityUpstreamDump = false;
     bool hasActivityViewInitiate = false;
+    bool hasHostTransitionEmit = false;
     bool hasActivityStartHostPush = false;
     bool hasActivityBubbleStartup = false;
     bool hasEntityIndexGrant = false;
@@ -140,6 +141,11 @@ bool Parser::gameplay_settings(gameplay::Settings& output) noexcept {
                 return false;
             }
             hasActivityViewInitiate = true;
+        } else if (key == "host_transition_emit") {
+            if (hasHostTransitionEmit || !boolean(candidate.hostTransitionEmit)) {
+                return false;
+            }
+            hasHostTransitionEmit = true;
         } else if (key == "activity_bubble_startup") {
             if (hasActivityBubbleStartup || !boolean(candidate.activityBubbleStartup)) {
                 return false;

@@ -20,6 +20,7 @@
 #include "../gameplay_log.h"
 #include "../peer/peer_transport.h"
 #include "group_host_sessions.h"
+#include "../../../middleware/gameplay/group/migration_messages.h"
 #include "group_migration_receipts.h"
 
 namespace sunrise::server::gameplay::group {
@@ -86,6 +87,12 @@ struct Admitted {
     /** Set once this record's view-establishment initiation has been queued (the host half
      *  of the handshake; the 20.323/20.324 arc). Never re-sent. */
     bool viewInitiated{};
+    /** Set once this record's host-transition (reliable message id 21) has been queued.
+     *  The client's handler chain walks the packet's own connection's session container
+     *  and drives set_session_state(session, 9, 0x30) - the fork-side lever for the
+     *  session-state climb the pokes could only force (20.359 / p2217_emitter_spec.md).
+     *  Never re-sent. */
+    bool hostTransitionSent{};
     /** Set when the session's composition changed after this record's last queued snapshot, so
      *  it is owed a fresh complete one. Another peer joining or leaving, or another peer's
      *  player changing, marks every record of the session. */
@@ -549,6 +556,34 @@ void mark_session_dirty(std::uint64_t sessionId) noexcept {
         report(core::log::Level::info,
                "ev=gameplay stage=view result=%s kind=0 token=0x%llX",
                viewSent ? "initiated" : "initiate-fail",
+               static_cast<unsigned long long>(record.sessionId));
+    }
+    // THE HOST-TRANSITION EMITTER (reliable message id 21, "host-transition"):
+    // the fork-side lever for the session-state climb. The client's handler chain
+    // walks the packet's own connection's session container (proven to match the
+    // fork's verbatim sessionId, p2-193a/b), the guard passes on our parked state
+    // 4 (measured TRUE 9/9, p2-212), and the chain ends in the unconditional
+    // set_session_state(session, 9, 0x30) - the live-state write the world-change
+    // executor waits on. The chain never reads the body; it only has to parse
+    // (p2217_emitter_spec.md). One-shot per record, default-OFF setting - the
+    // delivered mechanism stays server-side (the governing constraint's home turf).
+    if (queued && core::settings::get().server.gameplay.hostTransitionEmit
+        && !record.hostTransitionSent) {
+        record.hostTransitionSent = true;
+        const std::uint64_t transitionSessionId = record.sessionId;
+        const bool transitionSent = send_reliable(
+            record.sessionId,
+            record.endpoint,
+            static_cast<std::uint8_t>(wire::MigrationMessageId::hostTransition),
+            wire::kHostTransitionSize,
+            [&transitionSessionId](bits::Writer& writer) noexcept {
+                return writer.write(transitionSessionId, 64)   // the walked session's identity
+                    && writer.write(100, 7)                    // progress (<=100)
+                    && writer.write(transitionSessionId & 0xFFFFFFFFU, 32); // token
+            });
+        report(core::log::Level::info,
+               "ev=gameplay stage=host_transition result=%s id=21 sess=0x%llX",
+               transitionSent ? "sent" : "send-fail",
                static_cast<unsigned long long>(record.sessionId));
     }
     return queued;

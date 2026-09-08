@@ -91,6 +91,17 @@ struct Settings {
      */
     bool activityViewInitiate{false};
     /**
+     * THE HOST-TRANSITION EMITTER (reliable message id 21): after each admitted
+     * peer's snapshot is on its reliable channel, queue one host-transition
+     * record {u64 sessionId, 7-bit progress=100, u32 token} (declared size 16).
+     * The client's handler chain (walker match -> guard -> middle hop ->
+     * set_session_state(session, 9, 0x30)) is the FORK-SIDE lever for the
+     * session-state climb the client-side pokes could only force
+     * (p2217_emitter_spec.md / 20.359). The chain never reads the body.
+     * Default false = byte-identical traffic.
+     */
+    bool hostTransitionEmit{false};
+    /**
      * Designate each client to START hosting its own activity session (activity
      * message type 9, body [mode 1][activity session id][value 4], once per join
      * burst). The client's apply runs its per-session host state-machine step -
