@@ -11,6 +11,7 @@
 #include "../../../middleware/encoding/bit_reader.h"
 #include "../../../middleware/encoding/bit_writer.h"
 #include "../../../middleware/gameplay/descriptor/join_descriptor.h"
+#include "../../../middleware/gameplay/group/migration_messages.h"
 #include "../../../middleware/gameplay/peer/connect_messages.h"
 #include "../../../middleware/gameplay/peer/established_packet.h"
 #include "../../../middleware/gameplay/peer/join_messages.h"
@@ -450,6 +451,35 @@ void answer_connect(const gp::Endpoint& from,
            static_cast<unsigned long long>(sessionId),
            from.port,
            channel);
+    if (!bound) {
+        return false;
+    }
+    // THE HOST-TRANSITION, IN ORDER AFTER THE CONNECT-ESTABLISH (p2-219's race
+    // fix): the client's pump advances the connection ladder (4 -> 5) inside its
+    // event-8 special case (the rung advance at 0x1416D5F14), and the id-21
+    // dispatcher's door reads [conn+0x1D18]==5 - boot 7's record arrived while
+    // the ladder still read 4 and the dispatcher silently refused it. Queued
+    // here, the transition rides the SAME in-order reliable channel AFTER the
+    // establish record, so the pump advances the ladder before the door reads
+    // it. The handler's own guard (state in {2,4,5}) makes any repeat a
+    // no-op once the session is live, so re-binds re-arm this safely.
+    std::array<std::byte, 16> transition{};
+    bits::Writer transitionWriter(transition);
+    std::size_t transitionSize = 0;
+    if (transitionWriter.write(sessionId, 64)
+        && transitionWriter.write(100, 7)
+        && transitionWriter.write(static_cast<std::uint32_t>(sessionId), 32)
+        && transitionWriter.finish(transitionSize)) {
+        const bool transitionQueued = enqueue_reliable(
+            sessionId, from,
+            static_cast<std::uint8_t>(middleware::gameplay::group::MigrationMessageId::hostTransition),
+            middleware::gameplay::group::kHostTransitionSize, {transition.data(), transitionSize},
+            transitionWriter.bit_count());
+        report(core::log::Level::info,
+               "ev=gameplay stage=host_transition result=%s id=21 sess=0x%016llX site=bind",
+               transitionQueued ? "sent" : "send-fail",
+               static_cast<unsigned long long>(sessionId));
+    }
     return bound;
 }
 
