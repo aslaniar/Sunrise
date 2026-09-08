@@ -3321,18 +3321,59 @@ void maybe_poke_state9(const char* fn, std::uint64_t call, std::uint64_t slotPtr
     if (!fired.compare_exchange_strong(expected, true, std::memory_order_relaxed)) {
         return;
     }
-    using SetStateFn = void (*)(void*, std::int32_t, std::int32_t);
-    const auto setSessionState =
-        reinterpret_cast<SetStateFn>(g_base + kSetSessionStateRva);
-    setSessionState(const_cast<void*>(reinterpret_cast<const void*>(slotPtr)), 9, 0x30);
-    const std::int32_t stateAfter =
-        *reinterpret_cast<const volatile std::int32_t*>(slot + 0x1AEF8);
-    std::array<char, 160> text{};
-    const int w = std::snprintf(
-        text.data(), text.size(),
-        "ev=mtrace stage=poke fn=%s call=%llu verdict=executed state_after=%d",
-        fn, static_cast<unsigned long long>(call), stateAfter);
-    if (w > 0) { emit(text.data(), static_cast<std::size_t>(w)); }
+    // p2-214: the rig freeze is SETTER-CALL-SPECIFIC (2/2 boots - the rig's
+    // last line is the state_set ENTER with rdx=9, then silence). The
+    // pre-named fallback P1-raw: write the field directly, no setter call,
+    // no bookkeeping (the edge-detection watchers see the value, not the
+    // transition). Selected by client.poke_state9_mode: 1 = setter call
+    // (boot 1/2), 2 = raw write (boot 3+).
+    if (core::settings::get().client.pokeState9Mode == 2U) {
+        *reinterpret_cast<volatile std::int32_t*>(const_cast<std::uint8_t*>(slot)
+                                                  + 0x1AEF8) = 9;
+        const std::int32_t stateAfter =
+            *reinterpret_cast<const volatile std::int32_t*>(slot + 0x1AEF8);
+        std::array<char, 160> text{};
+        const int w = std::snprintf(
+            text.data(), text.size(),
+            "ev=mtrace stage=poke fn=%s call=%llu verdict=executed-raw state_after=%d",
+            fn, static_cast<unsigned long long>(call), stateAfter);
+        if (w > 0) { emit(text.data(), static_cast<std::size_t>(w)); }
+    } else {
+        using SetStateFn = void (*)(void*, std::int32_t, std::int32_t);
+        const auto setSessionState =
+            reinterpret_cast<SetStateFn>(g_base + kSetSessionStateRva);
+        setSessionState(const_cast<void*>(reinterpret_cast<const void*>(slotPtr)), 9, 0x30);
+        const std::int32_t stateAfter =
+            *reinterpret_cast<const volatile std::int32_t*>(slot + 0x1AEF8);
+        std::array<char, 160> text{};
+        const int w = std::snprintf(
+            text.data(), text.size(),
+            "ev=mtrace stage=poke fn=%s call=%llu verdict=executed state_after=%d",
+            fn, static_cast<unsigned long long>(call), stateAfter);
+        if (w > 0) { emit(text.data(), static_cast<std::size_t>(w)); }
+    }
+    // P4 (boot 3): THE PHASE-INIT FORCE. 0x140B37BF0 is the ~40-call
+    // UNCONDITIONAL sequencer that constructs the activation class (vft
+    // 0x141C14F70) - zero direct callers, no dispatch row (20.356 R4): the
+    // chain is unreachable without forcing. It takes NO arguments and is a
+    // pure call sequence, so a direct call is well-defined. One shot,
+    // settings-gated (client.poke_phase_init), logged both sides.
+    static std::atomic<bool> phaseFired{false};
+    if (core::settings::get().client.pokePhaseInit) {
+        bool pfExpected = false;
+        if (phaseFired.compare_exchange_strong(pfExpected, true,
+                                               std::memory_order_relaxed)) {
+            std::array<char, 128> text{};
+            int w = std::snprintf(text.data(), text.size(),
+                                  "ev=mtrace stage=poke fn=phase_init verdict=forced");
+            if (w > 0) { emit(text.data(), static_cast<std::size_t>(w)); }
+            using PhaseInitFn = void (*)();
+            reinterpret_cast<PhaseInitFn>(g_base + kPhaseInitRva)();
+            w = std::snprintf(text.data(), text.size(),
+                              "ev=mtrace stage=poke fn=phase_init verdict=returned");
+            if (w > 0) { emit(text.data(), static_cast<std::size_t>(w)); }
+        }
+    }
 }
 
 void emit_sessstate(const char* fn, std::uint64_t call, std::uint64_t slotPtr) noexcept {    const void* slot = reinterpret_cast<const void*>(slotPtr);

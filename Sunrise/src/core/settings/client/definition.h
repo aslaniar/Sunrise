@@ -171,6 +171,24 @@ struct Settings {
     std::uint32_t pokeState9Arming{1};
 
     /**
+     * THE POKE'S MECHANISM (p2-214): 1 = call the real setter (boot 1/2 -
+     * FROZE THE RIG 2/2, the last log line being the state_set enter with
+     * rdx=9); 2 = the raw field write [session+0x1AEF8]=9, no setter call
+     * (the pre-named P1-raw fallback; the edge-detection watchers see the
+     * value, not the transition). Default 1.
+     */
+    std::uint32_t pokeState9Mode{1};
+
+    /**
+     * P4 (boot 3): after the state poke, direct-call the phase-init
+     * sequencer (0x140B37BF0) once - the ~40-call UNCONDITIONAL chain that
+     * constructs the activation class. Zero callers, no dispatch row
+     * (20.356 R4): unreachable without forcing. Throwaway diagnostic,
+     * default false.
+     */
+    bool pokePhaseInit{};
+
+    /**
      * Arms the notifier detour (0x1417FFA20) in the milestone tracer. Default 0: that
      * body is obfuscated (keyed family) and a rig login failure correlated with the
      * 46-target set (p2-164 attempt 1, 2026-09-03), so the wide-net capture is

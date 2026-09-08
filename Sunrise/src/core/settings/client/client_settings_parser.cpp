@@ -24,6 +24,8 @@ bool Parser::client_settings(client::Settings& output) noexcept {
     bool hasGatePoke = false;
     bool hasPokeState9 = false;
     bool hasPokeState9Arming = false;
+    bool hasPokeState9Mode = false;
+    bool hasPokePhaseInit = false;
     bool hasNotifierHook = false;
     bool hasAdmissionMemberIndex = false;
     bool hasAdmissionXuid = false;
@@ -108,6 +110,18 @@ bool Parser::client_settings(client::Settings& output) noexcept {
             }
             candidate.pokeState9Arming = static_cast<std::uint32_t>(value);
             hasPokeState9Arming = true;
+        } else if (key == "poke_state9_mode") {
+            std::uint64_t value = 0;
+            if (hasPokeState9Mode || !unsigned_integer(value) || value > 2ULL) {
+                return false;
+            }
+            candidate.pokeState9Mode = static_cast<std::uint32_t>(value);
+            hasPokeState9Mode = true;
+        } else if (key == "poke_phase_init") {
+            if (hasPokePhaseInit || !boolean(candidate.pokePhaseInit)) {
+                return false;
+            }
+            hasPokePhaseInit = true;
         } else if (key == "notifier_hook") {
             if (hasNotifierHook || !boolean(candidate.notifierHook)) {
                 return false;
