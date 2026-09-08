@@ -237,6 +237,16 @@ struct Target {
      * the budget.
      */
     bool first_seen_leave;
+    /**
+     * FIRST-SEEN OUT-PARAM GATING (20.352 R5). Like first_seen_leave, but keyed on the
+     * out-param VALUE - the dispatch id - instead of (slot, ret-class). evt_sub's rdx is
+     * the out-POINTER, a near-constant stack address, so the leave key collapses to ~2
+     * keys and enumerates nothing. p2-211 measured the cost of that: 8,562 calls, 24
+     * described, all inside a 16ms window two minutes into an eight-minute boot, so an
+     * event type arriving later could not have been seen even if it did arrive. With
+     * this flag, past the budget the FIRST occurrence of each distinct id still prints.
+     */
+    bool first_seen_outparam;
 };
 
 /**
@@ -492,6 +502,31 @@ constexpr std::uintptr_t kApplyStampRva = 0x16C5280;   ///< the session apply (s
 constexpr std::uintptr_t kDisownRva = 0x17C4810;       ///< the participant-mask CLEAR: btr on +0x3112/+0x3114 (the ONLY writer of either word)
 constexpr std::uintptr_t kPumpLadRva = 0x16D56C0;      ///< the receive pump - reads the ladder, gates the rung advance
 constexpr std::uintptr_t kEvtSubRva = 0x16E3140;       ///< produces the event SUBTYPE into its rdx out-param (the != 8 gate)
+
+/**
+ * THE C2 GUARD (FINDINGS 20.350 R4). 0x14176CE80, rcx = a session slot, returns al.
+ * Decoded end to end: it returns TRUE only when the slot's state (+0x1AEF8) is in
+ * {2,4,5} AND a lookup over [slot+0x860] returns an index != -1 AND that index equals
+ * [slot+0x874]. It DELIBERATELY EXCLUDES slots already at 6..9 - it is the gate for
+ * not-yet-live sessions, and our sessions sit at 4, inside its eligible set. The
+ * generic enter line carries rcx (WHICH session was evaluated) and the leave line
+ * carries ret (the verdict), so no probe is needed: the pair is the measurement.
+ * Exact .pdata bounds 0x14176CE80..0x14176CEB5, offset 0.
+ */
+constexpr std::uintptr_t kSessGuardRva = 0x176CE80;
+
+/**
+ * THE EXECUTOR'S SESSION RESOLVER (FINDINGS 20.350 R3 - the open item this closes).
+ * The world-change executor does not take its session as an argument: at 0x140C09046 it
+ * CALLS 0x140C03F70 and moves the result into r14, then gates on [r14+0x1AEF8] being
+ * 6..9. So this function's RETURN is, by construction, the session the executor
+ * evaluates. Which member it resolves is a runtime selector (idx vs idx XOR 1) that
+ * static reading cannot settle - hence the hook. Probe::sessstate is reused verbatim:
+ * it already logs the returned slot's bound id (+0x1C7C0) and gate-state (+0x1AEF8)
+ * off the LEAVE value, which is exactly the question.
+ * Exact .pdata bounds 0x140C03F70..0x140C04029, offset 0.
+ */
+constexpr std::uintptr_t kExecSessRva = 0xC03F70;
 constexpr std::uintptr_t kRungAdvRva = 0x16BCFC0;      ///< the connected-rung ADVANCE (ladder 4 -> 5)
 
 constexpr std::uintptr_t kEntMakeRva = 0x170F190;      ///< calls idx_alloc at +0x3E
@@ -624,7 +659,7 @@ constexpr std::uint32_t kType30SchemaKeyOracle = 0x80808683;
 // 2026-09-05 when the image_set entry was commented out and this constant was left at 48.
 // It compiled cleanly because kIndexOf returns early on a match and never reads the null
 // entry. The static_assert below now makes the compiler catch it instead of a boot.
-constexpr std::size_t kTargetsSize = 69;
+constexpr std::size_t kTargetsSize = 71;
 constexpr std::array<Target, kTargetsSize> kTargets{{
     // The entity receive cluster. 0x141718510 is the ENTRY and has ZERO static references
     // of any kind in the whole image (20.209) - its caller is the open question, so it gets
@@ -699,7 +734,17 @@ constexpr std::array<Target, kTargetsSize> kTargets{{
     {"pump_lad",  kPumpLadRva,  24, OutParam::none, false, Probe::pumplad},
     // no-leave: enter-only by design - the subtype it produces is read through the
     // generic out-param logger below (OutParam::rdx), which IS the leave-side read.
-    {"evt_sub",   kEvtSubRva,   24, OutParam::rdx,  false, Probe::none},
+    // first_seen_outparam ARMED (20.352): enumerate every arriving event type,
+    // not just the first 24 calls. Fields: caller_filter 0, first_seen_leave false.
+    {"evt_sub",   kEvtSubRva,   24, OutParam::rdx,  false, Probe::none, 0, false, true},
+    // THE STATE-9 PATH'S TWO REMAINING UNKNOWNS (20.350 R8(ii), 20.351 R5).
+    // sess_guard: plain row on purpose - enter carries rcx (which session was judged),
+    // leave carries ret (the verdict). Budget 24 is 24 samples of a gate that runs per
+    // qualifying event, and the counter keeps running past it.
+    {"sess_guard",  kSessGuardRva,  24},
+    // exec_sess: Probe::sessstate on the resolver whose RETURN is the executor's
+    // session. Cold - it runs on world change, not per tick - so 24 covers many boots.
+    {"exec_sess",   kExecSessRva,   24, OutParam::none, false, Probe::sessstate},
     {"rung_adv",  kRungAdvRva,  16, OutParam::none, false, Probe::rungadv},
     // The 0x89 sobject record decoder and the event-ring commit the queue path ends in.
     {"sobj_decode", kSobjDecodeRva,  8},
@@ -1235,6 +1280,35 @@ std::atomic<unsigned> g_seenLeaveCount[kTargetsSize] = {};
     if (count < kFirstSeenKeys) {
         g_seenLeaveKeys[index][count].store(key, std::memory_order_relaxed);
         g_seenLeaveCount[index].store(count + 1U, std::memory_order_relaxed);
+    }
+    return true;
+}
+
+/**
+ * OUT-PARAM FIRST-SEEN KEYS (20.352 R5). A SEPARATE table from the leave keys on
+ * purpose: the leave key is (rdx slot, ret class), and for an out-param target rdx is
+ * the out-pointer itself - near-constant - so reusing it would collapse to two keys.
+ * This one is keyed on the DISPATCH ID: the low 32 bits of out0. The dispatcher reads a
+ * DWORD (`mov ecx,[rsp+0x48]`) while the observer reads a qword, so the high half is
+ * adjacent stack content and must not enter the key (p2-211 logged 0x20000001E for
+ * event 30 - the 0x2 is stack noise). 48 keys covers the connected-gate table's whole
+ * 4..44 id range with headroom for out-of-range values.
+ */
+constexpr std::size_t kFirstSeenOutKeys = 48;
+std::atomic<std::uint64_t> g_seenOutKeys[kTargetsSize][kFirstSeenOutKeys] = {};
+std::atomic<unsigned> g_seenOutCount[kTargetsSize] = {};
+
+/** True the first time `key` is seen for this target (lock-free, racy, monotonic). */
+[[nodiscard]] bool out_key_first_seen(std::size_t index, std::uint64_t key) noexcept {
+    const unsigned count = g_seenOutCount[index].load(std::memory_order_relaxed);
+    for (unsigned i = 0; i < count && i < kFirstSeenOutKeys; ++i) {
+        if (g_seenOutKeys[index][i].load(std::memory_order_relaxed) == key) {
+            return false;
+        }
+    }
+    if (count < kFirstSeenOutKeys) {
+        g_seenOutKeys[index][count].store(key, std::memory_order_relaxed);
+        g_seenOutCount[index].store(count + 1U, std::memory_order_relaxed);
     }
     return true;
 }
@@ -3509,17 +3583,31 @@ std::uint64_t __fastcall observe(void* rcx, void* rdx, void* r8, void* r9,
             emit(text.data(), static_cast<std::size_t>(written));
         }
     }
-    if (detail && outUsable) {
+    // OUT-PARAM VISIBILITY (20.352 R5): the flat budget is spent by the earliest burst,
+    // so past it a target with first_seen_outparam still prints the first time each
+    // distinct dispatch id appears. `id=` is the DWORD the dispatcher actually reads;
+    // out0/out1 stay as-is so existing log readers do not change meaning.
+    bool outVisible = detail;
+    std::uint32_t outId = 0U;
+    if (outUsable) {
+        outId = static_cast<std::uint32_t>(
+            static_cast<const std::uint64_t*>(outPtr)[0] & 0xFFFFFFFFULL);
+        if (!outVisible && kTargets[Index].first_seen_outparam) {
+            outVisible = out_key_first_seen(Index, static_cast<std::uint64_t>(outId));
+        }
+    }
+    if (outVisible && outUsable) {
         // idx_alloc writes its verdict THROUGH its out-pointer and returns the pointer
         // itself (20.216 R4) - rax alone cannot separate success from -1.
         const auto* out = static_cast<const std::uint64_t*>(outPtr);
-        std::array<char, 144> text{};
+        std::array<char, 160> text{};
         const int written = std::snprintf(
             text.data(), text.size(),
-            "ev=mtrace stage=outparam fn=%s call=%llu out0=0x%llX out1=0x%llX",
+            "ev=mtrace stage=outparam fn=%s call=%llu out0=0x%llX out1=0x%llX id=0x%X",
             kTargets[Index].name, static_cast<unsigned long long>(call),
             static_cast<unsigned long long>(out[0]),
-            static_cast<unsigned long long>(out[1]));
+            static_cast<unsigned long long>(out[1]),
+            static_cast<unsigned int>(outId));
         if (written > 0) {
             emit(text.data(), static_cast<std::size_t>(written));
         }
