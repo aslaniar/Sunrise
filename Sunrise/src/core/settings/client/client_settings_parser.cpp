@@ -23,6 +23,7 @@ bool Parser::client_settings(client::Settings& output) noexcept {
     bool hasMilestoneTrace = false;
     bool hasGatePoke = false;
     bool hasPokeState9 = false;
+    bool hasPokeState9Arming = false;
     bool hasNotifierHook = false;
     bool hasAdmissionMemberIndex = false;
     bool hasAdmissionXuid = false;
@@ -100,6 +101,13 @@ bool Parser::client_settings(client::Settings& output) noexcept {
                 return false;
             }
             hasPokeState9 = true;
+        } else if (key == "poke_state9_arming") {
+            std::uint64_t value = 0;
+            if (hasPokeState9Arming || !unsigned_integer(value) || value == 0 || value > 100000ULL) {
+                return false;
+            }
+            candidate.pokeState9Arming = static_cast<std::uint32_t>(value);
+            hasPokeState9Arming = true;
         } else if (key == "notifier_hook") {
             if (hasNotifierHook || !boolean(candidate.notifierHook)) {
                 return false;

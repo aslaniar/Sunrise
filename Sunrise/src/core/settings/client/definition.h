@@ -163,6 +163,14 @@ struct Settings {
     bool pokeState9{};
 
     /**
+     * THE POKE'S ARMING DELAY (p2-214): fire on the Kth state-4 sighting of
+     * the session instead of the first. Boot 1's rig poked mid-spawn and
+     * stalled network_update 28s later (20.355 R6); K > 1 moves the fire
+     * past the spawn window. Default 1 = boot 1's behavior.
+     */
+    std::uint32_t pokeState9Arming{1};
+
+    /**
      * Arms the notifier detour (0x1417FFA20) in the milestone tracer. Default 0: that
      * body is obfuscated (keyed family) and a rig login failure correlated with the
      * 46-target set (p2-164 attempt 1, 2026-09-03), so the wide-net capture is

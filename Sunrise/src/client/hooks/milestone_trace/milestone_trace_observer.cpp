@@ -595,6 +595,21 @@ constexpr std::uintptr_t kPhaseInitRva = 0xB37BF0;
 constexpr std::uintptr_t kBrFcc10Rva = 0x16FCC10;
 constexpr std::uintptr_t kBrBef0Rva = 0x16FBEF0;
 
+// --- p2-214 (boot 2): the attach question (20.355 R3's three hypotheses) ---
+/** THE EXECUTOR PRIMARY (O1): 0x140C09010 - the body whose boot-1 behaviour
+ *  was invisible (only its getter was hooked). Post-poke, our session sat at
+ *  9 and attach_w never rose: did the body run and bail at Gate 1
+ *  (session+0xF9D8 null / 0x14178DAB0 false - unhookable, in a .pdata gap),
+ *  or did the body never run? The census answers "ran"; its enter lines
+ *  carry rdx (the param the getter's selector consumes). 160 B, offset 0. */
+constexpr std::uintptr_t kExecutorRva = 0xC09010;
+/** THE ATTACH DECIDER (O1): 0x140B49180 - the executor's attach path calls it
+ *  (rcx = session+0x2A00, rdx = the fetched object) and its boolean verdict
+ *  gates the writer 0x140B53FC0 (attach_w's own caller at 0x140B491F8 is
+ *  INSIDE this function). retwatch: the verdict flip is the measurement.
+ *  165 B, offset 0. */
+constexpr std::uintptr_t kAttachDeciderRva = 0xB49180;
+
 constexpr std::uintptr_t kEntMakeRva = 0x170F190;      ///< calls idx_alloc at +0x3E
 constexpr std::uintptr_t kAuthARva = 0x12ABCA0;        ///< predicate half A
 constexpr std::uintptr_t kAuthBRva = 0x12AEE50;        ///< predicate half B (deref != 0)
@@ -725,7 +740,7 @@ constexpr std::uint32_t kType30SchemaKeyOracle = 0x80808683;
 // 2026-09-05 when the image_set entry was commented out and this constant was left at 48.
 // It compiled cleanly because kIndexOf returns early on a match and never reads the null
 // entry. The static_assert below now makes the compiler catch it instead of a boot.
-constexpr std::size_t kTargetsSize = 81;
+constexpr std::size_t kTargetsSize = 83;
 constexpr std::array<Target, kTargetsSize> kTargets{{
     // The entity receive cluster. 0x141718510 is the ENTRY and has ZERO static references
     // of any kind in the whole image (20.209) - its caller is the open question, so it gets
@@ -1011,6 +1026,9 @@ constexpr std::array<Target, kTargetsSize> kTargets{{
     {"phase_init",  kPhaseInitRva, 8, OutParam::none, false, Probe::none},
     {"br_fcc10",    kBrFcc10Rva, 12, OutParam::none, false, Probe::none},
     {"br_bef0",     kBrBef0Rva, 12, OutParam::none, false, Probe::none},
+    // p2-214: the attach question (20.355 R3).
+    {"executor",  kExecutorRva, 16, OutParam::none, false, Probe::none},
+    {"att_decider", kAttachDeciderRva, 16, OutParam::none, false, Probe::retwatch},
 }};
 
 /**
@@ -1393,6 +1411,9 @@ std::atomic<unsigned> g_seenLeaveCount[kTargetsSize] = {};
 constexpr std::size_t kFirstSeenOutKeys = 48;
 std::atomic<std::uint64_t> g_seenOutKeys[kTargetsSize][kFirstSeenOutKeys] = {};
 std::atomic<unsigned> g_seenOutCount[kTargetsSize] = {};
+/** The ENTER-time r8 (the payload pointer) for first_seen_outparam rows -
+ *  read at leave, where the register itself may be clobbered. p2-214. */
+std::atomic<std::uint64_t> g_enterR8[kTargetsSize] = {};
 
 /** True the first time `key` is seen for this target (lock-free, racy, monotonic). */
 [[nodiscard]] bool out_key_first_seen(std::size_t index, std::uint64_t key) noexcept {
@@ -3250,6 +3271,7 @@ void emit_applystamp(const char* fn, std::uint64_t call, std::uint64_t src,
  */
 void maybe_poke_state9(const char* fn, std::uint64_t call, std::uint64_t slotPtr) noexcept {
     static std::atomic<bool> fired{false};
+    static std::atomic<std::uint32_t> sightings{0};
     if (!core::settings::get().client.pokeState9) {
         return;
     }
@@ -3262,18 +3284,38 @@ void maybe_poke_state9(const char* fn, std::uint64_t call, std::uint64_t slotPtr
     const auto* slot = reinterpret_cast<const std::uint8_t*>(slotPtr);
     const std::int32_t stateBefore =
         *reinterpret_cast<const volatile std::int32_t*>(slot + 0x1AEF8);
+    if (stateBefore != 4) {
+        return;  // only the measured parking state - never blind.
+    }
+    // p2-213 DEFECT FIX: the observation line used to log on EVERY exec_sess
+    // leave (38,043 spam lines in boot 1). Now: only state-4 sightings count,
+    // and the K-th sighting arms the poke (client.poke_state9_arming, default
+    // 1 = boot 1's behavior). K > 1 moves the fire post-spawn-stable - the
+    // rig's mid-spawn poke preceded a network_update stall (20.355 R6).
+    const std::uint32_t seen = sightings.fetch_add(1, std::memory_order_relaxed) + 1;
+    const std::uint32_t arming = core::settings::get().client.pokeState9Arming;
+    if (seen < arming) {
+        return;
+    }
+    // GATE-1 PROBE (O1): the executor bails at 0x140C0986C when
+    // session+0xF4B8 (then +0x520) is null OR 0x14178DAB0(sub) is false -
+    // BEFORE the 6..9 state check ever matters (boot 1's "no attach at 9"
+    // prime suspect). Log both pointers at poke time.
+    const std::uint64_t f4b8 =
+        *reinterpret_cast<const volatile std::uint64_t*>(slot + 0xF4B8);
+    const std::uint64_t f9d8 =
+        *reinterpret_cast<const volatile std::uint64_t*>(slot + 0xF9D8);
     {
-        std::array<char, 160> text{};
+        std::array<char, 224> text{};
         const int w = std::snprintf(
             text.data(), text.size(),
-            "ev=mtrace stage=poke fn=%s call=%llu sess=0x%llX state_before=%d armed=%d",
+            "ev=mtrace stage=poke fn=%s call=%llu sess=0x%llX state_before=4 "
+            "sighting=%u arming=%u f4b8=0x%llX f9d8=0x%llX",
             fn, static_cast<unsigned long long>(call),
-            static_cast<unsigned long long>(slotPtr), stateBefore,
-            stateBefore == 4 ? 1 : 0);
+            static_cast<unsigned long long>(slotPtr), seen, arming,
+            static_cast<unsigned long long>(f4b8),
+            static_cast<unsigned long long>(f9d8));
         if (w > 0) { emit(text.data(), static_cast<std::size_t>(w)); }
-    }
-    if (stateBefore != 4) {
-        return;  // only fire on the measured parking state - never blind.
     }
     bool expected = false;
     if (!fired.compare_exchange_strong(expected, true, std::memory_order_relaxed)) {
@@ -3551,6 +3593,14 @@ std::uint64_t __fastcall observe(void* rcx, void* rdx, void* r8, void* r9,
         kTargets[Index].caller_filter == 0U || callerRva == kTargets[Index].caller_filter;
     const bool detail = siteMatch
                         && g_logged[Index].load(std::memory_order_relaxed) < kTargets[Index].budget;
+    if (kTargets[Index].first_seen_outparam) {
+        // p2-214: the payload pointer is an ENTER-time argument (the caller's
+        // out storage); the leave-time r8 is whatever the callee left behind.
+        // Save it here so the first-seen outparam emission can dump the
+        // payload the decode actually wrote (the evt_payload readout).
+        g_enterR8[Index].store(reinterpret_cast<std::uint64_t>(r8),
+                               std::memory_order_relaxed);
+    }
     if (detail) {
         g_logged[Index].fetch_add(1, std::memory_order_relaxed);
         std::array<char, 224> text{};
@@ -3759,21 +3809,50 @@ std::uint64_t __fastcall observe(void* rcx, void* rdx, void* r8, void* r9,
         outId = static_cast<std::uint32_t>(
             static_cast<const std::uint64_t*>(outPtr)[0] & 0xFFFFFFFFULL);
         if (!outVisible && kTargets[Index].first_seen_outparam) {
-            outVisible = out_key_first_seen(Index, static_cast<std::uint64_t>(outId));
+            // p2-214 FIX: the second call site's out-param shape leaks junk
+            // dwords (the 0xBExxxxxx/0xFFFxxxxx cluster) that EXHAUSTED the
+            // 48-key table in boot 1 - a real new id after exhaustion would
+            // have been missed. First-seen tracks the dispatcher's valid
+            // range (4..44) only; the junk class shares ONE aggregate key,
+            // so it can cost a single slot and emits once.
+            const bool inDispatcherRange = outId >= 4U && outId <= 44U;
+            const std::uint64_t key = inDispatcherRange
+                ? static_cast<std::uint64_t>(outId) : 0xFFFFFFFFFFFFULL;
+            outVisible = out_key_first_seen(Index, key);
         }
     }
     if (outVisible && outUsable) {
         // idx_alloc writes its verdict THROUGH its out-pointer and returns the pointer
         // itself (20.216 R4) - rax alone cannot separate success from -1.
         const auto* out = static_cast<const std::uint64_t*>(outPtr);
-        std::array<char, 160> text{};
-        const int written = std::snprintf(
+        std::array<char, 288> text{};
+        int written = std::snprintf(
             text.data(), text.size(),
             "ev=mtrace stage=outparam fn=%s call=%llu out0=0x%llX out1=0x%llX id=0x%X",
             kTargets[Index].name, static_cast<unsigned long long>(call),
             static_cast<unsigned long long>(out[0]),
             static_cast<unsigned long long>(out[1]),
             static_cast<unsigned int>(outId));
+        // p2-214: the payload the decode wrote, read through the ENTER-time
+        // pointer (saved before the call; the leave-time r8 is residue).
+        // Guarded like every dereference: null/first-page/misalignment refuses.
+        if (written > 0 && kTargets[Index].first_seen_outparam) {
+            const std::uint64_t payloadPtr = g_enterR8[Index].load(std::memory_order_relaxed);
+            if (payloadPtr >= 0x10000U && (payloadPtr & 0xFU) == 0U) {
+                const auto* p = reinterpret_cast<const std::uint32_t*>(payloadPtr);
+                const int w2 = std::snprintf(
+                    text.data() + written, static_cast<std::size_t>(288 - written),
+                    " payload=%08X %08X %08X %08X",
+                    p[0], p[1], p[2], p[3]);
+                if (w2 > 0) { written += w2; }
+            } else {
+                const int w2 = std::snprintf(
+                    text.data() + written, static_cast<std::size_t>(288 - written),
+                    " payload=refused ptr=0x%llX",
+                    static_cast<unsigned long long>(payloadPtr));
+                if (w2 > 0) { written += w2; }
+            }
+        }
         if (written > 0) {
             emit(text.data(), static_cast<std::size_t>(written));
         }
@@ -3843,20 +3922,32 @@ void emit_summary(const char* reason) noexcept {
  * All plain .data reads - no dereference of game pointers, no writes.
  */
 void emit_gatewatch() noexcept {
-    std::array<char, 288> text{};
+    std::array<char, 384> text{};
     const auto* const cluster = reinterpret_cast<const std::uint8_t*>(g_base + 0x2037AF0);
     const auto* const rrptr = reinterpret_cast<const std::uint64_t*>(g_base + 0x27EDB38);
+    // p2-214 additions (O1/O2): the executor's world-state gate global
+    // (0x1427F66F0 - "==5 skips the executor body"; 3 in the archived dump),
+    // and the two per-boot-encrypted singleton globals (the manager
+    // 0x143051FA8; recv_root's tail-gate object 0x142F2C8E0 - whose
+    // object 20.355 R4 measured MISSING).
+    const auto* const wcGate = reinterpret_cast<const std::uint32_t*>(g_base + 0x27F66F0);
+    const auto* const mgrPtr = reinterpret_cast<const std::uint64_t*>(g_base + 0x3051FA8);
+    const auto* const objPtr = reinterpret_cast<const std::uint64_t*>(g_base + 0x2F2C8E0);
     // af3 | b00(dword) | af8(qword low) | b05 | b07 | b09 | rr_ptr
     const int written = std::snprintf(
         text.data(), text.size(),
         "ev=mtrace stage=gatewatch af0=%u af3=%u b00=%u af8=%llu "
-        "b04=%u b05=%u b06=%u b07=%u b08=%u b09=%u b0a=%u rrptr=%016llX",
+        "b04=%u b05=%u b06=%u b07=%u b08=%u b09=%u b0a=%u rrptr=%016llX "
+        "wcgate=%u mgr=%016llX obj=%016llX",
         cluster[0x0], cluster[0x3],
         *reinterpret_cast<const std::uint32_t*>(cluster + 0x10),
         static_cast<unsigned long long>(*reinterpret_cast<const std::uint64_t*>(cluster + 0x8)),
         cluster[0x14], cluster[0x15], cluster[0x16], cluster[0x17], cluster[0x18],
         cluster[0x19], cluster[0x1A],
-        static_cast<unsigned long long>(*rrptr));
+        static_cast<unsigned long long>(*rrptr),
+        *wcGate,
+        static_cast<unsigned long long>(*mgrPtr),
+        static_cast<unsigned long long>(*objPtr));
     if (written > 0) {
         emit(text.data(), static_cast<std::size_t>(written));
     }
