@@ -529,6 +529,72 @@ constexpr std::uintptr_t kSessGuardRva = 0x176CE80;
 constexpr std::uintptr_t kExecSessRva = 0xC03F70;
 constexpr std::uintptr_t kRungAdvRva = 0x16BCFC0;      ///< the connected-rung ADVANCE (ladder 4 -> 5)
 
+// ---------------------------------------------------------------------------
+// p2-213 (THE POKE BOOT): the second-half cascade instruments.
+// 20.353 R6 verified everything downstream of event 21 "willing" - the poke
+// (client.poke_state9, one-shot, default OFF) forces the live gate and this
+// set measures what runs. All addresses below were pdata-verified offset-0
+// this session; the refused ones are NOT here (0x1416BB1E0 the ent ctor is in
+// a .pdata gap; 0x1416F7870 de-init 30 B and 0x1412AADF0 37 B are under the
+// too-small rule; 0x1416CA0B0 is the p2-147a frozen-client suspect).
+// 20.354: af0 is DEAD as a readout (constant 1 in every dump) - the
+// activation signals are the transition-armed trio af3/B00/AF8 plus the
+// b05/b07/b09 clears, which is what gatewatch dumps instead.
+
+/**
+ * THE SESSION-STATE SETTER (20.349 R6): set_session_state(rcx=session,
+ * edx=new_state, r8d=reason) at 0x1417B3600, store at 0x1417B37DE. The only
+ * writer that can set an ARBITRARY caller-supplied state; 10 direct call
+ * sites; three depth-3 chains from the receive region write 4/10/9. The
+ * generic enter line already carries rcx/rdx/r8 (session, new state,
+ * reason) + caller_rva - so ONE counter row traces every session's every
+ * transition, the working case (the client's own climbs to 6) and ours in
+ * the same boot. THE POKE also calls this address (see emit_poke_state9).
+ * Exact .pdata primary 0x1417B3600..0x1417B3626 (38 B, chained fragments;
+ * the detour needs only the prologue - verify_hook_rvas is the judge).
+ */
+constexpr std::uintptr_t kSetSessionStateRva = 0x17B3600;
+/** recv_root's TAIL GATE (this session's read): 0x1416FC6D0 returns TRUE iff
+ *  [0x142037AF0]!=0 AND 0x1412A8C70() AND [..AF2]==0 AND [..AF3]==0 AND
+ *  [..B09]!=0 AND [..B0A]!=0. 20.354: all five byte conditions are satisfied
+ *  in EVERY archived dump - so its verdict rests on the 0x1412A8C70 call.
+ *  Probe::retwatch logs only when the value flips - a predicate called
+ *  thousands of times yields a handful of lines. .pdata 72 B, offset 0. */
+constexpr std::uintptr_t kTailGateRva = 0x16FC6D0;
+/** THE OBJECT-EXISTS HELPER (20.339 R5's "3-pointer condition helper"):
+ *  loads a per-boot-encrypted global (_DAT_142F2C8E0 - nonzero in every
+ *  dump), decrypts through the two ring helpers, false when the plaintext
+ *  pointer is null. retwatch. .pdata 65 B, offset 0. */
+constexpr std::uintptr_t kObjGateRva = 0x12A8C70;
+/** THE CONSUMER TICK (20.339 R4): 0x1416FCE01, gated on af0!=0 - which
+ *  20.354 says is ALWAYS true, so this counter should rise every boot. Its
+ *  arms (fd0a0/fbb40(5)) fire inside it. Counter-only (hot). .pdata 404 B
+ *  (fragment of the 17 B 0x1416FCDF0 primary), offset 0. */
+constexpr std::uintptr_t kConsumerTickRva = 0x16FCE01;
+/** THE ATTACHMENT WRITER, mode 1 (Lane E): FUN_0x140B53FC0 writes mgr+0x8=1
+ *  at 0x140B540C1 - THE ATTACH. If the poke fires the cascade, this is the
+ *  counter that must rise. .pdata 301 B, offset 0. */
+constexpr std::uintptr_t kAttachWriterRva = 0xB53FC0;
+/** The mode-2/3 writer (startup/world-entry): distinguishes an attach from
+ *  ordinary world-entry writes to the same byte. .pdata 64 B, offset 0. */
+constexpr std::uintptr_t kMode23WriterRva = 0xB534A0;
+/** THE ACTIVATION JOB (20.340 R2): f7da0 clears b05/b07/b09 then af0=1.
+ *  b09=1 in every dump says this has never completed - the poke boot's
+ *  question is whether forcing the session live changes that. .pdata 130 B. */
+constexpr std::uintptr_t kActivationJobRva = 0x16F7DA0;
+/** THE PHASE-INIT SEQUENCER (Lane C): 0x140B37BF0, the ~40-call unconditional
+ *  chain that constructs the activation class (vft 0x141C14F70) - never
+ *  started (tail flag 0x141D4CD34=0xC2, zero class instances x2 sweeps).
+ *  .pdata 421 B, offset 0. */
+constexpr std::uintptr_t kPhaseInitRva = 0xB37BF0;
+/** recv_root's deep-branch predicates (this session's fragment-1 read):
+ *  0x1416FCC10 (branch B, esi) and 0x1416FBEF0 (path-B gate, al). The bail
+ *  is NOT the tail gate (its bytes pass everywhere) - one of THESE is the
+ *  likeliest stop. 0x1412AADF0 (branch A) is 37 B - under the detour rule,
+ *  observed indirectly via br_fcc10's budgeted enter lines. 72/56 B. */
+constexpr std::uintptr_t kBrFcc10Rva = 0x16FCC10;
+constexpr std::uintptr_t kBrBef0Rva = 0x16FBEF0;
+
 constexpr std::uintptr_t kEntMakeRva = 0x170F190;      ///< calls idx_alloc at +0x3E
 constexpr std::uintptr_t kAuthARva = 0x12ABCA0;        ///< predicate half A
 constexpr std::uintptr_t kAuthBRva = 0x12AEE50;        ///< predicate half B (deref != 0)
@@ -659,7 +725,7 @@ constexpr std::uint32_t kType30SchemaKeyOracle = 0x80808683;
 // 2026-09-05 when the image_set entry was commented out and this constant was left at 48.
 // It compiled cleanly because kIndexOf returns early on a match and never reads the null
 // entry. The static_assert below now makes the compiler catch it instead of a boot.
-constexpr std::size_t kTargetsSize = 71;
+constexpr std::size_t kTargetsSize = 81;
 constexpr std::array<Target, kTargetsSize> kTargets{{
     // The entity receive cluster. 0x141718510 is the ENTRY and has ZERO static references
     // of any kind in the whole image (20.209) - its caller is the open question, so it gets
@@ -741,7 +807,9 @@ constexpr std::array<Target, kTargetsSize> kTargets{{
     // sess_guard: plain row on purpose - enter carries rcx (which session was judged),
     // leave carries ret (the verdict). Budget 24 is 24 samples of a gate that runs per
     // qualifying event, and the counter keeps running past it.
-    {"sess_guard",  kSessGuardRva,  24},
+    // no-leave: the generic leave emitter logs this row's ret= on every call, and
+    // first_seen_leave keys (slot, ret-class) beyond budget - the verdict stays visible.
+    {"sess_guard",  kSessGuardRva,  24, OutParam::none, false, Probe::none, 0, true},
     // exec_sess: Probe::sessstate on the resolver whose RETURN is the executor's
     // session. Cold - it runs on world change, not per tick - so 24 covers many boots.
     {"exec_sess",   kExecSessRva,   24, OutParam::none, false, Probe::sessstate},
@@ -916,6 +984,33 @@ constexpr std::array<Target, kTargetsSize> kTargets{{
     // are too small to carry a detour safely, and schema_res 0x4C74D0 / ent_index 0x4C16C0
     // are hot content-load helpers that run thousands of times before any entity exists.
     // p2(137)'s first build traced all four and the client died before character select.
+    //
+    // p2-213 (THE POKE BOOT): the second-half cascade. Read top-down; the FIRST one
+    // whose calls rise after the poke is the gate that opened.
+    //   state_set : EVERY session state transition on both machines - the working case
+    //               (the client's own climbs to 6) and ours, attributed by caller_rva.
+    //               Enter lines carry rcx=session rdx=new_state r8=reason (generic line).
+    //   tail_gate/obj_gate : recv_root's tail gate and its object-exists call - retwatch,
+    //               change-gated; the poke must flip tail_gate to true for the tail to run.
+    //   cons_tick : the consumer tick - should ALREADY rise every boot (20.354: af0=1
+    //               always); its zero would indict the attach, not the poke.
+    //   attach_w  : THE ATTACH (mgr+0x8=1, mode-1 writer). THE first cascade observable.
+    //   mode23_w  : separates an attach from an ordinary world-entry write.
+    //   activate  : f7da0, the activation job - rising means the arm sequence ran.
+    //   phase_init: the never-started sequencer - rising means the activation class
+    //               finally constructs.
+    //   br_fcc10 / br_bef0 : recv_root's deep branches - the likeliest bail points now
+    //               that the tail gate's bytes are known-satisfied (20.354).
+    {"state_set",   kSetSessionStateRva, 64, OutParam::none, false, Probe::none},
+    {"tail_gate",   kTailGateRva, 16, OutParam::none, false, Probe::retwatch},
+    {"obj_gate",    kObjGateRva, 16, OutParam::none, false, Probe::retwatch},
+    {"cons_tick",   kConsumerTickRva, 0, OutParam::none, false, Probe::none},
+    {"attach_w",    kAttachWriterRva, 12, OutParam::none, false, Probe::none},
+    {"mode23_w",    kMode23WriterRva, 12, OutParam::none, false, Probe::none},
+    {"activate",    kActivationJobRva, 8, OutParam::none, false, Probe::none},
+    {"phase_init",  kPhaseInitRva, 8, OutParam::none, false, Probe::none},
+    {"br_fcc10",    kBrFcc10Rva, 12, OutParam::none, false, Probe::none},
+    {"br_bef0",     kBrBef0Rva, 12, OutParam::none, false, Probe::none},
 }};
 
 /**
@@ -1064,6 +1159,7 @@ void emit(const char* text, std::size_t length) noexcept {
 
 /** Prints every target's call count, zeros included. Defined below; used by the observer. */
 void emit_summary(const char* reason) noexcept;
+void emit_gatewatch() noexcept;
 
 /** Counts set bits without assuming POPCNT: 128 words, cold path, correctness over speed. */
 [[nodiscard]] unsigned mask_popcount(const void* mask) noexcept {
@@ -3134,8 +3230,70 @@ void emit_applystamp(const char* fn, std::uint64_t call, std::uint64_t src,
     if (w > 0) { emit(t.data(), static_cast<std::size_t>(w)); }
 }
 
-void emit_sessstate(const char* fn, std::uint64_t call, std::uint64_t slotPtr) noexcept {
-    const void* slot = reinterpret_cast<const void*>(slotPtr);
+/**
+ * THE POKE (p2-213, P1 - the plan's "force the input" step). Settings-gated
+ * (client.poke_state9, default OFF), ONE shot per boot, throwaway diagnostic
+ * per the governing constraint: it answers "does the cascade run when the live
+ * gate passes", it is never a delivered mechanism, and a relaunch without the
+ * setting is the revert.
+ *
+ * Trigger: the executor's session resolver (exec_sess) returned a VALID slot
+ * whose gate-state (+0x1AEF8) is exactly 4 - our session's measured parking
+ * state, post-climb, inside the event-21 guard's eligible set. Action: call
+ * the REAL setter 0x1417B3600 with (session, 9, 0x30) - byte-for-byte what
+ * 20.350 R1's chain-3 last hop does, edge-detection bookkeeping included
+ * (which is why this is a CALL, not a raw field write: the setter's liveness
+ * edge may drive further machinery a raw write would starve).
+ *
+ * Safety: refused for null/misaligned slots; one atomic exchange guards the
+ * single fire; every step logs BEFORE acting so a crash names its own line.
+ */
+void maybe_poke_state9(const char* fn, std::uint64_t call, std::uint64_t slotPtr) noexcept {
+    static std::atomic<bool> fired{false};
+    if (!core::settings::get().client.pokeState9) {
+        return;
+    }
+    if (fired.load(std::memory_order_relaxed)) {
+        return;
+    }
+    if (slotPtr < 0x10000U || (slotPtr & 7U) != 0U) {
+        return;  // not a slot pointer - refuse, never dereference (the 09-05 guard).
+    }
+    const auto* slot = reinterpret_cast<const std::uint8_t*>(slotPtr);
+    const std::int32_t stateBefore =
+        *reinterpret_cast<const volatile std::int32_t*>(slot + 0x1AEF8);
+    {
+        std::array<char, 160> text{};
+        const int w = std::snprintf(
+            text.data(), text.size(),
+            "ev=mtrace stage=poke fn=%s call=%llu sess=0x%llX state_before=%d armed=%d",
+            fn, static_cast<unsigned long long>(call),
+            static_cast<unsigned long long>(slotPtr), stateBefore,
+            stateBefore == 4 ? 1 : 0);
+        if (w > 0) { emit(text.data(), static_cast<std::size_t>(w)); }
+    }
+    if (stateBefore != 4) {
+        return;  // only fire on the measured parking state - never blind.
+    }
+    bool expected = false;
+    if (!fired.compare_exchange_strong(expected, true, std::memory_order_relaxed)) {
+        return;
+    }
+    using SetStateFn = void (*)(void*, std::int32_t, std::int32_t);
+    const auto setSessionState =
+        reinterpret_cast<SetStateFn>(g_base + kSetSessionStateRva);
+    setSessionState(const_cast<void*>(reinterpret_cast<const void*>(slotPtr)), 9, 0x30);
+    const std::int32_t stateAfter =
+        *reinterpret_cast<const volatile std::int32_t*>(slot + 0x1AEF8);
+    std::array<char, 160> text{};
+    const int w = std::snprintf(
+        text.data(), text.size(),
+        "ev=mtrace stage=poke fn=%s call=%llu verdict=executed state_after=%d",
+        fn, static_cast<unsigned long long>(call), stateAfter);
+    if (w > 0) { emit(text.data(), static_cast<std::size_t>(w)); }
+}
+
+void emit_sessstate(const char* fn, std::uint64_t call, std::uint64_t slotPtr) noexcept {    const void* slot = reinterpret_cast<const void*>(slotPtr);
     if (slotPtr < 0x10000U || (slotPtr & 3U) != 0U) {
         return;  // not a slot pointer - refuse, never dereference (the 09-05 guard).
     }
@@ -3533,6 +3691,14 @@ std::uint64_t __fastcall observe(void* rcx, void* rdx, void* r8, void* r9,
             // slot pointer identifies the session, so the change gate is stateless
             // across enter/leave).
             emit_sessstate(kTargets[Index].name, call, result);
+            if (kTargets[Index].rva == kExecSessRva) {
+                // THE POKE (p2-213, P1): when the executor's resolver returns OUR
+                // session parked at state 4, call the REAL setter with (9, 0x30) -
+                // byte-for-byte what the event-21 handler's chain does (20.350 R1),
+                // edge-detection bookkeeping included. One shot per boot, settings-
+                // gated, default OFF; a relaunch without the setting is the revert.
+                maybe_poke_state9(kTargets[Index].name, call, result);
+            }
         }
         if (kTargets[Index].probe == Probe::member) {
             emit_member_probe(kTargets[Index].name, call, result);
@@ -3654,6 +3820,45 @@ void emit_summary(const char* reason) noexcept {
         if (written > 0) {
             emit(text.data(), static_cast<std::size_t>(written));
         }
+    }
+    emit_gatewatch();
+}
+
+/**
+ * THE GATE-CLUSTER WATCH (p2-213, corrected per 20.354). Dumps the armed-state
+ * machine's bytes so the cascade's progress is visible WITHOUT any hook firing:
+ *   af0      0x142037AF0  master power - constant 1 in every archived dump
+ *                         (20.339 R6's "af0=0" was a transcription swap). Dead
+ *                         as a signal; dumped so its constancy is CHECKED.
+ *   af3/B00/AF8           the TRANSITION-ARMED TRIO - the never-seen activation
+ *                         signature (all 0/0/0 in every dump). This is what the
+ *                         poke boot watches: 0x142037AF3, 0x142037B00 (dword),
+ *                         0x142037AF8 (qword ts).
+ *   b04..b0a              the sub-flags (b09=1/b0a=1 idle everywhere; f7da0's
+ *                         sequence clears b05/b07/b09 - so b09 falling is the
+ *                         "activation ran" signal, not af0 rising).
+ *   0x1427EDB38           recv_root's per-boot-encrypted object pointer (the
+ *                         0xAB1F3B47-terminal decryption's input; nonzero in
+ *                         every dump).
+ * All plain .data reads - no dereference of game pointers, no writes.
+ */
+void emit_gatewatch() noexcept {
+    std::array<char, 288> text{};
+    const auto* const cluster = reinterpret_cast<const std::uint8_t*>(g_base + 0x2037AF0);
+    const auto* const rrptr = reinterpret_cast<const std::uint64_t*>(g_base + 0x27EDB38);
+    // af3 | b00(dword) | af8(qword low) | b05 | b07 | b09 | rr_ptr
+    const int written = std::snprintf(
+        text.data(), text.size(),
+        "ev=mtrace stage=gatewatch af0=%u af3=%u b00=%u af8=%llu "
+        "b04=%u b05=%u b06=%u b07=%u b08=%u b09=%u b0a=%u rrptr=%016llX",
+        cluster[0x0], cluster[0x3],
+        *reinterpret_cast<const std::uint32_t*>(cluster + 0x10),
+        static_cast<unsigned long long>(*reinterpret_cast<const std::uint64_t*>(cluster + 0x8)),
+        cluster[0x14], cluster[0x15], cluster[0x16], cluster[0x17], cluster[0x18],
+        cluster[0x19], cluster[0x1A],
+        static_cast<unsigned long long>(*rrptr));
+    if (written > 0) {
+        emit(text.data(), static_cast<std::size_t>(written));
     }
 }
 

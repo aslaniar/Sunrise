@@ -148,6 +148,21 @@ struct Settings {
     std::uint32_t gatePoke{};
 
     /**
+     * THE POKE (p2-213, P1): when the executor's session resolver returns the
+     * fork-bound session parked at gate-state 4, call the REAL session-state
+     * setter (0x1417B3600) once with (9, 0x30) - the exact call the event-21
+     * handler's chain makes (20.350 R1), edge-detection included. This forces
+     * the live-session gate (6..9) the world-change executor waits on, and
+     * turns the whole inferred second half (attach -> establish -> queue ->
+     * activation -> construction) into measurement in one boot.
+     *
+     * GOVERNING CONSTRAINT: throwaway DIAGNOSTIC ONLY, never a delivered
+     * mechanism; the write happens once and a relaunch without this setting
+     * is the revert. Default false = no write of any kind into game memory.
+     */
+    bool pokeState9{};
+
+    /**
      * Arms the notifier detour (0x1417FFA20) in the milestone tracer. Default 0: that
      * body is obfuscated (keyed family) and a rig login failure correlated with the
      * 46-target set (p2-164 attempt 1, 2026-09-03), so the wide-net capture is
