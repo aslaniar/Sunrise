@@ -427,8 +427,10 @@ void answer_connect(const gp::Endpoint& from,
     const char* result = "nolink";
     bool bound = false;
     std::uint32_t channel = 0;
+    std::uint32_t remoteSequence = 0;
     if (peer != nullptr) {
         channel = peer->localConnectionSequence;
+        remoteSequence = peer->remoteConnectionSequence;
         result = "full";
         for (std::uint64_t& slot : peer->sessions) {
             if (slot == sessionId) {
@@ -463,6 +465,35 @@ void answer_connect(const gp::Endpoint& from,
     // establish record, so the pump advances the ladder before the door reads
     // it. The handler's own guard (state in {2,4,5}) makes any repeat a
     // no-op once the session is live, so re-binds re-arm this safely.
+    // THE HOST-TRANSITION, IN ORDER AFTER A FRESH CONNECT-ESTABLISH (the
+    // p2-219/p2-221 race fix, take 2): the ladder (conn+0x1D18) OSCILLATES
+    // with the connection churn - each re-establish resets it to 4, and boot
+    // 8's transition landed in the post-churn 4-windows twice. The pump's
+    // event-8 special case (0x1416D5F14) advances the ladder SYNCHRONOUSLY
+    // when the establish decodes (ladder >= 4 required - 4 qualifies), so
+    // queuing a FRESH establish immediately before the transition makes the
+    // door read 5 no matter the churn phase. The establish body = both
+    // channel ids this link answered with (the answer_establish shape); the
+    // handler's own guard (state in {2,4,5}) makes the transition a no-op
+    // once the session is live.
+    std::array<std::byte, 8> establish{};
+    bits::Writer establishWriter(establish);
+    std::size_t establishSize = 0;
+    wire::ConnectEstablish establishBody{};
+    establishBody.channelId = channel;
+    establishBody.remoteChannelId = remoteSequence;
+    const bool establishQueued =
+        wire::write_establish(establishWriter, establishBody)
+        && establishWriter.finish(establishSize)
+        && enqueue_reliable(sessionId, from,
+                            static_cast<std::uint8_t>(wire::ConnectId::establish),
+                            static_cast<std::uint32_t>(wire::kEstablishSize),
+                            {establish.data(), establishSize},
+                            establishWriter.bit_count());
+    report(core::log::Level::info,
+           "ev=gameplay stage=establish_refresh result=%s sess=0x%016llX",
+           establishQueued ? "sent" : "send-fail",
+           static_cast<unsigned long long>(sessionId));
     std::array<std::byte, 16> transition{};
     bits::Writer transitionWriter(transition);
     std::size_t transitionSize = 0;
