@@ -609,6 +609,13 @@ constexpr std::uintptr_t kExecutorRva = 0xC09010;
  *  INSIDE this function). retwatch: the verdict flip is the measurement.
  *  165 B, offset 0. */
 constexpr std::uintptr_t kAttachDeciderRva = 0xB49180;
+/** THE CONSUMER'S ARM FUNCTION (20.339 R4): FUN_1416fbb40(param) - if
+ *  obj[+8]!=0 AND af3==0: af3=1, B00=param, AF8=ts - THE TRANSITION ARM.
+ *  obj = the manager singleton; obj[+8]==1 = THE ATTACH. Called with 5 from
+ *  inside the consumer tick (0x1416FCE53). If the manager is attached and
+ *  this still never arms, its gate list is the next wall. retwatch.
+ *  95 B, offset 0. (fd0a0 is 26 B - under the detour rule, unhookable.) */
+constexpr std::uintptr_t kArmFbb40Rva = 0x16FBB40;
 
 constexpr std::uintptr_t kEntMakeRva = 0x170F190;      ///< calls idx_alloc at +0x3E
 constexpr std::uintptr_t kAuthARva = 0x12ABCA0;        ///< predicate half A
@@ -740,7 +747,7 @@ constexpr std::uint32_t kType30SchemaKeyOracle = 0x80808683;
 // 2026-09-05 when the image_set entry was commented out and this constant was left at 48.
 // It compiled cleanly because kIndexOf returns early on a match and never reads the null
 // entry. The static_assert below now makes the compiler catch it instead of a boot.
-constexpr std::size_t kTargetsSize = 83;
+constexpr std::size_t kTargetsSize = 84;
 constexpr std::array<Target, kTargetsSize> kTargets{{
     // The entity receive cluster. 0x141718510 is the ENTRY and has ZERO static references
     // of any kind in the whole image (20.209) - its caller is the open question, so it gets
@@ -1029,6 +1036,10 @@ constexpr std::array<Target, kTargetsSize> kTargets{{
     // p2-214: the attach question (20.355 R3).
     {"executor",  kExecutorRva, 16, OutParam::none, false, Probe::none},
     {"att_decider", kAttachDeciderRva, 16, OutParam::none, false, Probe::retwatch},
+    // p2-217 (boot 5): the consumer's arm function - the transition-arm gate
+    // whose first condition (obj[+8]!=0) is THE ATTACH. If attach #3 lands
+    // (the arming=1 poke beating the join pass), this is the next domino.
+    {"arm_bbf40", kArmFbb40Rva, 16, OutParam::none, false, Probe::retwatch},
 }};
 
 /**
