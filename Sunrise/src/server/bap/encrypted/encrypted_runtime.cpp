@@ -94,6 +94,7 @@ bool consume(Session& session,
     // Pure one-way services consume only the authenticated receive nonce.
     if (processesBody
         && !body::process(route,
+                          session.identityEcho,
                           session.accountKey,
                           session.queuez,
                           session.activitySessionId,

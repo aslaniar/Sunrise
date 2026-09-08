@@ -1,5 +1,7 @@
 #pragma once
 
+#include <span>
+
 #include <cstdint>
 
 #include "../../core/settings/provisioning.h"
@@ -128,6 +130,31 @@ enum class ForeignPeerReason : std::uint8_t {
  * @param output Cleared, then receives the immutable binding identity.
  * @return True when a committed+joined session carries this exact key.
  */
+/**
+ * Collects EVERY joined machine in the caller's destination, caller first.
+ *
+ * Written for the type-20 entity-index allocation's cross-member map (20.336 R6).
+ * The allocation's v1 named only the joining member - `{&member, 1}` - so a peer's
+ * index block has never been published, while the encoder has always accepted up to
+ * kParticipantSlots (64) rows.
+ *
+ * DELIBERATELY NOT the same filter as foreign_member_identity. That function answers
+ * "who is a renderable PEER" and so applies the same_client and same_account guards
+ * that exist against a client freeze on a roster naming one account twice (20.64).
+ * This answers "which machines need index blocks", which is a different question: the
+ * ROSTER's guards do not belong on the SUPPLY message. Sibling BAP sessions of one
+ * client are still collapsed, because they share a member key and one machine needs
+ * one block - that dedupe is by memberKey, which is exactly what distinguishes
+ * machines (20.53's fix).
+ *
+ * @param ownSessionId The caller's committed activity session.
+ * @param output Receives one identity per distinct member key, caller's own first.
+ * @return How many rows were written; 0 when the session is unknown.
+ */
+[[nodiscard]] std::size_t member_identities(
+    std::uint64_t ownSessionId,
+    std::span<membership::Identity> output) noexcept;
+
 [[nodiscard]] bool session_binding_for_member(std::uint64_t memberKey,
                                               SessionBinding& output) noexcept;
 

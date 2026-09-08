@@ -52,6 +52,7 @@ bool Parser::gameplay_settings(gameplay::Settings& output) noexcept {
     bool hasReserve = false;
     bool hasJoinGrant = false;
     bool hasEntityIndexAllocation = false;
+    bool hasEntityIndexAllocationCrossMember = false;
     bool hasActivityUpstreamDump = false;
     bool hasActivityViewInitiate = false;
     bool hasActivityStartHostPush = false;
@@ -123,6 +124,12 @@ bool Parser::gameplay_settings(gameplay::Settings& output) noexcept {
                 return false;
             }
             hasEntityIndexAllocation = true;
+        } else if (key == "entity_index_allocation_cross_member") {
+            if (hasEntityIndexAllocationCrossMember
+                || !boolean(candidate.entityIndexAllocationCrossMember)) {
+                return false;
+            }
+            hasEntityIndexAllocationCrossMember = true;
         } else if (key == "activity_upstream_dump") {
             if (hasActivityUpstreamDump || !boolean(candidate.activityUpstreamDump)) {
                 return false;

@@ -35,6 +35,7 @@ namespace sunrise::server::bap::encrypted::body {
  * @return True when the chosen body codec succeeds.
  */
 bool process(const ServiceRoute& route,
+             std::uint64_t identityEcho,
              core::settings::AccountKey accountKey,
              const queuez::SessionState& queuezState,
              std::uint64_t activitySessionId,
@@ -142,8 +143,8 @@ bool process(const ServiceRoute& route,
         state::matchmaking::PendingMutation mutation{};
         bool hasMutation = false;
         const bool encoded = matchmaking::encode_response(
-            matchmakingContext, accountKey, requestBody, output, written, mutation,
-            hasMutation);
+            identityEcho, matchmakingContext, accountKey, requestBody, output, written,
+            mutation, hasMutation);
         if (hasMutation) {
             outcome.transaction = mutation;
         }

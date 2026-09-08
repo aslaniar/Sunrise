@@ -61,6 +61,14 @@ enum class ActivityClientRole : std::uint8_t {
 struct Session {
     std::uint32_t id{};
     bool authenticated{};
+    /** The 8-byte prefix of the session token this connection echoed at server
+     *  hello (p2-204 v3): the per-client key that is STABLE ACROSS RECONNECTS
+     *  (measured: mac CF0A98397F164482 over conns 1/2/3, rig 945602D41E66AC20
+     *  over conns 4/5/6, p2-204 v2). Set by the svc25 identity stamp; zero
+     *  until then. The identity store keys on this value (capture + push),
+     *  because account slots are shared across machines (p2-203) and every
+     *  join spawns a fresh session while ads stick to the first (p2-204). */
+    std::uint64_t identityEcho{};
     std::array<std::byte, state::kBapNonceSize> sendNonce{};
     std::array<std::byte, state::kBapNonceSize> receiveNonce{};
     /** Opaque State handle taken only after the server hello authenticates. */

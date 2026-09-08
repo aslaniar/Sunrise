@@ -136,7 +136,7 @@ bool stage_notifications(Session& session,
     // session at all. Message type 52 is the one that arrives on an unallocated link.
     if (activity.delivery == activity_message::Delivery::joinNotifications) {
         return push::activity::append_join_notifications(
-            scratch, activity, session.accountKey, key, nonce, response, written);
+            scratch, activity, session.identityEcho, key, nonce, response, written);
     }
     if (activity.delivery == activity_message::Delivery::entitySlotNotification) {
         return push::activity::append_entity_slot_notification(scratch,

@@ -13,7 +13,9 @@ namespace activity_identity =
 #include "../../../../core/settings/settings.h"
 #include <cstdio>
 #include <array>
+#include <cstddef>
 #include <cstring>
+#include <limits>
 #include <span>
 
 #include "../../../../middleware/bap/matchmaking/request/matchmaking_request_parser.h"
@@ -210,15 +212,34 @@ void log_request_body(std::span<const std::byte> body) noexcept {
 
 /**
  * Extracts the client's SteamNetworkingIdentity from one advertisement
- * descriptor and stores it for this account (the type-51 bubble-startup echo).
+ * descriptor and stores it keyed by the SESSION TOKEN ECHO this connection
+ * presented at server hello (session.identityEcho - the svc25 stamp). The
+ * type-51 bubble-startup echo loads by the RECIPIENT's echo, so the token
+ * captured under a client's echo IS that client's own token - and the echo
+ * survives reconnects (measured per-machine stable and disjoint across ALL
+ * connections of p2-204 v2: mac CF0A98397F164482 over conns 1/2/3, rig
+ * 945602D41E66AC20 over conns 4/5/6), which neither account slots (shared
+ * across machines, p2-203) nor BAP session ids (every join spawns a fresh
+ * one while ads stick to the first, p2-204) do.
+ *
+ * COLLISION GUARD (the p2-203-shaped failure mode): if the echoed token is
+ * shared by two clients (observed once: both machines presented CF0A in
+ * p2-203's early window), the FIRST digits owner keeps the bucket and the
+ * second client's capture is REFUSED with a logged collision - fail closed,
+ * never a wrong echo.
+ *
  * The identity rides the descriptor as ASCII "steamid:<id>#<token>" followed
  * by zero padding; the 0x56-byte form the client's validator memcmps carries
  * the 0x06 version byte at [0x55]. The descriptor's own byte at that position
  * is logged when it differs, so a form mismatch is a readout, not a silence.
- * @param account The account slot the advertisement arrived on.
+ * @param identityEcho The 8-byte svc25 echo (session.identityEcho).
+ * @param account The account slot the advertisement arrived on (logged only).
  * @param descriptor The client's raw advertisement descriptor.
  */
-void capture_activity_identity(core::settings::AccountKey account,
+std::array<char, 17> identity_echo_hex(std::uint64_t echo) noexcept;
+
+void capture_activity_identity(std::uint64_t identityEcho,
+                               core::settings::AccountKey account,
                                std::span<const std::byte> descriptor) noexcept {
     constexpr std::array<std::byte, 8> kNeedle{std::byte{0x73}, std::byte{0x74},
                                                std::byte{0x65}, std::byte{0x61},
@@ -239,10 +260,46 @@ void capture_activity_identity(core::settings::AccountKey account,
         std::array<std::byte, activity_identity::kIdentityBytes> identity{};
         std::copy_n(descriptor.begin() + static_cast<std::ptrdiff_t>(base),
                     activity_identity::kIdentityBytes, identity.begin());
+
+        // Parse the "steamid:<digits>#" member id for the log matrix only.
+        std::uint64_t digits = 0;
+        bool keyParsed = false;
+        const std::size_t digitsStart = base + kNeedle.size();
+        const std::size_t digitsEnd = digitsStart + 20; // max u64 is 20 decimal digits
+        for (std::size_t index = digitsStart;
+             index < descriptor.size() && index < digitsEnd; ++index) {
+            const unsigned char c = std::to_integer<unsigned char>(descriptor[index]);
+            if (c == static_cast<unsigned char>('#')) {
+                keyParsed = true;
+                break;
+            }
+            if (c < '0' || c > '9') {
+                break;
+            }
+            const std::uint64_t digit = static_cast<std::uint64_t>(c - '0');
+            if (digits > ((std::numeric_limits<std::uint64_t>::max)() - digit) / 10) {
+                break; // overflow: not a u64 member id
+            }
+            digits = digits * 10 + digit;
+        }
+
+        // The machine id at descriptor offset 0 is known-true (20.90 relabel:
+        // machineId + raw offsets carry foreign-blob truth; the p2-203 dumps
+        // show it little-endian at offset 0). Logged for the key matrix only.
+        std::uint64_t machineId = 0;
+        if (descriptor.size() >= 8) {
+            machineId = 0;
+            for (std::size_t byte = 0; byte < 8; ++byte) {
+                machineId |= static_cast<std::uint64_t>(
+                                 std::to_integer<unsigned char>(descriptor[byte]))
+                             << (byte * 8);
+            }
+        }
+
         const std::byte version = identity[0x55];
         if (version != std::byte{0x06}) {
             identity[0x55] = std::byte{0x06};
-            std::array<char, 96> line{};
+            std::array<char, 128> line{};
             const int logged = std::snprintf(
                 line.data(), line.size(),
                 "ev=identity stage=capture account=%u version_byte=%u (forced 6)",
@@ -252,12 +309,84 @@ void capture_activity_identity(core::settings::AccountKey account,
                                  {line.data(), static_cast<std::size_t>(logged)});
             }
         }
-        if (activity_identity::store(account, identity)) {
-            std::array<char, 128> line{};
+        std::array<char, 192> line{};
+        if (!keyParsed) {
             const int logged = std::snprintf(
                 line.data(), line.size(),
-                "ev=identity stage=capture result=stored account=%u bytes=%zu",
-                static_cast<unsigned>(account), activity_identity::kIdentityBytes);
+                "ev=identity stage=capture result=key_parse_fail echo=%s account=%u "
+                "machine=0x%016llX",
+                identity_echo_hex(identityEcho).data(),
+                static_cast<unsigned>(account),
+                static_cast<unsigned long long>(machineId));
+            if (logged > 0) {
+                core::log::write(core::log::Channel::server, core::log::Level::warn,
+                                 {line.data(), static_cast<std::size_t>(logged)});
+            }
+            return;
+        }
+        // COLLISION GUARD (the p2-203-shaped mode): if this echo bucket already
+        // belongs to a DIFFERENT digits owner (two clients presenting one token,
+        // observed once), refuse the store - fail closed, never a wrong echo.
+        std::array<std::byte, activity_identity::kIdentityBytes> existing{};
+        if (activity_identity::load(identityEcho, existing)) {
+            std::uint64_t existingDigits = 0;
+            bool existingParsed = false;
+            for (std::size_t index = 0;
+                 index + kNeedle.size() < existing.size(); ++index) {
+                bool needle = true;
+                for (std::size_t k = 0; k < kNeedle.size(); ++k) {
+                    if (existing[index + k] != needleSpan[k]) {
+                        needle = false;
+                        break;
+                    }
+                }
+                if (!needle) {
+                    continue;
+                }
+                for (std::size_t d = index + kNeedle.size();
+                     d < index + kNeedle.size() + 20 && d < existing.size(); ++d) {
+                    const unsigned char c =
+                        std::to_integer<unsigned char>(existing[d]);
+                    if (c == static_cast<unsigned char>('#')) {
+                        existingParsed = true;
+                        break;
+                    }
+                    if (c < '0' || c > '9') {
+                        break;
+                    }
+                    existingDigits =
+                        existingDigits * 10 + static_cast<std::uint64_t>(c - '0');
+                }
+                break;
+            }
+            if (!existingParsed || existingDigits != digits) {
+                const int logged = std::snprintf(
+                    line.data(), line.size(),
+                    "ev=identity stage=capture result=collision_REFUSED echo=%s "
+                    "account=%u digits=0x%016llX existing_digits=0x%016llX - "
+                    "two clients share one echo token (p2-203 shape); fail closed",
+                    identity_echo_hex(identityEcho).data(),
+                    static_cast<unsigned>(account),
+                    static_cast<unsigned long long>(digits),
+                    static_cast<unsigned long long>(existingDigits));
+                if (logged > 0) {
+                    core::log::write(core::log::Channel::server,
+                                     core::log::Level::warn,
+                                     {line.data(), static_cast<std::size_t>(logged)});
+                }
+                return;
+            }
+        }
+        if (activity_identity::store(identityEcho, identity)) {
+            const int logged = std::snprintf(
+                line.data(), line.size(),
+                "ev=identity stage=capture result=stored echo=%s account=%u "
+                "digits=0x%016llX machine=0x%016llX bytes=%zu",
+                identity_echo_hex(identityEcho).data(),
+                static_cast<unsigned>(account),
+                static_cast<unsigned long long>(digits),
+                static_cast<unsigned long long>(machineId),
+                activity_identity::kIdentityBytes);
             if (logged > 0) {
                 core::log::write(core::log::Channel::server, core::log::Level::info,
                                  {line.data(), static_cast<std::size_t>(logged)});
@@ -265,12 +394,41 @@ void capture_activity_identity(core::settings::AccountKey account,
         }
         return;
     }
+    // No "steamid:" needle anywhere in the descriptor: fail closed (was silent).
+    std::array<char, 96> line{};
+    const int logged = std::snprintf(
+        line.data(), line.size(),
+        "ev=identity stage=capture result=no_steamid echo=%s account=%u bytes=%zu",
+        identity_echo_hex(identityEcho).data(),
+        static_cast<unsigned>(account), descriptor.size());
+    if (logged > 0) {
+        core::log::write(core::log::Channel::server, core::log::Level::warn,
+                         {line.data(), static_cast<std::size_t>(logged)});
+    }
+}
+
+/**
+ * Renders the 8-byte svc25 echo (LE u64) in the svc25 log's byte order:
+ * "CF0A98397F164482"-style hex, into fixed caller storage.
+ * @param echo The echo value (session.identityEcho).
+ * @return Pointer to the caller-owned 17-byte buffer (char[17]).
+ */
+std::array<char, 17> identity_echo_hex(std::uint64_t echo) noexcept {
+    static constexpr char kHexDigits[] = "0123456789ABCDEF";
+    std::array<char, 17> out{};
+    for (std::size_t byte = 0; byte < 8; ++byte) {
+        const unsigned value = static_cast<unsigned>((echo >> (byte * 8)) & 0xFF);
+        out[byte * 2] = kHexDigits[value >> 4];
+        out[byte * 2 + 1] = kHexDigits[value & 0xF];
+    }
+    return out;
 }
 
 } // namespace
 
 /** Prepares and encodes one kind-specific svc-43 response transaction. */
-bool encode_response(state::matchmaking::ContextHandle context,
+bool encode_response(std::uint64_t identityEcho,
+                     state::matchmaking::ContextHandle context,
                      core::settings::AccountKey accountKey,
                      std::span<const std::byte> requestBody,
                      std::span<std::byte> output,
@@ -286,7 +444,7 @@ bool encode_response(state::matchmaking::ContextHandle context,
     if (request.kind == service::RequestKind::advertisementUpdate) {
         if (request.advertisement.hasDescriptor) {
             log_descriptor("publish", request.advertisement.descriptor);
-            capture_activity_identity(accountKey, request.advertisement.descriptor);
+            capture_activity_identity(identityEcho, accountKey, request.advertisement.descriptor);
         } else {
             log_request_body(requestBody);
         }

@@ -25,7 +25,7 @@ namespace sunrise::server::bap::encrypted::push::activity {
  */
 [[nodiscard]] bool append_join_notifications(Scratch& scratch,
                                              const activity_message::ActivityPlan& activity,
-                                             core::settings::AccountKey accountKey,
+                                             std::uint64_t bapSessionId,
                                              std::span<const std::byte, state::kAesKeySize> key,
                                              std::array<std::byte, state::kBapNonceSize>& nonce,
                                              std::span<std::byte> response,
@@ -101,6 +101,39 @@ append_entity_index_allocation_notification(
     std::size_t& written) noexcept;
 
 /**
+ * Appends one bubble_host_startup_info (activity type 51) svc9 notification and
+ * advances its local nonce once. The body is the femu-validated five-field
+ * protobuf (W8 in RE_output/claims/type51-bubble-startup-spec.md): two blob
+ * sub-messages (zeros + the recipient's own identity echo), two nonzero
+ * varint scalars, the 256-byte buffer — all ascending. The identity is loaded
+ * by the RECIPIENT's SVC25 ECHO (session.identityEcho - the per-client token
+ * prefix that survives reconnects, measured per-machine disjoint across all
+ * connections of p2-204 v2), so the echo is by-construction the recipient's
+ * own. Account slots, BAP session ids and the digits/memberKey namespaces are
+ * all measured-broken as keys (p2-203 / p2-204). An uncaptured identity
+ * fails closed (the message is left out entirely).
+ * @param scratch Lock-owned transform buffers.
+ * @param sessionId Activity session id echoed in the envelope AND carried in the body.
+ * @param lookupKey The recipient's svc25 echo (session.identityEcho).
+ * @param memberKey The join's wire member key, LOGGED ONLY (the matrix).
+ * @param key Active AES-GCM session key.
+ * @param nonce Local send nonce advanced only after the complete notification exists.
+ * @param response Lock-owned complete-frame staging storage.
+ * @param written Existing staged byte count, updated only after the notification exists.
+ * @return True when the notification encodes atomically.
+ */
+[[nodiscard]] bool
+append_bubble_startup_notification(
+    Scratch& scratch,
+    std::uint64_t sessionId,
+    std::uint64_t lookupKey,
+    std::uint64_t memberKey,
+    std::span<const std::byte, state::kAesKeySize> key,
+    std::array<std::byte, state::kBapNonceSize>& nonce,
+    std::span<std::byte> response,
+    std::size_t& written) noexcept;
+
+/**
  * Appends one start_activity_host (type 9) svc9 notification and advances its
  * local nonce once. The body is the 13-byte raw struct the client's decode
  * variant reads directly (mode 1, activity session id, value dword 4). The
@@ -115,16 +148,6 @@ append_entity_index_allocation_notification(
  * @param written Existing staged byte count, updated only after the notification exists.
  * @return True when the notification encodes atomically.
  */
-[[nodiscard]] bool
-append_bubble_startup_notification(
-    Scratch& scratch,
-    std::uint64_t sessionId,
-    core::settings::AccountKey accountKey,
-    std::span<const std::byte, state::kAesKeySize> key,
-    std::array<std::byte, state::kBapNonceSize>& nonce,
-    std::span<std::byte> response,
-    std::size_t& written) noexcept;
-
 [[nodiscard]] bool
 append_start_activity_host_notification(
     Scratch& scratch,

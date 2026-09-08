@@ -267,6 +267,7 @@ void arm_encryption(Session& session, const state::BapState& bap) noexcept {
     // A codec that refuses answers with an empty body. The Client matches only the head of its
     // pending ring, so one unanswered request jams that ring for the rest of the run.
     if (!encrypted::body::process(route,
+                                  session.identityEcho,
                                   session.accountKey,
                                   session.queuez,
                                   session.activitySessionId,
@@ -340,9 +341,18 @@ bool consume(Session& session,
     // P2 identity stamp: the echoed session token names the provisioned account (both sides
     // derive it from the same bootstrap token). An unmatched echo keeps today's acceptance
     // behavior, serving the legacy slot with a named warn instead of refusing.
+    // P2-204 v3: the echoed 8-byte prefix is ALSO kept as session.identityEcho - the
+    // per-client store key for the type-51 identity capture (stable across reconnects,
+    // measured per-machine disjoint in p2-204 v2). Zero when the body is too short.
+    session.identityEcho = 0;
     const std::byte* echoedPtr = nullptr;
     if (frame.body.size() >= kTokenOffset + state::kSessionTokenSize) {
         echoedPtr = frame.body.data() + kTokenOffset;
+        for (std::size_t byte = 0; byte < 8; ++byte) {
+            session.identityEcho |=
+                static_cast<std::uint64_t>(std::to_integer<unsigned char>(echoedPtr[byte]))
+                << (byte * 8);
+        }
     }
     const state::AccountKey matched =
         echoedPtr == nullptr

@@ -144,6 +144,7 @@ namespace body {
  * @return True when the chosen body codec succeeds.
  */
 [[nodiscard]] bool process(const ServiceRoute& route,
+                           std::uint64_t identityEcho,
                            core::settings::AccountKey accountKey,
                            const queuez::SessionState& queuezState,
                            std::uint64_t activitySessionId,

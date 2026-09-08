@@ -68,6 +68,22 @@ struct Settings {
      */
     bool entityIndexAllocation{false};
     /**
+     * Name EVERY joined machine in the type-20 allocation, not just the joiner.
+     *
+     * v1 shipped `{&member, 1}` with the call site's own note that "the cross-member
+     * map is deferred until decode is confirmed" - so a peer's index block has never
+     * been published, while the encoder has always accepted kParticipantSlots (64)
+     * rows and the schema has always carried them (20.336 R6). Twelve lines above
+     * that call site the fork already records the consequence: "without it the host
+     * client's manager sync always skips and every player_broadcast creation returns
+     * -1", and the client duly logs `failed to create 'player_broadcast' entity`
+     * 17-80 times in every archived boot on both machines.
+     *
+     * Off publishes v1's single row, byte-identical, so the arm reverts with a
+     * settings flip and no rebuild.
+     */
+    bool entityIndexAllocationCrossMember{false};
+    /**
      * Initiate the view-establishment handshake: the host sends its own view (id 40)
      * once per admitted peer at the first publish. The fork has only ever answered;
      * a client that never receives a host view never establishes its own, and the

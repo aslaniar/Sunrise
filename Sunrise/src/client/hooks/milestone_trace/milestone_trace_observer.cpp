@@ -248,6 +248,23 @@ struct Target {
 // (`constexpr std::uintptr_t k...Rva = 0x...;`) so the gate resolves EVERY ONE against
 // .pdata. Putting them only inside the table below would leave them ungated - which is
 // precisely the p2(112) trap this tracer exists to avoid repeating.
+/**
+ * p2-211: entry 0 of the 14-entry handler table at .rdata RVA 0x1C166A0 - the head
+ * of the ONLY chain reaching the ent receive-block ctor. Nine hops, every one a
+ * single caller: 0x140B5ECD0 -> 0x1416FCDF0 -> 0x1416F6640 -> 0x141709800 ->
+ * 0x141702580 -> 0x141703910 -> 0x1416FF3C0 -> 0x1416CA0B0 -> 0x1416BB1E0.
+ *
+ * 20.338 measured that the table is REGISTERED AND LIVE at runtime (descriptor
+ * object on the heap, the root's address in nine heap records) while the ctor has
+ * zero heap references and the four receive blocks are absent in six dumps. A dump
+ * cannot separate "never dispatched" from "runs and bails". This counter can, and
+ * it is the whole reason for the boot.
+ *
+ * SAFETY: exact .pdata bounds 0x140B5ECD0..0x140B5F16D starting at offset 0 - a
+ * clean detour target, not a fragment. The budget caps EMITS only; the census line
+ * reads g_calls, which costs one atomic increment per call.
+ */
+constexpr std::uintptr_t kRecvRootRva = 0xB5ECD0;
 constexpr std::uintptr_t kEntRecvRva = 0x1718510;
 constexpr std::uintptr_t kEntHeaderRva = 0x1717EB0;
 constexpr std::uintptr_t kEntCreateRva = 0x1718080;
@@ -607,11 +624,16 @@ constexpr std::uint32_t kType30SchemaKeyOracle = 0x80808683;
 // 2026-09-05 when the image_set entry was commented out and this constant was left at 48.
 // It compiled cleanly because kIndexOf returns early on a match and never reads the null
 // entry. The static_assert below now makes the compiler catch it instead of a boot.
-constexpr std::size_t kTargetsSize = 68;
+constexpr std::size_t kTargetsSize = 69;
 constexpr std::array<Target, kTargetsSize> kTargets{{
     // The entity receive cluster. 0x141718510 is the ENTRY and has ZERO static references
     // of any kind in the whole image (20.209) - its caller is the open question, so it gets
     // the largest budget.
+    // p2-211: the construction chain's head. calls=0 means nothing dispatches
+    // entry 0; calls>0 means it runs and bails, and the bail point is then a
+    // static read of a readable 1181-byte function. Only one of those is a
+    // dead end, and today we cannot tell which.
+    {"recv_root",   kRecvRootRva, 12},
     {"ent_recv",    kEntRecvRva, 24},
     {"ent_header",  kEntHeaderRva, 12},
     {"ent_create",  kEntCreateRva, 12},

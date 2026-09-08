@@ -128,6 +128,63 @@ bool binding_matches(const SessionBinding& binding) noexcept {
     return matches;
 }
 
+/**
+ * Collects every joined machine in the caller's destination, caller's own row first.
+ * See runtime.h for why this deliberately does NOT apply the roster's same_client /
+ * same_account guards: those answer "is this a renderable peer"; this answers "which
+ * machines need an entity-index block", and index supply is not a rendering decision.
+ */
+std::size_t member_identities(const std::uint64_t ownSessionId,
+                              std::span<membership::Identity> output) noexcept {
+    if (ownSessionId == kAbsentSessionId || output.empty()) {
+        return 0;
+    }
+    AcquireSRWLockShared(&runtime::storage::g_stateLock);
+    const ActivityState& state = runtime::storage::g_activity;
+    const std::size_t own = transactions::find_session(state, ownSessionId);
+    std::size_t count = 0;
+    if (own < kSessionCapacity) {
+        const SessionRecord& ownRecord = state.sessions[own];
+        // The joiner keeps row 0 - v1's only row - so an existing client's block base
+        // never moves when a second machine appears.
+        if (ownRecord.membership.hasIdentity) {
+            output[count] = ownRecord.membership.identity;
+            ++count;
+        }
+        for (const SessionRecord& record : state.sessions) {
+            if (count >= output.size()) {
+                break;
+            }
+            if (record.sessionId == ownSessionId || !record.occupied || !record.joined) {
+                continue;
+            }
+            if (!same_peer_destination(record.destination, ownRecord.destination)) {
+                continue;
+            }
+            if (!record.membership.hasIdentity) {
+                continue;
+            }
+            // One row per MACHINE. Sibling BAP sessions of one client share a member
+            // key (20.53); giving each its own index block would hand one machine
+            // several and shrink everyone else's share of a 64-slot table.
+            bool duplicate = false;
+            for (std::size_t index = 0; index < count; ++index) {
+                if (output[index].memberKey == record.membership.identity.memberKey) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (duplicate) {
+                continue;
+            }
+            output[count] = record.membership.identity;
+            ++count;
+        }
+    }
+    ReleaseSRWLockShared(&runtime::storage::g_stateLock);
+    return count;
+}
+
 /** Copies another joined session's published identity from the same destination. */
 bool foreign_member_identity(const std::uint64_t ownSessionId,
                              membership::Identity& output,

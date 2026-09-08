@@ -3,6 +3,8 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
 
 #include "../../../../../core/settings/settings.h"
 #include "../../../../../middleware/bap/activity_message/activity_join_result_encoder.h"
@@ -13,6 +15,7 @@
 #include "../../../../../middleware/bap/activity_message/activity_entity_index_grant_encoder.h"
 #include "../../../../../middleware/bap/activity_message/entity_slots.h"
 #include "../../../../../middleware/secure_channel/runtime.h"
+#include "../../../../../state/activity/runtime.h"
 #include "activity_global_state_push.h"
 #include "activity_notification_frame.h"
 #include "activity_world_population_push.h"
@@ -61,7 +64,7 @@ void clear_prefix(std::span<std::byte> buffer, std::size_t size) noexcept {
 /** Appends the ordered join-result and entity-slot svc9 notifications. */
 bool append_join_notifications(Scratch& scratch,
                                const activity_message::ActivityPlan& activity,
-                               core::settings::AccountKey accountKey,
+                               std::uint64_t bapSessionId,
                                std::span<const std::byte, state::kAesKeySize> key,
                                std::array<std::byte, state::kBapNonceSize>& nonce,
                                std::span<std::byte> response,
@@ -112,54 +115,94 @@ bool append_join_notifications(Scratch& scratch,
                                                   response,
                                                   written);
     }
+    // EXPERIMENTAL ARMS (best-effort, ordered exactly as before, NEVER coupled
+    // to the burst-level `encoded`): each append_* restores `written`/`nonce` on
+    // its own failure and clears its own bytes, so a failed arm drops its own
+    // frame and the rest of the burst goes out. The previous `encoded = append_X`
+    // coupling meant one fail-closed arm (e.g. the type-51 echo with no captured
+    // identity) rolled back the ENTIRE burst - which is exactly how p2-204's
+    // world-population baseline never went out. p2-204 postmortem fix 2.
     // Type 30 after type 0: the pool ASSIGNMENT that unblocks the client's post-init
     // local-mask sync (0x14171BB50 gate on [pool+0x602b4], FINDINGS 20.217). Without
     // it the host client's manager sync always skips and every player_broadcast
     // creation returns -1. Its own switch so the burst stays byte-identical when off.
-    if (encoded && core::settings::get().server.gameplay.entityIndexAssignment) {
-        encoded = append_entity_index_assignment_notification(scratch,
-                                                              activity.sessionId,
-                                                              0,
-                                                              key,
-                                                              nonce,
-                                                              response,
-                                                              written);
+    if (core::settings::get().server.gameplay.entityIndexAssignment) {
+        append_entity_index_assignment_notification(scratch,
+                                                    activity.sessionId,
+                                                    0,
+                                                    key,
+                                                    nonce,
+                                                    response,
+                                                    written);
     }
     // Type 20 after type 0: the lease names the slots this client HOLDS, and the
     // allocation names the indices it may create entities in (FINDINGS 20.212/20.213,
     // entity-index-allocation-schema.md). Behind a switch so the burst stays
-    // byte-identical until the lane turns it on. v1 names only the joining member's
-    // block, base 0; the cross-member map is deferred until decode is confirmed.
-    if (encoded && core::settings::get().server.gameplay.entityIndexAllocation) {
-        const entity_index_allocation::Member member{
-            activity.entitySlotMutation.memberKey, 0};
-        encoded = append_entity_index_allocation_notification(scratch,
-                                                              activity.sessionId,
-                                                              {&member, 1},
-                                                              static_cast<std::uint32_t>(
-                                                                  activity.entitySlotMutation.requestedCount),
-                                                              key,
-                                                              nonce,
-                                                              response,
-                                                              written);
+    // byte-identical until the lane turns it on.
+    //
+    // THE CROSS-MEMBER MAP IS NO LONGER DEFERRED (20.336 R6). v1's single row was
+    // the reason a peer's index block had never been published; the schema and the
+    // encoder both carried kParticipantSlots rows the whole time. Enabling
+    // entity_index_allocation_cross_member names every joined machine. With it off
+    // this publishes v1's body byte-for-byte, so the arm reverts by settings flip.
+    if (core::settings::get().server.gameplay.entityIndexAllocation) {
+        // v1 named ONLY the joining member (`{&member, 1}`), base 0, and left the
+        // cross-member map "deferred until decode is confirmed". The decode has been
+        // confirmed since (entity-index-allocation-schema.md) and the encoder has
+        // always taken up to kParticipantSlots rows, so the map is now built here:
+        // one row per joined MACHINE, the joiner keeping base 0 so an existing
+        // client's block never moves when a second machine arrives.
+        std::array<entity_index_allocation::Member,
+                   entity_index_allocation::kParticipantSlots> members{};
+        std::size_t memberCount = 0;
+        if (core::settings::get().server.gameplay.entityIndexAllocationCrossMember) {
+            std::array<::sunrise::state::activity::membership::Identity,
+                       entity_index_allocation::kParticipantSlots> identities{};
+            const std::size_t found =
+                ::sunrise::state::activity::member_identities(activity.sessionId, identities);
+            const std::uint32_t blockSize =
+                static_cast<std::uint32_t>(entity_index_allocation::kIndicesPerParticipant);
+            for (std::size_t index = 0; index < found; ++index) {
+                members[index] = entity_index_allocation::Member{
+                    identities[index].memberKey,
+                    static_cast<std::uint32_t>(index) * blockSize};
+                ++memberCount;
+            }
+        }
+        if (memberCount == 0) {
+            // Fail-safe to v1's exact body: an empty walk must never publish an EMPTY
+            // allocation, which would be a regression against a message that works.
+            members[0] = entity_index_allocation::Member{
+                activity.entitySlotMutation.memberKey, 0};
+            memberCount = 1;
+        }
+        append_entity_index_allocation_notification(scratch,
+                                                    activity.sessionId,
+                                                    {members.data(), memberCount},
+                                                    static_cast<std::uint32_t>(
+                                                        activity.entitySlotMutation.requestedCount),
+                                                    key,
+                                                    nonce,
+                                                    response,
+                                                    written);
     }
     // Type 21 after type 20: the grant the client's entity manager consumes
     // directly — the type-20 body provably reaches no mask (claim J), while the
     // type-21 bitmap feeds the pool the index allocator draws from (claims K/M).
     // The mask is the joiner's own lease, byte-identical to the type-0 body.
     // Its own switch so either push flips off without a rebuild.
-    if (encoded && core::settings::get().server.gameplay.entityIndexGrant) {
-        encoded = append_entity_index_grant_notification(scratch,
-                                                         activity.sessionId,
-                                                         activity.entitySlotMutation.mask,
-                                                         key,
-                                                         nonce,
-                                                         response,
-                                                         written);
+    if (core::settings::get().server.gameplay.entityIndexGrant) {
+        append_entity_index_grant_notification(scratch,
+                                               activity.sessionId,
+                                               activity.entitySlotMutation.mask,
+                                               key,
+                                               nonce,
+                                               response,
+                                               written);
     }
     // Message 1 comes after 0: 4 first because it is the only message the router's pre-join arm
     // accepts, and 1 after it because step 33 reads the activity name out of it. Message 54 closes
-    // the set with its empty host table.
+    // the set with its empty host table. THESE TWO ARE CORE (atomic with the join result).
     if (encoded) {
         encoded = append_global_state_notification(
             scratch, activity.sessionId, key, nonce, response, written);
@@ -184,35 +227,37 @@ bool append_join_notifications(Scratch& scratch,
     // to silence. Its own switch so the burst stays byte-identical when off (20.326 R6c: the
     // group-plane view road is closed; the activity-plane host designation is the remaining
     // lever for the client's receiver-object construction).
-    if (encoded && core::settings::get().server.gameplay.activityStartHostPush) {
-        encoded = append_start_activity_host_notification(scratch,
-                                                          activity.sessionId,
-                                                          key,
-                                                          nonce,
-                                                          response,
-                                                          written);
+    if (core::settings::get().server.gameplay.activityStartHostPush) {
+        append_start_activity_host_notification(scratch,
+                                                activity.sessionId,
+                                                key,
+                                                nonce,
+                                                response,
+                                                written);
     }
     // Type 51 closes the burst when armed: the host names this client the
     // bubble-host startup, echoing the client's OWN SteamNetworkingIdentity
     // (the validator memcmps the decoded field-2 against the client's own
     // row byte-exact — the token is per-session and read from the client's
-    // matchmaking advertisement capture, never derived). An identity that
-    // was never captured leaves the echo out and the message undelivered
+    // matchmaking advertisement capture on THE SAME BAP SESSION the push
+    // rides, never derived). An identity that was never captured on this
+    // session leaves the echo out and the message undelivered
     // (the fail-closed arm). Gated behind activity_bubble_startup.
-    if (encoded && core::settings::get().server.gameplay.activityBubbleStartup) {
-        encoded = append_bubble_startup_notification(scratch,
-                                                     activity.sessionId,
-                                                     accountKey,
-                                                     key,
-                                                     nonce,
-                                                     response,
-                                                     written);
+    if (core::settings::get().server.gameplay.activityBubbleStartup) {
+        append_bubble_startup_notification(scratch,
+                                           activity.sessionId,
+                                           bapSessionId,
+                                           activity.entitySlotMutation.memberKey,
+                                           key,
+                                           nonce,
+                                           response,
+                                           written);
     }
     // S2-0 (spec §3.4): after the unchanged join burst, one static-entity baseline push
     // on the configured carrier, then the patch-epoch bump. Nothing is emitted while
     // server.worldPopulation is off, so the burst stays byte-identical by default.
-    if (encoded && core::settings::get().server.worldPopulation) {
-        encoded = append_world_population_notifications(
+    if (core::settings::get().server.worldPopulation) {
+        append_world_population_notifications(
             scratch, activity.sessionId, key, nonce, response, written);
     }
     if (!encoded) {
@@ -528,14 +573,19 @@ bool append_start_activity_host_notification(
  * advances its local nonce once. The body is the femu-validated five-field
  * protobuf (W8 in RE_output/claims/type51-bubble-startup-spec.md): two blob
  * sub-messages (zeros + the recipient's own identity echo), two nonzero
- * varint scalars, the 256-byte buffer — all ascending. The identity comes
- * from the matchmaking advertisement capture; an uncaptured identity fails
- * closed (the message is left out entirely).
+ * varint scalars, the 256-byte buffer — all ascending. The identity is loaded
+ * by the RECIPIENT's SVC25 ECHO (session.identityEcho - the per-client token
+ * prefix that survives reconnects, measured per-machine disjoint across all
+ * connections of p2-204 v2), so the echo is by construction the recipient's
+ * own. Account slots, BAP session ids and the digits/memberKey namespaces are
+ * all measured-broken as keys (p2-203 / p2-204). An uncaptured identity
+ * fails closed (the message is left out entirely).
  */
 bool append_bubble_startup_notification(
     Scratch& scratch,
     std::uint64_t sessionId,
-    core::settings::AccountKey accountKey,
+    std::uint64_t lookupKey,
+    std::uint64_t memberKey,
     std::span<const std::byte, state::kAesKeySize> key,
     std::array<std::byte, state::kBapNonceSize>& nonce,
     std::span<std::byte> response,
@@ -544,8 +594,7 @@ bool append_bubble_startup_notification(
     auto initialNonce = nonce;
     std::size_t messageSize = 0;
     std::array<std::byte, bubble_startup::kIdentityBytes> identity{};
-    const bool haveIdentity =
-        activity_identity::load(accountKey, identity);
+    const bool haveIdentity = lookupKey != 0 && activity_identity::load(lookupKey, identity);
     const bool encoded =
         haveIdentity
         && bubble_startup::encode(identity, scratch.responseBody, messageSize)
@@ -560,26 +609,82 @@ bool append_bubble_startup_notification(
     clear_prefix(scratch.responseBody, messageSize);
     if (encoded) {
         middleware::secure_channel::advance_nonce(nonce);
-        std::array<char, 128> line{};
-        const int logged = std::snprintf(
+        std::array<char, core::log::kLineCapacity> line{};
+        static constexpr char kHexDigits[] = "0123456789ABCDEF";
+        std::size_t offset = 0;
+        const int written = std::snprintf(
             line.data(),
             line.size(),
-            "ev=activity stage=bubble_startup push session=0x%llX bytes=%u",
-            static_cast<unsigned long long>(sessionId),
+            "ev=activity stage=bubble_startup push session=0x%llX lookup_key=",
+            static_cast<unsigned long long>(sessionId));
+        if (written > 0) {
+            offset = static_cast<std::size_t>(written);
+        }
+        // The echo renders in the svc25 byte order (CF0A98397F164482-style),
+        // matching the capture lines' echo= field.
+        for (std::size_t byte = 0; byte < 8 && offset + 2 < line.size(); ++byte) {
+            const unsigned value = static_cast<unsigned>((lookupKey >> (byte * 8)) & 0xFF);
+            line[offset++] = kHexDigits[value >> 4];
+            line[offset++] = kHexDigits[value & 0xF];
+        }
+        const int body = std::snprintf(
+            line.data() + offset, line.size() - offset,
+            " member_key=0x%llX result=stored bytes=%u echo=",
+            static_cast<unsigned long long>(memberKey),
             static_cast<unsigned>(messageSize));
-        if (logged > 0) {
+        if (body > 0) {
+            offset += static_cast<std::size_t>(body);
+        }
+        // The 0x56-byte identity form, hex-rendered: the boot-end dump check reads
+        // the client's own DAT_1426BDCC8 row-2 window and compares against THIS
+        // (the bytes actually sent - derived-lines rule).
+        for (const std::byte value : identity) {
+            if (offset + 2 >= line.size()) {
+                break;
+            }
+            const unsigned v = std::to_integer<unsigned>(value);
+            line[offset++] = kHexDigits[v >> 4];
+            line[offset++] = kHexDigits[v & 0xF];
+        }
+        if (offset > 0) {
+            line[offset] = '\0';
             core::log::write(core::log::Channel::server,
                              core::log::Level::info,
-                             {line.data(), static_cast<std::size_t>(logged)});
+                             {line.data(), offset});
         }
     } else {
         clear_prefix(response.subspan(initialWritten), written - initialWritten);
         written = initialWritten;
         nonce = initialNonce;
-        if (!haveIdentity) {
-            core::log::write(core::log::Channel::server, core::log::Level::debug,
-                             {"ev=activity stage=bubble_startup result=no_identity",
-                              sizeof("ev=activity stage=bubble_startup result=no_identity") - 1});
+        std::array<char, 128> line{};
+        static constexpr char kHexDigits[] = "0123456789ABCDEF";
+        std::size_t offset = 0;
+        const int written = std::snprintf(
+            line.data(),
+            line.size(),
+            "ev=activity stage=bubble_startup push session=0x%llX lookup_key=",
+            static_cast<unsigned long long>(sessionId));
+        if (written > 0) {
+            offset = static_cast<std::size_t>(written);
+        }
+        for (std::size_t byte = 0; byte < 8 && offset + 2 < line.size(); ++byte) {
+            const unsigned value = static_cast<unsigned>((lookupKey >> (byte * 8)) & 0xFF);
+            line[offset++] = kHexDigits[value >> 4];
+            line[offset++] = kHexDigits[value & 0xF];
+        }
+        const int body = std::snprintf(
+            line.data() + offset, line.size() - offset,
+            " member_key=0x%llX result=%s",
+            static_cast<unsigned long long>(memberKey),
+            lookupKey == 0 ? "no_echo" : (haveIdentity ? "encode_fail" : "no_identity"));
+        if (body > 0) {
+            offset += static_cast<std::size_t>(body);
+        }
+        if (offset > 0) {
+            line[offset] = '\0';
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::debug,
+                             {line.data(), offset});
         }
     }
     SecureZeroMemory(&initialNonce, sizeof initialNonce);

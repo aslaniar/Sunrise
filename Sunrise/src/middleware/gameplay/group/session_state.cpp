@@ -1,7 +1,10 @@
 ﻿#include "session_state.h"
 
+#include <cstdio>
 #include <string_view>
 
+#include "../../../core/logging/log.h"
+#include "../../../core/settings/settings.h"
 #include "../../../core/settings/server/definition.h"
 #include "../../crypto/lookup3.h"
 
@@ -406,6 +409,50 @@ std::uint32_t session_state_hash(const MembershipUpdate& body,
     // The replica is 28 KiB, too large for a stack frame on a game thread.
     static thread_local SessionState state{};
     build_session_state(body, state, clientBase, profile);
+    // PIN-DOWN INSTRUMENT (2026-09-07, gated on membership_sweep - the pin-down
+    // boot IS the sweep boot whose rejections are the oracle): write the exact
+    // hashed buffer to disk once per boot and log the hash + a fingerprint, so
+    // the offline matcher (state_hash_matcher.py) can enumerate the CLIENT-side
+    // layout candidates against the client's logged "checksum failed" expected
+    // value. The fork's side (this hash) is readable; the client's layout
+    // choices are the knobs the matcher tests.
+    if (core::settings::get().server.membershipSweep) {
+        // One dump PER UNIQUE FINGERPRINT (the sweep cycles ~4-5 body shapes and
+        // each has its own client X pair to align against).
+        const std::uint32_t hash = crypto::lookup3::hash_bytes(state, kHashInitial);
+        const std::uint32_t fingerprint = crypto::lookup3::hash_bytes(state, 0x9E3779B9U);
+        static std::array<std::uint32_t, 16> seenFingerprints{};
+        static std::size_t seenCount = 0;
+        bool fresh = true;
+        for (std::size_t index = 0; index < seenCount; ++index) {
+            if (seenFingerprints[index] == fingerprint) {
+                fresh = false;
+                break;
+            }
+        }
+        if (fresh && seenCount < seenFingerprints.size()) {
+            seenFingerprints[seenCount++] = fingerprint;
+            char name[64]{};
+            std::snprintf(name, sizeof name, "membership_state_dump_%08X.bin", fingerprint);
+            std::FILE* file = std::fopen(name, "wb");
+            if (file != nullptr) {
+                std::fwrite(state.data(), 1, state.size(), file);
+                std::fclose(file);
+            }
+        }
+        std::array<char, 192> line{};
+        const int logged = std::snprintf(
+            line.data(), line.size(),
+            "ev=membership stage=state_hash client_base=%u hash=0x%08X "
+            "fp=0x%08X members=%zu players=%zu",
+            clientBase ? 1U : 0U, hash, fingerprint, body.members.size(),
+            body.players.size());
+        if (logged > 0) {
+            core::log::write(core::log::Channel::server, core::log::Level::info,
+                             {line.data(), static_cast<std::size_t>(logged)});
+        }
+        return hash;
+    }
     return crypto::lookup3::hash_bytes(state, kHashInitial);
 }
 
