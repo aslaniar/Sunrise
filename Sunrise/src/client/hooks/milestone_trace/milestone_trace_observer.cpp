@@ -3289,10 +3289,11 @@ void maybe_kit_register_list(std::uint64_t containerHolder) noexcept {
     if (!core::settings::get().client.cascadeKit) {
         return;
     }
-    bool expected = false;
-    if (!g_kitListDone.compare_exchange_strong(expected, true, std::memory_order_relaxed)) {
-        return;
-    }
+    // NO one-shot latch: the registration is idempotent (the same pointer,
+    // the same slot) and the dispatch fires repeatedly - each fire is a
+    // chance to land the pointer the RIGHT way (the right session, the right
+    // slot). The handler's guard makes the chain's downstream no-op once
+    // the session is live.
     const std::uint64_t sessionPtr = g_kitSession.load(std::memory_order_relaxed);
     if (sessionPtr < 0x10000U || (sessionPtr & 7U) != 0U) {
         // THE BOOT-12 LESSON: the dispatch can fire BEFORE the poke saves the
@@ -3413,14 +3414,7 @@ void maybe_poke_state9(const char* fn, std::uint64_t call, std::uint64_t slotPtr
     if (stateBefore != 4) {
         return;  // only the measured parking state - never blind.
     }
-    // THE CASCADE KIT, STEP 1 (the poke campaign): the session pointer is
-    // SAVED at the FIRST state-4 sighting - the list registration's dispatch
-    // can fire BEFORE the poke's arming gate, so the save must precede it.
-    // Steps 2 (the list registration) and 3 (the C3 equalize) consume the
-    // pointer from their own hooks' contexts.
-    if (core::settings::get().client.cascadeKit) {
-        g_kitSession.store(slotPtr, std::memory_order_relaxed);
-    }
+
     // GATE-1 PROBE (O1): the executor bails at 0x140C0986C when
     // session+0xF4B8 (then +0x520) is null OR 0x14178DAB0(sub) is false -
     // BEFORE the 6..9 state check ever matters (boot 1's "no attach at 9"
@@ -3909,6 +3903,15 @@ std::uint64_t __fastcall observe(void* rcx, void* rdx, void* r8, void* r9,
             // slot pointer identifies the session, so the change gate is stateless
             // across enter/leave).
             emit_sessstate(kTargets[Index].name, call, result);
+            // THE CASCADE KIT's save: the exec_sess's return = the session the
+            // executor will evaluate. Saved on EVERY return (cascade_kit-gated,
+            // independent of the poke's settings) - the list registration's
+            // trigger (the id-21 dispatch) can fire before or after, and the
+            // latest pointer is what the walker's list needs.
+            if (core::settings::get().client.cascadeKit
+                && kTargets[Index].rva == kExecSessRva) {
+                g_kitSession.store(result, std::memory_order_relaxed);
+            }
             if (kTargets[Index].rva == kExecSessRva) {
                 // THE POKE (p2-213, P1): when the executor's resolver returns OUR
                 // session parked at state 4, call the REAL setter with (9, 0x30) -
