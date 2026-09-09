@@ -1205,6 +1205,19 @@ void serve_connection(SOCKET client) noexcept {
         handle_restamp(client);
     } else if (request.verb == "POST" && request.path == "/repush") {
         handle_repush(client);
+    } else if (request.verb == "POST" && request.path == "/settings/reload") {
+        // THE WEASEL/MARIONBERRY ARC'S FIX B (p2225_weasel_marionberry.md): the
+        // settings re-read WITHOUT a restart - most flag flips stop requiring the
+        // clients to be bounced. The boot-time identity/transport fields are
+        // preserved inside the reload itself.
+        const bool ok = core::settings::reload();
+        journal("settings_reload", ok ? "ok" : "failed", ok);
+        char body[128]{};
+        const int written = std::snprintf(body, sizeof body,
+                                          "{\"ok\":%s,\"verb\":\"settings_reload\"}",
+                                          ok ? "true" : "false");
+        respond(client, ok ? "200 OK" : "500 Internal Server Error", "application/json",
+                {body, static_cast<std::size_t>(written)});
     } else {
         respond(client, "404 Not Found", "application/json", "{\"ok\":false,\"reason\":\"no such verb\"}");
     }

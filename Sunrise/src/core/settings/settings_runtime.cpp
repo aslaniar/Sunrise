@@ -175,7 +175,11 @@ void report_upgrade(bool stored) noexcept {
 } // namespace
 
 /** Loads the settings file from the owned folder, or creates the default one. */
-bool initialize(void* module) noexcept {
+/** Reads (and upgrades, when needed) the settings document. Shared by
+ *  initialize and reload - the weasel/marionberry arc's FIX B. */
+[[nodiscard]] bool read_settings_document(void* module,
+                                          std::string_view& document) noexcept {
+
     path::Buffer configPath;
     if (!path::artifact_directory(module, configPath)
         || !path::append(configPath, kSettingsFileSuffix)) {
@@ -232,7 +236,7 @@ bool initialize(void* module) noexcept {
     if (!readOk || !closed) {
         return fail("read");
     }
-    std::string_view document(buffer.data(), read);
+    document = std::string_view(buffer.data(), read);
     static std::array<char, kConfigCapacity> upgradedBuffer{};
     const bool upgrading = upgrade::needed(document);
     if (upgrading) {
@@ -245,15 +249,43 @@ bool initialize(void* module) noexcept {
         document = std::string_view(upgradedBuffer.data(), upgraded);
     }
 
+    return true;
+}
+
+void* g_module{};  /**< the module handle, captured at initialize - the reload's read path needs it */
+
+bool initialize(void* module) noexcept {
+    g_module = module;
+    std::string_view document;
+    if (!read_settings_document(module, document)) {
+        return false;
+    }
     Settings parsed;
     if (!parse(document, parsed)) {
         return fail("parse");
     }
-    // The file is replaced only once the upgraded document is known to parse.
-    if (upgrading) {
-        report_upgrade(store_upgraded(configPath, document));
-    }
     report_version(parsed.version);
+    g_settings = parsed;
+    return true;
+}
+
+bool reload() noexcept {
+    std::string_view document;
+    if (!read_settings_document(g_module, document)) {
+        return fail("reload-read");
+    }
+    Settings parsed;
+    if (!parse(document, parsed)) {
+        return fail("reload-parse");
+    }
+    // THE BOOT-TIME CLASS: preserved from the running object (the fields that
+    // seeded state a mid-flight swap cannot re-derive).
+    parsed.server.bootstrapToken = g_settings.server.bootstrapToken;
+    parsed.server.bindAddress = g_settings.server.bindAddress;
+    parsed.server.relayAddress = g_settings.server.relayAddress;
+    parsed.server.bapPort = g_settings.server.bapPort;
+    parsed.server.httpsPort = g_settings.server.httpsPort;
+    parsed.client.externalServer = g_settings.client.externalServer;
     g_settings = parsed;
     return true;
 }
