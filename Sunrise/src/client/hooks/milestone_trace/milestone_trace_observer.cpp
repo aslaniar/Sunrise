@@ -1744,39 +1744,7 @@ void emit_member_probe(const char* fn, std::uint64_t call, std::uint64_t record)
     if (written > 0) {
         emit(text.data(), static_cast<std::size_t>(written));
     }
-    // THE CASCADE KIT, STEP 4 (the identity gate spoof): the creation loop's
-    // gate 2 compares [member+0x818] against the observing machine's own
-    // identity. The peer's record carries the PEER's identity - the gate
-    // rejects it, the peer's entity is never created. This write replaces the
-    // peer's +0x818 with the FIRST identity we saw (the local player's), so
-    // gate 2 passes and the creation loop creates the peer's entity. The
-    // entity's data comes from the peer's record (the peer's character) - the
-    // guardian renders with the peer's appearance. Throwaway diagnostic.
-    if (core::settings::get().client.cascadeKit
-        && owner != 0 && owner != kIdentitySentinel) {
-        if (kIdentitySentinel == 0) {
-            // First valid identity captured = the self-identity (the sentinel).
-            kIdentitySentinel = owner;
-            std::array<char, 160> t2{};
-            const int w2 = std::snprintf(t2.data(), t2.size(),
-                "ev=mtrace stage=kit step=identity result=captured self=0x%llX rec=0x%llX",
-                static_cast<unsigned long long>(owner),
-                static_cast<unsigned long long>(record));
-            if (w2 > 0) { emit(t2.data(), static_cast<std::size_t>(w2)); }
-            return;
-        }
-        // A different identity: overwrite with the self-identity (the spoof).
-        *reinterpret_cast<volatile std::uint64_t*>(
-            const_cast<std::uint8_t*>(reinterpret_cast<const std::uint8_t*>(record))
-            + kMemberOwnerField) = kIdentitySentinel;
-        std::array<char, 192> t3{};
-        const int w3 = std::snprintf(t3.data(), t3.size(),
-            "ev=mtrace stage=kit step=identity result=spoofed rec=0x%llX old=0x%llX new=0x%llX",
-            static_cast<unsigned long long>(record),
-            static_cast<unsigned long long>(owner),
-            static_cast<unsigned long long>(kIdentitySentinel));
-        if (w3 > 0) { emit(t3.data(), static_cast<std::size_t>(w3)); }
-    }
+
 }
 
 /**
