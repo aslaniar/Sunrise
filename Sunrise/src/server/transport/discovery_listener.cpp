@@ -15,9 +15,6 @@
 namespace sunrise::server::transport::discovery {
 namespace {
 
-/** Demonware discovery uses these two fixed destination ports. */
-constexpr std::uint16_t kFirstDiscoveryPort = 3074;
-constexpr std::uint16_t kSecondDiscoveryPort = 3075;
 /** A NatProbe request is two big-endian 16-bit fields. */
 constexpr std::size_t kNatProbeRequestSize = 4;
 /** The decoder needs the whole 128-bit NatProbe reply. */
@@ -270,14 +267,16 @@ bool initialize() noexcept {
         return false;
     }
     g_listener.winsockOwned = true;
-    g_listener.sockets[0] = bind_loopback_udp(kFirstDiscoveryPort);
+    const std::uint16_t lowPort = core::settings::get().server.discoveryPort;
+    const std::uint16_t highPort = static_cast<std::uint16_t>(lowPort + 1U);
+    g_listener.sockets[0] = bind_loopback_udp(lowPort);
     if (g_listener.sockets[0] == INVALID_SOCKET) {
         WSACleanup();
         g_listener.winsockOwned = false;
         ReleaseSRWLockExclusive(&g_listener.lock);
         return false;
     }
-    g_listener.sockets[1] = bind_loopback_udp(kSecondDiscoveryPort);
+    g_listener.sockets[1] = bind_loopback_udp(highPort);
     if (g_listener.sockets[1] == INVALID_SOCKET) {
         closesocket(g_listener.sockets[0]);
         g_listener.sockets[0] = INVALID_SOCKET;
@@ -298,7 +297,7 @@ bool initialize() noexcept {
         ReleaseSRWLockExclusive(&g_listener.lock);
         return false;
     }
-    for (const std::uint16_t port : {kFirstDiscoveryPort, kSecondDiscoveryPort}) {
+    for (const std::uint16_t port : {lowPort, highPort}) {
         std::array<char, 96> line{};
         const int written = std::snprintf(line.data(),
                                           line.size(),

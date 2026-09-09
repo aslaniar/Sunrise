@@ -84,6 +84,8 @@ bool Parser::server_settings(server::Settings& output) noexcept {
     bool hasEntitlements = false;
     bool hasBapPort = false;
     bool hasHttpsPort = false;
+    bool hasAdminPort = false;
+    bool hasDiscoveryPort = false;
     bool hasBindAddress = false;
     bool hasRelayAddress = false;
     bool hasBootstrapToken = false;
@@ -141,6 +143,25 @@ bool Parser::server_settings(server::Settings& output) noexcept {
             }
             output.httpsPort = static_cast<std::uint16_t>(value);
             hasHttpsPort = true;
+        } else if (key == "admin_port") {
+            std::uint64_t value = 0;
+            if (hasAdminPort || !unsigned_integer(value) || value == 0
+                || value > (std::numeric_limits<std::uint16_t>::max)()) {
+                return false;
+            }
+            output.adminPort = static_cast<std::uint16_t>(value);
+            hasAdminPort = true;
+        } else if (key == "discovery_port") {
+            std::uint64_t value = 0;
+            // The listener owns this port AND port+1, so a pair crossing 65535
+            // would silently bind one valid socket and fail the boot at the
+            // second; refuse it here where the reason is nameable.
+            if (hasDiscoveryPort || !unsigned_integer(value) || value == 0
+                || value >= (std::numeric_limits<std::uint16_t>::max)()) {
+                return false;
+            }
+            output.discoveryPort = static_cast<std::uint16_t>(value);
+            hasDiscoveryPort = true;
         } else if (key == "bind_address") {
             std::string_view value;
             // A valid dotted quad only, like the gameplay endpoint's key: an

@@ -150,8 +150,11 @@ LoadStatus load(const wchar_t* path,
         // The boot-cycle gate: name BOTH identities on a mismatch so a deploy can
         // stamp the exact expected value instead of guessing (the eqHash = the
         // configured hash of the loaded account — the runtime snapshot and the
-        // persisted rows can legitimately differ).
-        std::array<char, 192> line{};
+        // persisted rows can legitimately differ). The buffer holds the full
+        // line: at 192 bytes the tail truncated expected_eq mid-digits, which
+        // is exactly the value a restamp needs (cost the 2026-09-08 session its
+        // first diagnosis).
+        std::array<char, 256> line{};
         const int written = std::snprintf(
             line.data(),
             line.size(),

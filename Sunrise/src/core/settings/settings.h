@@ -98,13 +98,15 @@ struct Settings {
  */
 [[nodiscard]] bool initialize(void* module) noexcept;
 /** Re-reads the settings file into the live object WITHOUT a restart (the
- *  weasel/marionberry arc's FIX B). The boot-time identity/transport fields
- *  (the bootstrap token, the bind/relay addresses, the ports, the client's
- *  external-server endpoint) are PRESERVED from the running object - they
- *  seeded state that a mid-flight swap cannot re-derive. Everything else
- *  (the gameplay flags, the client toggles) applies live. The readers are
- *  lock-free per call; a torn read during the swap is a transient wrong
- *  flag, not a crash - documented, accepted. */
+ *  weasel/marionberry arc's FIX B). The boot-time identity/transport class is
+ *  PRESERVED from the running object - these seeded state a mid-flight swap
+ *  cannot re-derive, and every bind field names a listener that bound ONCE at
+ *  boot: the bootstrap token (the signon identity), bind/relay addresses,
+ *  bap/https/admin/discovery ports, the gameplay UDP port, and the client's
+ *  external-server endpoint. Everything else (the gameplay flags, the client
+ *  toggles) applies live. The readers are lock-free per call; a torn read
+ *  during the swap is a transient wrong flag, not a crash - documented,
+ *  accepted. */
 [[nodiscard]] bool reload() noexcept;
 
 /** Resets active settings to the fixed defaults. */

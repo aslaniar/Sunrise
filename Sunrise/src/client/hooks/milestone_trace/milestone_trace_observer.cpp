@@ -3295,9 +3295,13 @@ void maybe_kit_register_list(std::uint64_t containerHolder) noexcept {
     }
     const std::uint64_t sessionPtr = g_kitSession.load(std::memory_order_relaxed);
     if (sessionPtr < 0x10000U || (sessionPtr & 7U) != 0U) {
+        // THE BOOT-12 LESSON: the dispatch can fire BEFORE the poke saves the
+        // pointer - the refusal must UNLATCH so the next dispatch retries
+        // (the pointer's saved by then - the state-4 sighting precedes it).
+        g_kitListDone.store(false, std::memory_order_relaxed);
         std::array<char, 160> text{};
         const int w = std::snprintf(text.data(), text.size(),
-            "ev=mtrace stage=kit step=list result=refused why=no-session");
+            "ev=mtrace stage=kit step=list result=refused why=no-session unlatched");
         if (w > 0) { emit(text.data(), static_cast<std::size_t>(w)); }
         return;
     }
@@ -3410,8 +3414,10 @@ void maybe_poke_state9(const char* fn, std::uint64_t call, std::uint64_t slotPtr
         return;  // only the measured parking state - never blind.
     }
     // THE CASCADE KIT, STEP 1 (the poke campaign): the session pointer is
-    // SAVED here - steps 2 (the list registration) and 3 (the C3 equalize)
-    // consume it from their own hooks' contexts.
+    // SAVED at the FIRST state-4 sighting - the list registration's dispatch
+    // can fire BEFORE the poke's arming gate, so the save must precede it.
+    // Steps 2 (the list registration) and 3 (the C3 equalize) consume the
+    // pointer from their own hooks' contexts.
     if (core::settings::get().client.cascadeKit) {
         g_kitSession.store(slotPtr, std::memory_order_relaxed);
     }

@@ -22,6 +22,10 @@ inline constexpr std::size_t kProfileStateVariantCount = 18;
 inline constexpr std::uint16_t kDefaultBapPort = 30974;
 /** The Client rewrites every external URL onto the HTTPS default port. */
 inline constexpr std::uint16_t kDefaultHttpsPort = 443;
+/** The admin HTTP listener's historical port (was a compile-time constant). */
+inline constexpr std::uint16_t kDefaultAdminPort = 8099;
+/** The discovery listener's historical low UDP port (the pair is this and this+1). */
+inline constexpr std::uint16_t kDefaultDiscoveryPort = 3074;
 /** A 16-byte bootstrap token is configured as exactly 32 hex characters plus a null. */
 /** Name text capacity. The wire field holds 64 words; we stay well inside it. */
 constexpr std::size_t kProfileNameCapacity = 32;
@@ -44,6 +48,18 @@ struct Settings {
     std::uint16_t bapPort{kDefaultBapPort};
     /** HTTPS listener port. 443 is forced by the Client's scheme-preserving URL rewrite. */
     std::uint16_t httpsPort{kDefaultHttpsPort};
+    /**
+     * The Layer-2 admin listener's TCP port. 8099 historically (the compile-time
+     * constant this field replaced); a parallel test server points it elsewhere
+     * so the two processes can share a machine without colliding.
+     */
+    std::uint16_t adminPort{kDefaultAdminPort};
+    /**
+     * The LAN discovery listener's LOW UDP port; the listener also owns port+1
+     * (the game's adjacent-pair convention, 3074+3075 historically). One value
+     * keeps the pair aligned; a parallel test server moves both by moving this.
+     */
+    std::uint16_t discoveryPort{kDefaultDiscoveryPort};
     /**
      * Local interface the Layer-2 admin listener binds. Loopback by default;
      * 0.0.0.0 opens the admin HTTP surface on every interface, which no

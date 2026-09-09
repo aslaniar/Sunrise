@@ -27,18 +27,26 @@ Settings g_settings = defaults();
  * Names the step that ended the load. Settings are read before the log sinks exist, so this line
  * is the only way to report a boot failure here.
  * @param reason Short key naming the step.
+ * @param stage "load" at boot, "reload" for a hot-reload pass - a refused reload
+ *              must never read as a boot failure in the logs.
  * @return Always false, so callers can return it directly.
  */
-[[nodiscard]] bool fail(std::string_view reason) noexcept {
+[[nodiscard]] bool fail(std::string_view reason, std::string_view stage = "load") noexcept {
     std::array<char, 96> line{};
     const int written = std::snprintf(line.data(),
                                       line.size(),
-                                      "ev=settings result=fail reason=%.*s",
+                                      "ev=settings stage=%.*s result=fail reason=%.*s",
+                                      static_cast<int>(stage.size()),
+                                      stage.data(),
                                       static_cast<int>(reason.size()),
                                       reason.data());
     if (written > 0) {
         log::early({line.data(), static_cast<std::size_t>(written)});
     }
+    // ALSO to stderr: the sandbox/gate runs' console visibility (the silent
+    // rc=1 class - the p2-224 deploy arc's unidentified early abort).
+    std::fputs(line.data(), stderr);
+    std::fputc('\n', stderr);
     return false;
 }
 
@@ -172,18 +180,40 @@ void report_upgrade(bool stored) noexcept {
     }
 }
 
-} // namespace
+/** The module handle, captured at initialize - the reload's read path needs it. */
+void* g_module{};
 
-/** Loads the settings file from the owned folder, or creates the default one. */
-/** Reads (and upgrades, when needed) the settings document. Shared by
- *  initialize and reload - the weasel/marionberry arc's FIX B. */
+/**
+ * One read of the settings file. The text banks below are function-local
+ * statics, so a returned document stays valid until the NEXT call re-reads -
+ * which is exactly the sharing contract between initialize and reload.
+ */
+struct Document {
+    /** The settings file's resolved path; store_upgraded needs it after a parse. */
+    path::Buffer configPath;
+    /** The document to parse (the file's bytes, or the upgraded rewrite of them). */
+    std::string_view text;
+    /** True when the text is an in-memory upgrade that must be stored once it parses. */
+    bool upgraded{};
+};
+
+/**
+ * Reads (and upgrades, when needed) the settings document. Shared by
+ * initialize and reload - the weasel/marionberry arc's FIX B.
+ * @param module Loaded module naming the owned folder.
+ * @param loaded Receives the path, the text, and the upgrade flag.
+ * @param stage The failing reader's stage name ("load" or "reload").
+ * @return True when the file was read (the caller owns the parse decision).
+ */
 [[nodiscard]] bool read_settings_document(void* module,
-                                          std::string_view& document) noexcept {
+                                          Document& loaded,
+                                          std::string_view stage = "load") noexcept {
 
+    loaded = {};
     path::Buffer configPath;
     if (!path::artifact_directory(module, configPath)
         || !path::append(configPath, kSettingsFileSuffix)) {
-        return fail("path");
+        return fail("path", stage);
     }
 
     const HANDLE file = CreateFileW(configPath.chars.data(),
@@ -197,10 +227,10 @@ void report_upgrade(bool stored) noexcept {
     if (readableFile == INVALID_HANDLE_VALUE) {
         // A missing file is created once; other open failures remain fatal.
         if (GetLastError() != ERROR_FILE_NOT_FOUND) {
-            return fail("open");
+            return fail("open", stage);
         }
         if (!write_default(module, configPath)) {
-            return fail("write_default");
+            return fail("write_default", stage);
         }
         readableFile = CreateFileW(configPath.chars.data(),
                                    GENERIC_READ,
@@ -210,19 +240,19 @@ void report_upgrade(bool stored) noexcept {
                                    FILE_ATTRIBUTE_NORMAL,
                                    nullptr);
         if (readableFile == INVALID_HANDLE_VALUE) {
-            return fail("reopen");
+            return fail("reopen", stage);
         }
     }
 
     LARGE_INTEGER size{};
     if (!GetFileSizeEx(readableFile, &size) || size.QuadPart <= 0) {
         CloseHandle(readableFile);
-        return fail("empty");
+        return fail("empty", stage);
     }
     if (static_cast<std::uint64_t>(size.QuadPart) > kConfigCapacity) {
         // Silence here reads exactly like a crash, and the cap is the usual cause.
         CloseHandle(readableFile);
-        return fail("too_large");
+        return fail("too_large", stage);
     }
 
     // Static because two 1 MiB banks overflow the stack. Settings load once, on one thread.
@@ -234,57 +264,82 @@ void report_upgrade(bool stored) noexcept {
         && read == size.QuadPart;
     const bool closed = CloseHandle(readableFile) != FALSE;
     if (!readOk || !closed) {
-        return fail("read");
+        return fail("read", stage);
     }
-    document = std::string_view(buffer.data(), read);
+    std::string_view document(buffer.data(), read);
     static std::array<char, kConfigCapacity> upgradedBuffer{};
-    const bool upgrading = upgrade::needed(document);
-    if (upgrading) {
+    bool upgraded = false;
+    if (upgrade::needed(document)) {
         std::string_view bundled;
-        std::size_t upgraded = 0;
+        std::size_t upgradedSize = 0;
         if (!bundled_document(module, bundled)
-            || !upgrade::apply(document, bundled, upgradedBuffer, upgraded)) {
-            return fail("upgrade");
+            || !upgrade::apply(document, bundled, upgradedBuffer, upgradedSize)) {
+            return fail("upgrade", stage);
         }
-        document = std::string_view(upgradedBuffer.data(), upgraded);
+        document = std::string_view(upgradedBuffer.data(), upgradedSize);
+        upgraded = true;
     }
-
+    loaded.configPath = configPath;
+    loaded.text = document;
+    loaded.upgraded = upgraded;
     return true;
 }
 
-void* g_module{};  /**< the module handle, captured at initialize - the reload's read path needs it */
+/**
+ * Stores an upgraded document once it is known to parse. The upgrade side
+ * effect the extraction initially dropped: without this store, every boot
+ * re-upgrades in memory while the file on disk stays one version behind.
+ * @param loaded One completed read whose text already parsed.
+ */
+void store_parsed_upgrade(const Document& loaded) noexcept {
+    if (loaded.upgraded) {
+        report_upgrade(store_upgraded(loaded.configPath, loaded.text));
+    }
+}
 
+} // namespace
+
+/** Loads the settings file from the owned folder, or creates the default one. */
 bool initialize(void* module) noexcept {
     g_module = module;
-    std::string_view document;
-    if (!read_settings_document(module, document)) {
+    Document loaded;
+    if (!read_settings_document(module, loaded)) {
         return false;
     }
     Settings parsed;
-    if (!parse(document, parsed)) {
+    if (!parse(loaded.text, parsed)) {
         return fail("parse");
     }
+    // The file is replaced only once the upgraded document is known to parse.
+    store_parsed_upgrade(loaded);
     report_version(parsed.version);
     g_settings = parsed;
     return true;
 }
 
 bool reload() noexcept {
-    std::string_view document;
-    if (!read_settings_document(g_module, document)) {
-        return fail("reload-read");
+    Document loaded;
+    if (!read_settings_document(g_module, loaded, "reload")) {
+        return fail("reload-read", "reload");
     }
     Settings parsed;
-    if (!parse(document, parsed)) {
-        return fail("reload-parse");
+    if (!parse(loaded.text, parsed)) {
+        return fail("reload-parse", "reload");
     }
-    // THE BOOT-TIME CLASS: preserved from the running object (the fields that
-    // seeded state a mid-flight swap cannot re-derive).
+    store_parsed_upgrade(loaded);
+    // THE BOOT-TIME CLASS: preserved from the running object. Everything here
+    // seeded state a mid-flight swap cannot re-derive - the bootstrap token is
+    // the signon identity, and every bind field below names a listener that
+    // bound ONCE at boot (a new value would never be observed; silently
+    // adopting it would only hide why nothing moved).
     parsed.server.bootstrapToken = g_settings.server.bootstrapToken;
     parsed.server.bindAddress = g_settings.server.bindAddress;
     parsed.server.relayAddress = g_settings.server.relayAddress;
     parsed.server.bapPort = g_settings.server.bapPort;
     parsed.server.httpsPort = g_settings.server.httpsPort;
+    parsed.server.adminPort = g_settings.server.adminPort;
+    parsed.server.discoveryPort = g_settings.server.discoveryPort;
+    parsed.server.gameplay.port = g_settings.server.gameplay.port;
     parsed.client.externalServer = g_settings.client.externalServer;
     g_settings = parsed;
     return true;
@@ -292,6 +347,7 @@ bool reload() noexcept {
 
 /** Resets active settings to the fixed defaults. */
 void shutdown() noexcept {
+    g_module = nullptr;
     g_settings = defaults();
 }
 

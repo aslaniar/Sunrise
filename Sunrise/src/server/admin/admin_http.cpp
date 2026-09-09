@@ -35,8 +35,9 @@
 namespace sunrise::server::admin {
 namespace {
 
-/** The Layer-2 admin surface binds this loopback port. */
-constexpr std::uint16_t kAdminPort = 8099;
+/** The Layer-2 admin surface's historical port; the live value is
+ *  server.admin_port in settings.json (kDefaultAdminPort's same number). */
+constexpr std::uint16_t kAdminPort = core::settings::server::kDefaultAdminPort;
 /** Small curl-style requests fit this window. */
 constexpr std::size_t kRequestCapacity = 4096;
 /** The widest JSON answer (the flags' run list). */
@@ -1209,13 +1210,19 @@ void serve_connection(SOCKET client) noexcept {
         // THE WEASEL/MARIONBERRY ARC'S FIX B (p2225_weasel_marionberry.md): the
         // settings re-read WITHOUT a restart - most flag flips stop requiring the
         // clients to be bounced. The boot-time identity/transport fields are
-        // preserved inside the reload itself.
+        // preserved inside the reload itself. The response echoes one gameplay
+        // flag read AFTER the swap: the reload's live-observable canary, so a
+        // "reload returned ok but nothing moved" failure names itself in the
+        // same request that reports ok.
         const bool ok = core::settings::reload();
         journal("settings_reload", ok ? "ok" : "failed", ok);
-        char body[128]{};
-        const int written = std::snprintf(body, sizeof body,
-                                          "{\"ok\":%s,\"verb\":\"settings_reload\"}",
-                                          ok ? "true" : "false");
+        char body[160]{};
+        const int written = std::snprintf(
+            body,
+            sizeof body,
+            "{\"ok\":%s,\"verb\":\"settings_reload\",\"activityViewInitiate\":%s}",
+            ok ? "true" : "false",
+            core::settings::get().server.gameplay.activityViewInitiate ? "true" : "false");
         respond(client, ok ? "200 OK" : "500 Internal Server Error", "application/json",
                 {body, static_cast<std::size_t>(written)});
     } else {
@@ -1340,7 +1347,8 @@ bool initialize() noexcept {
     g_listener.winsockOwned = true;
     const std::array<unsigned char, core::settings::address::kOctets>& bindAddress =
         core::settings::get().server.bindAddress;
-    g_listener.socket = bind_address_tcp(kAdminPort, bindAddress);
+    const std::uint16_t adminPort = core::settings::get().server.adminPort;
+    g_listener.socket = bind_address_tcp(adminPort, bindAddress);
     if (g_listener.socket == INVALID_SOCKET) {
         core::log::write(core::log::Channel::server,
                          core::log::Level::warn,
@@ -1367,7 +1375,7 @@ bool initialize() noexcept {
         line.data(),
         line.size(),
         "ev=admin stage=listen result=ok port=%u bind=%.*s",
-        kAdminPort,
+        adminPort,
         static_cast<int>(bindText.size()),
         bindText.data());
     if (written > 0) {
