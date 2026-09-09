@@ -577,7 +577,14 @@ void mark_session_dirty(std::uint64_t sessionId) noexcept {
     if (queued && core::settings::get().server.gameplay.hostTransitionEmit
         && record.hostTransitionAttempts < kHostTransitionMaxAttempts) {
         ++record.hostTransitionAttempts;
-        const std::uint64_t transitionSessionId = record.sessionId;
+        // WHICH session identity the walker's key must match (boot 11): 0 = the
+        // group session id (boot 10's value - decoded inside an open 5-window and
+        // still refused at/before the walker); 1 = the peer's own joinId (20.320:
+        // the walked container's slots bind by the machine's own join id).
+        const std::uint64_t transitionSessionId =
+            core::settings::get().server.gameplay.hostTransitionSessionSource == 1U
+                ? record.joinId
+                : record.sessionId;
         const bool transitionSent = send_reliable(
             record.sessionId,
             record.endpoint,

@@ -56,6 +56,7 @@ bool Parser::gameplay_settings(gameplay::Settings& output) noexcept {
     bool hasActivityUpstreamDump = false;
     bool hasActivityViewInitiate = false;
     bool hasHostTransitionEmit = false;
+    bool hasHostTransitionSessionSource = false;
     bool hasActivityStartHostPush = false;
     bool hasActivityBubbleStartup = false;
     bool hasEntityIndexGrant = false;
@@ -146,6 +147,13 @@ bool Parser::gameplay_settings(gameplay::Settings& output) noexcept {
                 return false;
             }
             hasHostTransitionEmit = true;
+        } else if (key == "host_transition_session_source") {
+            std::uint64_t value = 0;
+            if (hasHostTransitionSessionSource || !unsigned_integer(value) || value > 1ULL) {
+                return false;
+            }
+            candidate.hostTransitionSessionSource = static_cast<std::uint32_t>(value);
+            hasHostTransitionSessionSource = true;
         } else if (key == "activity_bubble_startup") {
             if (hasActivityBubbleStartup || !boolean(candidate.activityBubbleStartup)) {
                 return false;

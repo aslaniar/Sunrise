@@ -616,6 +616,13 @@ constexpr std::uintptr_t kAttachDeciderRva = 0xB49180;
  *  this still never arms, its gate list is the next wall. retwatch.
  *  95 B, offset 0. (fd0a0 is 26 B - under the detour rule, unhookable.) */
 constexpr std::uintptr_t kArmFbb40Rva = 0x16FBB40;
+/** THE ID-21 HANDLER'S ENTRY (0x1416E0250, 83 B, offset 0): the dispatcher's
+ *  case-21 target. Its enter firing = the dispatcher ROUTED the record (the
+ *  door read 5) - and its guard call (~0x16E02xx) never appearing in the same
+ *  window = THE WALKER MISSED (the body's sessionId matches no slot's blob).
+ *  Boot 10 measured exactly that shape: the record decoded inside an open
+ *  5-window, the chain died before the guard. Budget 24 (the records repeat). */
+constexpr std::uintptr_t kJoin21HandlerRva = 0x16E0250;
 
 constexpr std::uintptr_t kEntMakeRva = 0x170F190;      ///< calls idx_alloc at +0x3E
 constexpr std::uintptr_t kAuthARva = 0x12ABCA0;        ///< predicate half A
@@ -747,7 +754,7 @@ constexpr std::uint32_t kType30SchemaKeyOracle = 0x80808683;
 // 2026-09-05 when the image_set entry was commented out and this constant was left at 48.
 // It compiled cleanly because kIndexOf returns early on a match and never reads the null
 // entry. The static_assert below now makes the compiler catch it instead of a boot.
-constexpr std::size_t kTargetsSize = 84;
+constexpr std::size_t kTargetsSize = 85;
 constexpr std::array<Target, kTargetsSize> kTargets{{
     // The entity receive cluster. 0x141718510 is the ENTRY and has ZERO static references
     // of any kind in the whole image (20.209) - its caller is the open question, so it gets
@@ -1040,6 +1047,8 @@ constexpr std::array<Target, kTargetsSize> kTargets{{
     // whose first condition (obj[+8]!=0) is THE ATTACH. If attach #3 lands
     // (the arming=1 poke beating the join pass), this is the next domino.
     {"arm_bbf40", kArmFbb40Rva, 16, OutParam::none, false, Probe::retwatch},
+    // p2-224 (boot 11): the id-21 handler's entry - the dispatch/walker discriminator.
+    {"join21_handler", kJoin21HandlerRva, 24, OutParam::none, false, Probe::none},
 }};
 
 /**

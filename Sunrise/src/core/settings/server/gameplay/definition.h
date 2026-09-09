@@ -102,6 +102,15 @@ struct Settings {
      */
     bool hostTransitionEmit{false};
     /**
+     * WHICH session identity the record's body carries (boot 11's walker-match
+     * discriminator): 0 = the group session id (record.sessionId - boot 10's
+     * value, decoded inside an open 5-window and still refused at/before the
+     * walker); 1 = the peer's own joinId (20.320: the walked container's slots
+     * bind by the machine's own join id - the value the walker's key must
+     * match). Default 0.
+     */
+    std::uint32_t hostTransitionSessionSource{0};
+    /**
      * Designate each client to START hosting its own activity session (activity
      * message type 9, body [mode 1][activity session id][value 4], once per join
      * burst). The client's apply runs its per-session host state-machine step -
