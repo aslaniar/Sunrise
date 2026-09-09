@@ -63,6 +63,11 @@ constexpr std::uint32_t kLoopbackAddress = 0x7F000001;
 constexpr std::uint32_t kAllMembers = 0xFFFFFFFF;
 /** Shortest gap between two retries of an owed publish. */
 constexpr std::uint64_t kRetryInterval = 250;
+/** The host-transition's bounded re-send: the ladder's 5-flip lands ~85-165ms
+ *  after the establish burst (measured, p2-222), so attempt 2 at +250ms reaches
+ *  an open door. The client's own guard (state in {2,4,5}) makes every attempt
+ *  after success a no-op. */
+constexpr std::uint8_t kHostTransitionMaxAttempts = 5;
 
 /** One admitted peer and the player it asked this host to add. */
 struct Admitted {
@@ -91,8 +96,10 @@ struct Admitted {
      *  The client's handler chain walks the packet's own connection's session container
      *  and drives set_session_state(session, 9, 0x30) - the fork-side lever for the
      *  session-state climb the pokes could only force (20.359 / p2217_emitter_spec.md).
-     *  Never re-sent. */
-    bool hostTransitionSent{};
+     *  Re-sent up to kHostTransitionMaxAttempts on the retry cycle: the ladder's 5-flip
+     *  is asynchronous (~85-165ms after the establish burst, measured p2-222), so the
+     *  first attempt loses the door race and the retry lands it. */
+    std::uint8_t hostTransitionAttempts{};
     /** Set when the session's composition changed after this record's last queued snapshot, so
      *  it is owed a fresh complete one. Another peer joining or leaving, or another peer's
      *  player changing, marks every record of the session. */
@@ -568,8 +575,8 @@ void mark_session_dirty(std::uint64_t sessionId) noexcept {
     // (p2217_emitter_spec.md). One-shot per record, default-OFF setting - the
     // delivered mechanism stays server-side (the governing constraint's home turf).
     if (queued && core::settings::get().server.gameplay.hostTransitionEmit
-        && !record.hostTransitionSent) {
-        record.hostTransitionSent = true;
+        && record.hostTransitionAttempts < kHostTransitionMaxAttempts) {
+        ++record.hostTransitionAttempts;
         const std::uint64_t transitionSessionId = record.sessionId;
         const bool transitionSent = send_reliable(
             record.sessionId,
@@ -582,8 +589,9 @@ void mark_session_dirty(std::uint64_t sessionId) noexcept {
                     && writer.write(transitionSessionId & 0xFFFFFFFFU, 32); // token
             });
         report(core::log::Level::info,
-               "ev=gameplay stage=host_transition result=%s id=21 sess=0x%llX",
+               "ev=gameplay stage=host_transition result=%s id=21 attempt=%u sess=0x%llX site=snapshot",
                transitionSent ? "sent" : "send-fail",
+               record.hostTransitionAttempts,
                static_cast<unsigned long long>(record.sessionId));
     }
     return queued;
