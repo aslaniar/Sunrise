@@ -189,6 +189,21 @@ struct Settings {
     bool pokePhaseInit{};
 
     /**
+     * THE CASCADE KIT (the poke campaign): when on, three coordinated writes
+     * walk our session through the id-21 chain's walls by hand:
+     *   1. the state-9 raw write (the existing poke_state9 machinery) - the
+     *      session pointer is SAVED for the kit's later steps;
+     *   2. at the id-21 handler's dispatch: our session's pointer is written
+     *      into the manager's pointer list's first null slot (the walker's
+     *      home list - EMPTY in every boot, the 20.362 wall);
+     *   3. at the id-21 chain's guard passing: the C3 equality's fields are
+     *      equalized ([session+0xE938] = [session+0xE93C]).
+     * Throwaway diagnostics (the governing constraint's allowance); a relaunch
+     * without this setting is the revert. Default false.
+     */
+    bool cascadeKit{};
+
+    /**
      * Arms the notifier detour (0x1417FFA20) in the milestone tracer. Default 0: that
      * body is obfuscated (keyed family) and a rig login failure correlated with the
      * 46-target set (p2-164 attempt 1, 2026-09-03), so the wide-net capture is

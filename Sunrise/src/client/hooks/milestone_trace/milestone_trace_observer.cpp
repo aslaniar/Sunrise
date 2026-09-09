@@ -1434,6 +1434,12 @@ std::atomic<unsigned> g_seenOutCount[kTargetsSize] = {};
 /** The ENTER-time r8 (the payload pointer) for first_seen_outparam rows -
  *  read at leave, where the register itself may be clobbered. p2-214. */
 std::atomic<std::uint64_t> g_enterR8[kTargetsSize] = {};
+/** THE CASCADE KIT's shared state (the poke campaign): the session pointer
+ *  saved at the state-9 poke, consumed by the list-registration (W1) and
+ *  the C3-equalize (W2) steps at their own hooks' moments. */
+std::atomic<std::uint64_t> g_kitSession{};
+std::atomic<bool> g_kitListDone{};
+std::atomic<bool> g_kitC3Done{};
 
 /** True the first time `key` is seen for this target (lock-free, racy, monotonic). */
 [[nodiscard]] bool out_key_first_seen(std::size_t index, std::uint64_t key) noexcept {
@@ -3272,6 +3278,102 @@ void emit_applystamp(const char* fn, std::uint64_t call, std::uint64_t src,
 }
 
 /**
+ * THE CASCADE KIT, STEP 2 (W1 - the list registration): the id-21 handler's
+ * walker home is [[rcx+0x28]]'s 6-slot pointer list - EMPTY in every boot
+ * (20.362: our session was never registered into it). This write inserts the
+ * poked session's pointer into the first null slot, so the walker (the
+ * handler's NEXT instruction) can finally match. One shot, kit-gated, the
+ * pointer sanity refused like every dereference.
+ */
+void maybe_kit_register_list(std::uint64_t containerHolder) noexcept {
+    if (!core::settings::get().client.cascadeKit) {
+        return;
+    }
+    bool expected = false;
+    if (!g_kitListDone.compare_exchange_strong(expected, true, std::memory_order_relaxed)) {
+        return;
+    }
+    const std::uint64_t sessionPtr = g_kitSession.load(std::memory_order_relaxed);
+    if (sessionPtr < 0x10000U || (sessionPtr & 7U) != 0U) {
+        std::array<char, 160> text{};
+        const int w = std::snprintf(text.data(), text.size(),
+            "ev=mtrace stage=kit step=list result=refused why=no-session");
+        if (w > 0) { emit(text.data(), static_cast<std::size_t>(w)); }
+        return;
+    }
+    if (containerHolder < 0x10000U || (containerHolder & 7U) != 0U) {
+        g_kitListDone.store(false, std::memory_order_relaxed);
+        return;  // the container-holder's pointer refused - retry on the next fire.
+    }
+    const auto* holder = reinterpret_cast<const std::uint8_t*>(containerHolder);
+    const std::uint64_t listBase =
+        *reinterpret_cast<const volatile std::uint64_t*>(holder + 0x28);
+    if (listBase < 0x10000U || (listBase & 7U) != 0U) {
+        std::array<char, 160> text{};
+        const int w = std::snprintf(text.data(), text.size(),
+            "ev=mtrace stage=kit step=list result=refused why=bad-list ptr=0x%llX",
+            static_cast<unsigned long long>(listBase));
+        if (w > 0) { emit(text.data(), static_cast<std::size_t>(w)); }
+        g_kitListDone.store(false, std::memory_order_relaxed);
+        return;  // the list pointer itself is bad - the next dispatch retries.
+    }
+    int writtenSlot = -1;
+    for (int i = 0; i < 6; ++i) {
+        const std::uint64_t slotValue =
+            *reinterpret_cast<const volatile std::uint64_t*>(listBase + static_cast<std::uintptr_t>(i) * 8);
+        if (slotValue == sessionPtr) {
+            writtenSlot = i;
+            break;
+        }
+        if (slotValue == 0) {
+            *reinterpret_cast<volatile std::uint64_t*>(listBase + static_cast<std::uintptr_t>(i) * 8) = sessionPtr;
+            writtenSlot = i;
+            break;
+        }
+    }
+    std::array<char, 192> text{};
+    const int w = std::snprintf(text.data(), text.size(),
+        "ev=mtrace stage=kit step=list result=%s slot=%d sess=0x%llX list=0x%llX",
+        writtenSlot >= 0 ? "registered" : "no-null-slot", writtenSlot,
+        static_cast<unsigned long long>(sessionPtr),
+        static_cast<unsigned long long>(listBase));
+    if (w > 0) { emit(text.data(), static_cast<std::size_t>(w)); }
+}
+
+/**
+ * THE CASCADE KIT, STEP 3 (W2 - the C3 equalize): the id-21 chain's middle
+ * hop compares [session+0xE938] (the hostHandoff's progress field - never
+ * fed, the fork never sent id 19) against [session+0xE93C] (the
+ * establishment's assigned index). Equalizing them at the guard's pass
+ * (ret=1, the slot in rcx) satisfies C3 by write. One shot, kit-gated.
+ */
+void maybe_kit_equalize_c3(std::uint64_t slotPtr, std::uint64_t guardResult) noexcept {
+    if (!core::settings::get().client.cascadeKit) {
+        return;
+    }
+    if ((guardResult & 0xFFU) != 1U) {
+        return;  // the guard refused - nothing to equalize for.
+    }
+    bool expected = false;
+    if (!g_kitC3Done.compare_exchange_strong(expected, true, std::memory_order_relaxed)) {
+        return;
+    }
+    if (slotPtr < 0x10000U || (slotPtr & 7U) != 0U) {
+        g_kitC3Done.store(false, std::memory_order_relaxed);
+        return;
+    }
+    const auto* slot = reinterpret_cast<const std::uint8_t*>(slotPtr);
+    const std::int32_t e93c = *reinterpret_cast<const volatile std::int32_t*>(slot + 0xE93C);
+    *reinterpret_cast<volatile std::int32_t*>(const_cast<std::uint8_t*>(slot) + 0xE938) = e93c;
+    const std::int32_t e938 = *reinterpret_cast<const volatile std::int32_t*>(slot + 0xE938);
+    std::array<char, 192> text{};
+    const int w = std::snprintf(text.data(), text.size(),
+        "ev=mtrace stage=kit step=c3 result=equalized e93c=%d e938=%d sess=0x%llX",
+        e93c, e938, static_cast<unsigned long long>(slotPtr));
+    if (w > 0) { emit(text.data(), static_cast<std::size_t>(w)); }
+}
+
+/**
  * THE POKE (p2-213, P1 - the plan's "force the input" step). Settings-gated
  * (client.poke_state9, default OFF), ONE shot per boot, throwaway diagnostic
  * per the governing constraint: it answers "does the cascade run when the live
@@ -3307,15 +3409,11 @@ void maybe_poke_state9(const char* fn, std::uint64_t call, std::uint64_t slotPtr
     if (stateBefore != 4) {
         return;  // only the measured parking state - never blind.
     }
-    // p2-213 DEFECT FIX: the observation line used to log on EVERY exec_sess
-    // leave (38,043 spam lines in boot 1). Now: only state-4 sightings count,
-    // and the K-th sighting arms the poke (client.poke_state9_arming, default
-    // 1 = boot 1's behavior). K > 1 moves the fire post-spawn-stable - the
-    // rig's mid-spawn poke preceded a network_update stall (20.355 R6).
-    const std::uint32_t seen = sightings.fetch_add(1, std::memory_order_relaxed) + 1;
-    const std::uint32_t arming = core::settings::get().client.pokeState9Arming;
-    if (seen < arming) {
-        return;
+    // THE CASCADE KIT, STEP 1 (the poke campaign): the session pointer is
+    // SAVED here - steps 2 (the list registration) and 3 (the C3 equalize)
+    // consume it from their own hooks' contexts.
+    if (core::settings::get().client.cascadeKit) {
+        g_kitSession.store(slotPtr, std::memory_order_relaxed);
     }
     // GATE-1 PROBE (O1): the executor bails at 0x140C0986C when
     // session+0xF4B8 (then +0x520) is null OR 0x14178DAB0(sub) is false -
@@ -3330,9 +3428,9 @@ void maybe_poke_state9(const char* fn, std::uint64_t call, std::uint64_t slotPtr
         const int w = std::snprintf(
             text.data(), text.size(),
             "ev=mtrace stage=poke fn=%s call=%llu sess=0x%llX state_before=4 "
-            "sighting=%u arming=%u f4b8=0x%llX f9d8=0x%llX",
+            "f4b8=0x%llX f9d8=0x%llX",
             fn, static_cast<unsigned long long>(call),
-            static_cast<unsigned long long>(slotPtr), seen, arming,
+            static_cast<unsigned long long>(slotPtr),
             static_cast<unsigned long long>(f4b8),
             static_cast<unsigned long long>(f9d8));
         if (w > 0) { emit(text.data(), static_cast<std::size_t>(w)); }
@@ -3676,6 +3774,9 @@ std::uint64_t __fastcall observe(void* rcx, void* rdx, void* r8, void* r9,
         if (written > 0) {
             emit(text.data(), static_cast<std::size_t>(written));
         }
+        if (kTargets[Index].rva == kJoin21HandlerRva) {
+            maybe_kit_register_list(reinterpret_cast<std::uint64_t>(rcx));
+        }
     }
     // THE CREATION-PATH GATE-BYTE READ (20.299 R2). Deliberately OUTSIDE the detail budget
     // for the same reason the argv dump is: the enter budget (32) is spent long before the
@@ -3810,6 +3911,11 @@ std::uint64_t __fastcall observe(void* rcx, void* rdx, void* r8, void* r9,
                 // gated, default OFF; a relaunch without the setting is the revert.
                 maybe_poke_state9(kTargets[Index].name, call, result);
             }
+        }
+        if (kTargets[Index].rva == kSessGuardRva) {
+            // THE CASCADE KIT, STEP 3: the guard's PASS (ret=1) is the moment
+            // right before the middle hop's C3 read - equalize the fields then.
+            maybe_kit_equalize_c3(reinterpret_cast<std::uint64_t>(rcx), result);
         }
         if (kTargets[Index].probe == Probe::member) {
             emit_member_probe(kTargets[Index].name, call, result);

@@ -26,6 +26,7 @@ bool Parser::client_settings(client::Settings& output) noexcept {
     bool hasPokeState9Arming = false;
     bool hasPokeState9Mode = false;
     bool hasPokePhaseInit = false;
+    bool hasCascadeKit = false;
     bool hasNotifierHook = false;
     bool hasAdmissionMemberIndex = false;
     bool hasAdmissionXuid = false;
@@ -122,6 +123,11 @@ bool Parser::client_settings(client::Settings& output) noexcept {
                 return false;
             }
             hasPokePhaseInit = true;
+        } else if (key == "cascade_kit") {
+            if (hasCascadeKit || !boolean(candidate.cascadeKit)) {
+                return false;
+            }
+            hasCascadeKit = true;
         } else if (key == "notifier_hook") {
             if (hasNotifierHook || !boolean(candidate.notifierHook)) {
                 return false;
