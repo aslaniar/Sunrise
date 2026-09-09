@@ -3449,26 +3449,26 @@ void maybe_poke_state9(const char* fn, std::uint64_t call, std::uint64_t slotPtr
     // (boot 1/2), 2 = raw write (boot 3+).
     if (core::settings::get().client.pokeState9Mode == 2U) {
         *reinterpret_cast<volatile std::int32_t*>(const_cast<std::uint8_t*>(slot)
-                                                  + 0x1AEF8) = 5;
+                                                  + 0x1AEF8) = 9;
         const std::int32_t stateAfter =
             *reinterpret_cast<const volatile std::int32_t*>(slot + 0x1AEF8);
         std::array<char, 160> text{};
         const int w = std::snprintf(
             text.data(), text.size(),
-            "ev=mtrace stage=poke fn=%s call=%llu verdict=executed-raw state_after=%d target=guard-eligible",
+            "ev=mtrace stage=poke fn=%s call=%llu verdict=executed-raw state_after=%d",
             fn, static_cast<unsigned long long>(call), stateAfter);
         if (w > 0) { emit(text.data(), static_cast<std::size_t>(w)); }
     } else {
         using SetStateFn = void (*)(void*, std::int32_t, std::int32_t);
         const auto setSessionState =
             reinterpret_cast<SetStateFn>(g_base + kSetSessionStateRva);
-        setSessionState(const_cast<void*>(reinterpret_cast<const void*>(slotPtr)), 5, 0x30);
+        setSessionState(const_cast<void*>(reinterpret_cast<const void*>(slotPtr)), 9, 0x30);
         const std::int32_t stateAfter =
             *reinterpret_cast<const volatile std::int32_t*>(slot + 0x1AEF8);
         std::array<char, 160> text{};
         const int w = std::snprintf(
             text.data(), text.size(),
-            "ev=mtrace stage=poke fn=%s call=%llu verdict=executed state_after=%d target=guard-eligible",
+            "ev=mtrace stage=poke fn=%s call=%llu verdict=executed state_after=%d",
             fn, static_cast<unsigned long long>(call), stateAfter);
         if (w > 0) { emit(text.data(), static_cast<std::size_t>(w)); }
     }
